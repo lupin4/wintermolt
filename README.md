@@ -1,8 +1,8 @@
 <p align="center">
   <pre align="center">
-  ╻ ╻╻┏┓╻╺┳╸┏━╸┏━┓┏┳┓┏━┓╻  ╺┳╸
-  ┃╻┃┃┃┗┫ ┃ ┣╸ ┣┳┛┃┃┃┃ ┃┃   ┃
-  ┗┻┛╹╹ ╹ ╹ ┗━╸╹┗╸╹ ╹┗━┛┗━╸ ╹
+  ╦ ╦┬┌┐┌┌┬┐┌─┐┬─┐┌┬┐┌─┐┬ ┌┬┐
+  ║║║││││ │ ├┤ ├┬┘││││ ││  │
+  ╚╩╝┴┘└┘ ┴ └─┘┴└─┴ ┴└─┘┴─┘┴
   </pre>
   <strong>One binary. 3 MB. Zero runtime. Every AI backend.</strong><br>
   An autonomous AI agent CLI written entirely in Zig.<br><br>
