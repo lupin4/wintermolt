@@ -7,3 +7,7 @@ zig-cache/
 *.dylib
 .DS_Store
 firebase-debug.log
+CLAUDE.md
+.env
+*.key
+*.pem
