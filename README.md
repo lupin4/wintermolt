@@ -452,28 +452,6 @@ Config file: `~/.wintermolt/.env` (created by `wintermolt --setup`)
 
 ---
 
-## What Wintermolt Is (and Isn't)
-
-Wintermolt is the **open-source lite edition**. It ships everything above.
-
-**[Wintermute](https://github.com/forKernels/Wintermute)** is the proprietary premium edition. It adds:
-
-| Premium Feature | Description |
-|:---------------|:------------|
-| forKernels | Fortran HPC computational engine (FFT, CV, DSP, AI, Nav, 3D) |
-| Cortex ABC-AGC | Brain-inspired kernel with attention, gating, consolidation |
-| Hippocampus | Episodic memory with sleep-cycle consolidation |
-| Multi-model council | Debate + synthesis across multiple AI models |
-| Reinforcement learning | Q-learning, policy gradients, reward shaping |
-| TPU/XLA acceleration | StableHLO/PJRT dispatch for batch compute |
-| Fleet management | Multi-device discovery, remote commands, coordination |
-| Voice synthesis | Piper TTS, OpenAI TTS, formant engine, R2D2 sounds |
-| OAK-D depth camera | Stereo depth, RGB-D, spatial AI |
-| Blender automation | 3D scene control via Python bridge |
-| Google integrations | Gmail, Calendar, Drive |
-
----
-
 <p align="center">
   <strong>Built with Zig. No garbage collector. No runtime. No excuses.</strong><br><br>
   Copyright The Fantastic Planet — By David Clabaugh<br>
