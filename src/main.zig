@@ -142,6 +142,10 @@ pub fn main() !void {
     var agent = try loop_mod.AgentLoop.init(alloc, &config);
     defer agent.deinit();
 
+    // Re-register scheduler pointer — init() stored a pointer to a stack local that's now dead.
+    // This points to agent's struct field which lives for the entire program.
+    if (agent.scheduler) |*s| tools_mod.setScheduler(s);
+
     // Chat mode
     if (chat_mode) {
         try stderr.writeAll("[wintermolt] Starting chat mode...\n");
