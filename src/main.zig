@@ -26,6 +26,9 @@ const pool_mod = @import("agent/agent_pool.zig");
 const subagent_mod = @import("agent/subagent.zig");
 const tts_mod = @import("agent/tts.zig");
 const session_mod = @import("agent/session.zig");
+const gateway_bridge = @import("gateway/bridge.zig");
+const i18n = @import("agent/i18n.zig");
+const extensions_mod = @import("agent/extensions.zig");
 const tailscale_tool = @import("tools/tailscale.zig");
 const camera = @import("tools/camera.zig");
 const http_tool = @import("tools/http.zig");
@@ -53,6 +56,9 @@ pub fn main() !void {
     var web_mode = false;
     var menubar_mode = false;
     var mcp_server_mode = false;
+    var gateway_mode = false;
+    var extension_cmd: ?[]const u8 = null;
+    var extension_arg: ?[]const u8 = null;
     var run_setup = false;
     while (args.next()) |arg| {
         if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
@@ -78,6 +84,13 @@ pub fn main() !void {
         if (std.mem.eql(u8, arg, "--mcp-server")) {
             mcp_server_mode = true;
         }
+        if (std.mem.eql(u8, arg, "--gateway")) {
+            gateway_mode = true;
+        }
+        if (std.mem.eql(u8, arg, "--extension")) {
+            extension_cmd = args.next();
+            extension_arg = args.next();
+        }
         if (std.mem.eql(u8, arg, "-e")) {
             exec_prompt = args.next();
             if (exec_prompt == null) {
@@ -85,6 +98,53 @@ pub fn main() !void {
                 std.process.exit(1);
             }
         }
+    }
+
+    // Handle --extension commands early (doesn't need API key or setup)
+    if (extension_cmd) |cmd| {
+        var ext_mgr = extensions_mod.ExtensionManager.init(alloc);
+        if (std.mem.eql(u8, cmd, "list")) {
+            const list = ext_mgr.listInstalled(alloc) catch |e| {
+                try stderr.print("[extensions] Error: {s}\n", .{@errorName(e)});
+                return;
+            };
+            defer alloc.free(list);
+            try stdout.writeAll(list);
+        } else if (std.mem.eql(u8, cmd, "available")) {
+            const list = ext_mgr.listRemote(alloc) catch |e| {
+                try stderr.print("[extensions] Error: {s}\n", .{@errorName(e)});
+                return;
+            };
+            defer alloc.free(list);
+            try stdout.writeAll(list);
+        } else if (std.mem.eql(u8, cmd, "install")) {
+            const name = extension_arg orelse {
+                try stderr.writeAll("Usage: wintermolt --extension install <name>\n");
+                return;
+            };
+            const result = ext_mgr.install(alloc, name) catch |e| {
+                try stderr.print("[extensions] Error: {s}\n", .{@errorName(e)});
+                return;
+            };
+            defer alloc.free(result);
+            try stdout.writeAll(result);
+            try stdout.writeByte('\n');
+        } else if (std.mem.eql(u8, cmd, "remove")) {
+            const name = extension_arg orelse {
+                try stderr.writeAll("Usage: wintermolt --extension remove <name>\n");
+                return;
+            };
+            const result = ext_mgr.remove(alloc, name) catch |e| {
+                try stderr.print("[extensions] Error: {s}\n", .{@errorName(e)});
+                return;
+            };
+            defer alloc.free(result);
+            try stdout.writeAll(result);
+            try stdout.writeByte('\n');
+        } else {
+            try stdout.writeAll("Usage: wintermolt --extension <list|available|install|remove> [name]\n");
+        }
+        return;
     }
 
     // Auto-trigger OOBE setup if no API key AND no .env file, or explicit --setup
@@ -283,6 +343,20 @@ pub fn main() !void {
         defer bridge.deinit();
         bridge.run();
         try stderr.writeAll("[wintermolt] Menu bar sidecar exited\n");
+        return;
+    }
+
+    // Gateway mode — OpenAI-compatible API server
+    if (gateway_mode) {
+        const gw_port = std.posix.getenv("WINTERMOLT_GATEWAY_PORT") orelse "8080";
+        try stderr.print("[wintermolt] Starting gateway mode on port {s}...\n", .{gw_port});
+        var gw_bridge = gateway_bridge.GatewayBridge.init(alloc, &agent) catch |e| {
+            try stderr.print("[wintermolt] Failed to start gateway sidecar: {s}\n", .{@errorName(e)});
+            std.process.exit(1);
+        };
+        defer gw_bridge.deinit();
+        gw_bridge.run();
+        try stderr.writeAll("[wintermolt] Gateway sidecar exited\n");
         return;
     }
 
@@ -898,7 +972,9 @@ fn printHelp(w: anytype) !void {
         \\  wintermolt --chat       — Chat bridge (18 platforms)
         \\  wintermolt --web        — Web UI
         \\  wintermolt --menubar    — macOS menu bar sidecar
+        \\  wintermolt --gateway    — OpenAI-compatible API gateway
         \\  wintermolt --mcp-server — MCP JSON-RPC server
+        \\  wintermolt --extension  — Manage extensions (list, available, install, remove)
         \\
         \\Chat platforms (set env var to enable):
         \\  Discord        DISCORD_BOT_TOKEN

@@ -33,6 +33,7 @@ const storage_mod = @import("storage.zig");
 const tailscale_tool = @import("../tools/tailscale.zig");
 const canvas_tool = @import("../tools/canvas.zig");
 const tts_tool = @import("../tools/tts_tool.zig");
+const image_gen = @import("../tools/image_gen.zig");
 const subagent_mod = @import("subagent.zig");
 
 /// Runtime skill registry pointer — set by AgentLoop during initialization.
@@ -156,6 +157,7 @@ pub fn executeTool(alloc: Allocator, name: []const u8, input_json: []const u8) !
     if (std.mem.eql(u8, name, "tailscale")) return tailscale_tool.executeTool(alloc, input_json);
     if (std.mem.eql(u8, name, "canvas_update")) return canvas_tool.executeTool(alloc, input_json);
     if (std.mem.eql(u8, name, "text_to_speech")) return tts_tool.executeTool(alloc, input_json);
+    if (std.mem.eql(u8, name, "image_generate")) return image_gen.executeTool(alloc, input_json);
     if (std.mem.eql(u8, name, "spawn_agent")) return executeSpawnAgent(alloc, input_json);
 
     // Runtime skill dispatch (plugins from ~/.wintermolt/skills/)
@@ -206,6 +208,7 @@ const extended_triggers = [_]ToolTrigger{
     .{ .tool_name = "tailscale", .keywords = &.{ "tailscale", "network", "mesh", "vpn", "devices", "peers", "tailnet", "wireguard" } },
     .{ .tool_name = "canvas_update", .keywords = &.{ "canvas", "ui", "dashboard", "chart", "form", "display", "render", "visualize", "widget", "layout" } },
     .{ .tool_name = "text_to_speech", .keywords = &.{ "speak", "say", "read aloud", "voice", "tts", "audio", "narrate", "pronounce", "speech", "synthesize" } },
+    .{ .tool_name = "image_generate", .keywords = &.{ "generate image", "create image", "draw", "dall-e", "dalle", "picture of", "illustration", "artwork", "image of", "photo of", "render image" } },
     .{ .tool_name = "spawn_agent", .keywords = &.{ "subagent", "spawn", "delegate", "parallel", "subtask", "child agent", "in parallel", "concurrently", "split task" } },
 };
 
@@ -678,6 +681,13 @@ pub const tool_definitions = [_]protocol.ToolDefinition{
         .description = "Create or update an A2UI canvas surface for rich UI display. Renders components (text, buttons, code blocks, tables, headings, images) in the terminal or web UI. Use to show dashboards, forms, structured data, and interactive displays.",
         .input_schema_json =
         \\{"type":"object","properties":{"action":{"type":"string","enum":["create","update","delete"],"description":"Canvas action"},"surface_id":{"type":"string","description":"Surface ID (default: main)"},"title":{"type":"string","description":"Surface title"},"components":{"type":"array","description":"A2UI component tree","items":{"type":"object","properties":{"type":{"type":"string","description":"Component type: Text, Button, Code, Table, Image, Heading, Divider"},"value":{"type":"string","description":"Content value"},"label":{"type":"string","description":"Button label"},"language":{"type":"string","description":"Code language"},"alt":{"type":"string","description":"Image alt text"}}}},"data":{"type":"object","description":"Data model for dynamic binding"}},"required":["action"]}
+        ,
+    },
+    .{
+        .name = "image_generate",
+        .description = "Generate an image using AI (DALL-E 3). Returns the path to the downloaded image file. Requires OPENAI_API_KEY.",
+        .input_schema_json =
+        \\{"type":"object","properties":{"prompt":{"type":"string","description":"Detailed description of the image to generate"},"size":{"type":"string","enum":["1024x1024","1792x1024","1024x1792"],"description":"Image size (default: 1024x1024)"},"model":{"type":"string","description":"Model: dall-e-3 (default) or dall-e-2"},"quality":{"type":"string","enum":["standard","hd"],"description":"Quality: standard (default) or hd"}},"required":["prompt"]}
         ,
     },
     .{
