@@ -1,0 +1,32 @@
+{
+  "name": "wintermolt-chat",
+  "version": "0.1.0",
+  "description": "Wintermolt chat sidecar — multi-platform messaging bridge",
+  "type": "module",
+  "main": "src/index.ts",
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "build": "tsc",
+    "dev": "tsx watch src/index.ts"
+  },
+  "dependencies": {
+    "discord.js": "^14.16.0",
+    "telegraf": "^4.16.0",
+    "whatsapp-web.js": "^1.26.0",
+    "@slack/bolt": "^4.1.0",
+    "matrix-js-sdk": "^34.0.0",
+    "irc-framework": "^4.13.0",
+    "tmi.js": "^1.8.5",
+    "mattermost-client": "^4.3.0",
+    "zulip-js": "^2.0.0",
+    "@xmpp/client": "^0.13.0",
+    "line-bot-sdk-nodejs": "npm:@line/bot-sdk@^9.0.0",
+    "nostr-tools": "^2.7.0",
+    "websocket-polyfill": "^0.0.3"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0",
+    "tsx": "^4.19.0",
+    "@types/node": "^22.0.0"
+  }
+}

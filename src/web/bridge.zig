@@ -163,12 +163,14 @@ pub const WebBridge = struct {
         self.agent.tool_start_callback = &webToolStart;
         self.agent.tool_done_callback = &webToolDone;
         self.agent.perspective_callback = &webPerspective;
+        self.agent.voice_callback = &webVoiceAudio;
         self.agent.web_message_id = id;
         defer {
             self.agent.stream_callback = null;
             self.agent.tool_start_callback = null;
             self.agent.tool_done_callback = null;
             self.agent.perspective_callback = null;
+            self.agent.voice_callback = null;
             self.agent.web_message_id = null;
         }
 
@@ -340,12 +342,14 @@ pub const WebBridge = struct {
         self.agent.tool_start_callback = &webToolStart;
         self.agent.tool_done_callback = &webToolDone;
         self.agent.perspective_callback = &webPerspective;
+        self.agent.voice_callback = &webVoiceAudio;
         self.agent.web_message_id = id;
         defer {
             self.agent.stream_callback = null;
             self.agent.tool_start_callback = null;
             self.agent.tool_done_callback = null;
             self.agent.perspective_callback = null;
+            self.agent.voice_callback = null;
             self.agent.web_message_id = null;
         }
 
@@ -767,6 +771,40 @@ fn webPerspective(json: []const u8) void {
     const stdin = active_bridge_stdin orelse return;
     stdin.writeAll(json) catch {};
     stdin.writeAll("\n") catch {};
+}
+
+/// Voice callback — sends base64 audio data to the web UI for playback.
+fn webVoiceAudio(audio_path: []const u8) void {
+    const stdin = active_bridge_stdin orelse return;
+    const alloc = active_bridge_alloc orelse return;
+    const mid = active_message_id orelse "unknown";
+
+    // Read the audio file and base64-encode it
+    const path_z = alloc.dupeZ(u8, audio_path) catch return;
+    defer alloc.free(path_z);
+
+    const file = std.fs.openFileAbsolute(path_z, .{}) catch return;
+    defer file.close();
+
+    const stat = file.stat() catch return;
+    if (stat.size > 10_000_000) return; // Skip files > 10MB
+
+    const audio_data = alloc.alloc(u8, stat.size) catch return;
+    defer alloc.free(audio_data);
+    _ = file.readAll(audio_data) catch return;
+
+    const b64 = std.base64.standard.Encoder;
+    const encoded_len = b64.calcSize(audio_data.len);
+    const encoded = alloc.alloc(u8, encoded_len) catch return;
+    defer alloc.free(encoded);
+    _ = b64.encode(encoded, audio_data);
+
+    // Send as JSON line: {"type":"audio","id":"m1","data":"base64...","format":"mp3"}
+    stdin.writeAll("{\"type\":\"audio\",\"id\":\"") catch return;
+    stdin.writeAll(mid) catch return;
+    stdin.writeAll("\",\"data\":\"") catch return;
+    stdin.writeAll(encoded) catch return;
+    stdin.writeAll("\",\"format\":\"mp3\"}\n") catch return;
 }
 
 // ---------------------------------------------------------------------------

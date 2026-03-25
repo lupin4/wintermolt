@@ -22,9 +22,55 @@
 //   PINECONE_API_KEY         — Optional. Enables RAG semantic search.
 //   PINECONE_HOST            — Required if API key set. Index host URL.
 //   PINECONE_INDEX           — Optional. Index name (default: "wintermolt")
+//   WINTERMOLT_MAX_AGENTS      — Optional. Max concurrent agents in pool (default: 16)
+//   WINTERMOLT_AGENT_IDLE_TIMEOUT — Optional. Seconds before idle agent eviction (default: 1800)
 //   WINTERMOLT_TOOL_ALLOWLIST — Optional. Comma-separated: ONLY these tools enabled
 //   WINTERMOLT_TOOL_BLOCKLIST — Optional. Comma-separated: these tools blocked
 //   WINTERMOLT_SANDBOX       — Optional. "docker" or "1" to sandbox bash
+//
+// Chat platform tokens (for --chat mode):
+//   DISCORD_BOT_TOKEN        — Discord bot token
+//   TELEGRAM_BOT_TOKEN       — Telegram bot token
+//   WHATSAPP_PHONE_ID        — WhatsApp Business phone number ID
+//   WHATSAPP_ACCESS_TOKEN    — WhatsApp Business access token
+//   SLACK_BOT_TOKEN          — Slack bot token
+//   SLACK_APP_TOKEN          — Slack app-level token (for Socket Mode)
+//   SIGNAL_PHONE_NUMBER      — Signal phone number (requires signal-cli)
+//   IMESSAGE_APPLEID         — iMessage Apple ID (macOS only, via AppleScript)
+//   IRC_SERVER               — IRC server address (e.g. irc.libera.chat:6697)
+//   IRC_NICK                 — IRC nickname
+//   IRC_CHANNELS             — Comma-separated IRC channels
+//   GOOGLE_CHAT_CREDENTIALS  — Google Chat service account JSON path
+//   TEAMS_APP_ID             — Microsoft Teams app ID
+//   TEAMS_APP_PASSWORD       — Microsoft Teams app password
+//   MATRIX_HOMESERVER        — Matrix homeserver URL
+//   MATRIX_ACCESS_TOKEN      — Matrix access token
+//   MATRIX_USER_ID           — Matrix user ID (@user:server)
+//   FEISHU_APP_ID            — Feishu/Lark app ID
+//   FEISHU_APP_SECRET        — Feishu/Lark app secret
+//   LINE_CHANNEL_SECRET      — LINE channel secret
+//   LINE_CHANNEL_TOKEN       — LINE channel access token
+//   MATTERMOST_URL           — Mattermost server URL
+//   MATTERMOST_TOKEN         — Mattermost bot token
+//   NOSTR_PRIVATE_KEY        — Nostr private key (hex)
+//   NOSTR_RELAYS             — Comma-separated Nostr relay URLs
+//   TWITCH_CLIENT_ID         — Twitch client ID
+//   TWITCH_ACCESS_TOKEN      — Twitch OAuth access token
+//   TWITCH_CHANNELS          — Comma-separated Twitch channels
+//   ROCKETCHAT_URL           — Rocket.Chat server URL
+//   ROCKETCHAT_TOKEN         — Rocket.Chat auth token
+//   ROCKETCHAT_USER_ID       — Rocket.Chat user ID
+//   ZULIP_EMAIL              — Zulip bot email
+//   ZULIP_API_KEY            — Zulip bot API key
+//   ZULIP_SITE               — Zulip server URL
+//   NEXTCLOUD_TALK_URL       — Nextcloud Talk server URL
+//   NEXTCLOUD_TALK_TOKEN     — Nextcloud Talk token
+//
+// TTS / Voice synthesis:
+//   WINTERMOLT_TTS_PROVIDER  — Optional. TTS provider: "openai", "elevenlabs", "edge" (default: off)
+//   WINTERMOLT_TTS_VOICE     — Optional. Voice name (default: "alloy" for OpenAI)
+//   ELEVENLABS_API_KEY       — Optional. ElevenLabs API key
+//   ELEVENLABS_VOICE_ID      — Optional. ElevenLabs voice ID
 
 const std = @import("std");
 
@@ -144,6 +190,11 @@ pub const Config = struct {
     sandbox_timeout: u32,
     sandbox_memory: []const u8,
     sandbox_network: []const u8,
+    // TTS / Voice synthesis
+    tts_provider: ?[]const u8,
+    tts_voice: []const u8,
+    elevenlabs_api_key: ?[]const u8,
+    elevenlabs_voice_id: ?[]const u8,
     constitution_alloc: ?[]u8 = null,
 
     pub fn load(alloc: ?std.mem.Allocator) !Config {
@@ -220,6 +271,12 @@ pub const Config = struct {
         const sandbox_memory = std.posix.getenv("WINTERMOLT_SANDBOX_MEMORY") orelse "256m";
         const sandbox_network = std.posix.getenv("WINTERMOLT_SANDBOX_NETWORK") orelse "none";
 
+        // TTS / Voice
+        const tts_provider = std.posix.getenv("WINTERMOLT_TTS_PROVIDER");
+        const tts_voice = std.posix.getenv("WINTERMOLT_TTS_VOICE") orelse "alloy";
+        const elevenlabs_api_key = std.posix.getenv("ELEVENLABS_API_KEY");
+        const elevenlabs_voice_id = std.posix.getenv("ELEVENLABS_VOICE_ID");
+
         // Load constitution from file or use built-in default
         const constitution_result = if (alloc) |a| loadConstitution(a) else .{ null, default_constitution };
         const constitution_heap = constitution_result[0];
@@ -253,6 +310,10 @@ pub const Config = struct {
             .sandbox_timeout = sandbox_timeout,
             .sandbox_memory = sandbox_memory,
             .sandbox_network = sandbox_network,
+            .tts_provider = tts_provider,
+            .tts_voice = tts_voice,
+            .elevenlabs_api_key = elevenlabs_api_key,
+            .elevenlabs_voice_id = elevenlabs_voice_id,
             .constitution_alloc = constitution_heap,
         };
     }
@@ -366,6 +427,11 @@ pub fn buildCapabilities(config: *const Config, alloc: std.mem.Allocator, tool_c
         try w.writeAll("\n  - Pinecone RAG: ON (semantic search)\n")
     else
         try w.writeAll("\n  - Pinecone RAG: OFF (no PINECONE_API_KEY)\n");
+
+    if (config.tts_provider) |tts|
+        try w.print("\n  - TTS: {s} (voice: {s})\n", .{ tts, config.tts_voice })
+    else
+        try w.writeAll("\n  - TTS: OFF\n");
 
     if (config.history_enabled)
         try w.writeAll("\nChat history: ON (SQLite persistent)\n")

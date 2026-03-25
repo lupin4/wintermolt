@@ -261,10 +261,10 @@ pub const Scheduler = struct {
         const db = self.db orelse return null;
         const now = std.time.timestamp();
 
-        // Query all due, enabled jobs
+        // Query all due, enabled jobs (skip those with status='failed')
         const sql =
-            "SELECT id, name, command, schedule_type, schedule_value " ++
-            "FROM jobs WHERE enabled = 1 AND next_run <= ?1;";
+            "SELECT id, name, command, schedule_type, schedule_value, webhook_url, target_session " ++
+            "FROM jobs WHERE enabled = 1 AND (status IS NULL OR status != 'failed') AND next_run <= ?1;";
 
         const stmt = self.prepare(db, sql) catch return null;
         defer _ = sqlite3_finalize(stmt);
@@ -279,6 +279,8 @@ pub const Scheduler = struct {
             command: []u8,
             schedule_type: []u8,
             schedule_value: []u8,
+            webhook_url: ?[]u8,
+            target_session: ?[]u8,
         };
 
         var due_jobs: ArrayList(DueJob) = .{};
@@ -289,6 +291,8 @@ pub const Scheduler = struct {
                 alloc.free(job.command);
                 alloc.free(job.schedule_type);
                 alloc.free(job.schedule_value);
+                if (job.webhook_url) |w_| alloc.free(w_);
+                if (job.target_session) |t| alloc.free(t);
             }
             due_jobs.deinit(alloc);
         }
@@ -299,6 +303,8 @@ pub const Scheduler = struct {
             const cmd_raw = sqlite3_column_text(stmt, 2);
             const stype_raw = sqlite3_column_text(stmt, 3);
             const sval_raw = sqlite3_column_text(stmt, 4);
+            const webhook_raw = sqlite3_column_text(stmt, 5);
+            const session_raw = sqlite3_column_text(stmt, 6);
 
             const job = DueJob{
                 .id = alloc.dupe(u8, if (id_raw) |p| std.mem.span(p) else "") catch continue,
@@ -306,6 +312,8 @@ pub const Scheduler = struct {
                 .command = alloc.dupe(u8, if (cmd_raw) |p| std.mem.span(p) else "") catch continue,
                 .schedule_type = alloc.dupe(u8, if (stype_raw) |p| std.mem.span(p) else "") catch continue,
                 .schedule_value = alloc.dupe(u8, if (sval_raw) |p| std.mem.span(p) else "") catch continue,
+                .webhook_url = if (webhook_raw) |p| (alloc.dupe(u8, std.mem.span(p)) catch null) else null,
+                .target_session = if (session_raw) |p| (alloc.dupe(u8, std.mem.span(p)) catch null) else null,
             };
             due_jobs.append(alloc, job) catch continue;
         }
@@ -338,6 +346,21 @@ pub const Scheduler = struct {
                 try w.writeAll(output);
                 if (output.len > 0 and output[output.len - 1] != '\n') {
                     try w.writeByte('\n');
+                }
+            }
+
+            // Track errors
+            const is_error = std.mem.startsWith(u8, output, "[scheduler] Execution error") or output.len == 0;
+            if (is_error) {
+                self.incrementErrorCount(db, job.id, output) catch {};
+            } else {
+                self.clearErrors(db, job.id) catch {};
+            }
+
+            // Webhook delivery (fire-and-forget)
+            if (job.webhook_url) |url| {
+                if (url.len > 0) {
+                    self.deliverWebhook(alloc, url, job.name, job.id, output, is_error) catch {};
                 }
             }
 
@@ -379,6 +402,87 @@ pub const Scheduler = struct {
         if (rc != SQLITE_DONE) return error.SqliteStepFailed;
     }
 
+    /// Increment error count for a job. Auto-disables if max_retries exceeded.
+    fn incrementErrorCount(self: *Scheduler, db: *sqlite3, job_id: []const u8, error_msg: []const u8) !void {
+        const truncated = if (error_msg.len > 500) error_msg[0..500] else error_msg;
+        const sql = "UPDATE jobs SET error_count = error_count + 1, last_error = ?1 WHERE id = ?2;";
+        const stmt = try self.prepare(db, sql);
+        defer _ = sqlite3_finalize(stmt);
+        try self.bindText(db, stmt, 1, truncated);
+        try self.bindText(db, stmt, 2, job_id);
+        _ = sqlite3_step(stmt);
+
+        // Check if we should auto-disable
+        const check_sql = "SELECT error_count, max_retries FROM jobs WHERE id = ?1;";
+        const check_stmt = try self.prepare(db, check_sql);
+        defer _ = sqlite3_finalize(check_stmt);
+        try self.bindText(db, check_stmt, 1, job_id);
+        if (sqlite3_step(check_stmt) == SQLITE_ROW) {
+            const err_count = sqlite3_column_int64(check_stmt, 0);
+            const max_retries = sqlite3_column_int64(check_stmt, 1);
+            if (max_retries > 0 and err_count >= max_retries) {
+                const disable_sql = "UPDATE jobs SET status = 'failed', enabled = 0 WHERE id = ?1;";
+                const disable_stmt = self.prepare(db, disable_sql) catch return;
+                defer _ = sqlite3_finalize(disable_stmt);
+                self.bindText(db, disable_stmt, 1, job_id) catch return;
+                _ = sqlite3_step(disable_stmt);
+                const stderr = std.fs.File.stderr().deprecatedWriter();
+                stderr.print("[scheduler] Job {s} auto-disabled after {d} errors (max_retries={d})\n", .{ job_id, err_count, max_retries }) catch {};
+            }
+        }
+    }
+
+    /// Clear error count on successful execution.
+    fn clearErrors(self: *Scheduler, db: *sqlite3, job_id: []const u8) !void {
+        const sql = "UPDATE jobs SET error_count = 0, last_error = NULL, status = 'active' WHERE id = ?1;";
+        const stmt = try self.prepare(db, sql);
+        defer _ = sqlite3_finalize(stmt);
+        try self.bindText(db, stmt, 1, job_id);
+        _ = sqlite3_step(stmt);
+    }
+
+    /// Deliver a webhook POST with job execution results.
+    fn deliverWebhook(self: *Scheduler, alloc: Allocator, url: []const u8, job_name: []const u8, job_id: []const u8, output: []const u8, is_error: bool) !void {
+        _ = self;
+        const CURL = opaque {};
+        const CurlSlist = opaque {};
+        const curl_init = @extern(*const fn () callconv(.c) ?*CURL, .{ .name = "curl_easy_init" });
+        const curl_cleanup = @extern(*const fn (*CURL) callconv(.c) void, .{ .name = "curl_easy_cleanup" });
+        const curl_perform = @extern(*const fn (*CURL) callconv(.c) c_int, .{ .name = "curl_easy_perform" });
+        const curl_setopt = @extern(*const fn (*CURL, c_int, ...) callconv(.c) c_int, .{ .name = "curl_easy_setopt" });
+        const curl_slist_ap = @extern(*const fn (?*CurlSlist, [*:0]const u8) callconv(.c) ?*CurlSlist, .{ .name = "curl_slist_append" });
+        const curl_slist_fa = @extern(*const fn (*CurlSlist) callconv(.c) void, .{ .name = "curl_slist_free_all" });
+
+        const handle = curl_init() orelse return;
+        defer curl_cleanup(handle);
+
+        const url_z = try alloc.dupeZ(u8, url);
+        defer alloc.free(url_z);
+
+        // Truncate output for webhook payload
+        const out_truncated = if (output.len > 2000) output[0..2000] else output;
+        const status_str: []const u8 = if (is_error) "error" else "success";
+        const body = try std.fmt.allocPrint(alloc,
+            \\{{"job_name":"{s}","job_id":"{s}","status":"{s}","output":"{s}"}}
+        , .{ job_name, job_id, status_str, out_truncated });
+        defer alloc.free(body);
+
+        _ = curl_setopt(handle, @as(c_int, 10002), url_z.ptr); // CURLOPT_URL
+        _ = curl_setopt(handle, @as(c_int, 47), @as(c_long, 1)); // CURLOPT_POST
+        _ = curl_setopt(handle, @as(c_int, 10015), body.ptr); // CURLOPT_POSTFIELDS
+        _ = curl_setopt(handle, @as(c_int, 60), @as(c_long, @intCast(body.len))); // CURLOPT_POSTFIELDSIZE
+        _ = curl_setopt(handle, @as(c_int, 13), @as(c_long, 10)); // CURLOPT_TIMEOUT
+
+        var headers: ?*CurlSlist = null;
+        headers = curl_slist_ap(headers, "Content-Type: application/json");
+        if (headers) |h| {
+            _ = curl_setopt(handle, @as(c_int, 10023), h); // CURLOPT_HTTPHEADER
+            defer curl_slist_fa(h);
+        }
+
+        _ = curl_perform(handle);
+    }
+
     /// Run the schema migration (CREATE TABLE IF NOT EXISTS).
     fn runMigrations(self: *Scheduler) !void {
         const db = self.db orelse return error.NoDB;
@@ -386,18 +490,24 @@ pub const Scheduler = struct {
         const schema =
             "PRAGMA journal_mode=WAL;" ++
             "CREATE TABLE IF NOT EXISTS jobs (" ++
-            "  id             TEXT PRIMARY KEY," ++
-            "  name           TEXT NOT NULL," ++
-            "  schedule_type  TEXT NOT NULL," ++
-            "  schedule_value TEXT NOT NULL," ++
-            "  command        TEXT NOT NULL," ++
-            "  last_run       INTEGER DEFAULT 0," ++
-            "  next_run       INTEGER NOT NULL," ++
-            "  enabled        INTEGER DEFAULT 1," ++
-            "  created_at     INTEGER NOT NULL" ++
+            "  id              TEXT PRIMARY KEY," ++
+            "  name            TEXT NOT NULL," ++
+            "  schedule_type   TEXT NOT NULL," ++
+            "  schedule_value  TEXT NOT NULL," ++
+            "  command         TEXT NOT NULL," ++
+            "  last_run        INTEGER DEFAULT 0," ++
+            "  next_run        INTEGER NOT NULL," ++
+            "  enabled         INTEGER DEFAULT 1," ++
+            "  created_at      INTEGER NOT NULL," ++
+            "  target_session  TEXT," ++
+            "  webhook_url     TEXT," ++
+            "  error_count     INTEGER DEFAULT 0," ++
+            "  max_retries     INTEGER DEFAULT 0," ++
+            "  last_error      TEXT," ++
+            "  status          TEXT DEFAULT 'active'" ++
             ");" ++
             "CREATE INDEX IF NOT EXISTS idx_jobs_next_run ON jobs(enabled, next_run);" ++
-            "PRAGMA user_version = 1;";
+            "PRAGMA user_version = 2;";
 
         var errmsg: ?[*:0]u8 = null;
         const rc = sqlite3_exec(db, schema, null, null, &errmsg);

@@ -32,6 +32,8 @@ const rag_mod = @import("rag.zig");
 const storage_mod = @import("storage.zig");
 const tailscale_tool = @import("../tools/tailscale.zig");
 const canvas_tool = @import("../tools/canvas.zig");
+const tts_tool = @import("../tools/tts_tool.zig");
+const subagent_mod = @import("subagent.zig");
 
 /// Runtime skill registry pointer — set by AgentLoop during initialization.
 var skill_registry_ptr: ?*skill_loader.SkillRegistry = null;
@@ -75,6 +77,16 @@ pub fn setRag(r: ?*rag_mod.RagClient) void {
 
 pub fn setStorage(s: ?*storage_mod.Storage) void {
     storage_ptr = s;
+}
+
+/// Subagent manager pointer — set by AgentLoop for spawn_agent tool.
+var subagent_mgr: ?*subagent_mod.SubagentManager = null;
+/// Current agent depth — set by AgentLoop to track subagent nesting.
+var current_agent_depth: u8 = 0;
+
+pub fn setSubagentManager(m: ?*subagent_mod.SubagentManager, depth: u8) void {
+    subagent_mgr = m;
+    current_agent_depth = depth;
 }
 
 // ---------------------------------------------------------------------------
@@ -143,6 +155,8 @@ pub fn executeTool(alloc: Allocator, name: []const u8, input_json: []const u8) !
     if (std.mem.eql(u8, name, "schedule")) return executeSchedule(alloc, input_json);
     if (std.mem.eql(u8, name, "tailscale")) return tailscale_tool.executeTool(alloc, input_json);
     if (std.mem.eql(u8, name, "canvas_update")) return canvas_tool.executeTool(alloc, input_json);
+    if (std.mem.eql(u8, name, "text_to_speech")) return tts_tool.executeTool(alloc, input_json);
+    if (std.mem.eql(u8, name, "spawn_agent")) return executeSpawnAgent(alloc, input_json);
 
     // Runtime skill dispatch (plugins from ~/.wintermolt/skills/)
     if (skill_registry_ptr) |registry| {
@@ -191,6 +205,8 @@ const extended_triggers = [_]ToolTrigger{
     .{ .tool_name = "schedule", .keywords = &.{ "schedule", "cron", "timer", "periodic", "every hour", "every day", "every minute", "remind me", "recurring", "automation", "job" } },
     .{ .tool_name = "tailscale", .keywords = &.{ "tailscale", "network", "mesh", "vpn", "devices", "peers", "tailnet", "wireguard" } },
     .{ .tool_name = "canvas_update", .keywords = &.{ "canvas", "ui", "dashboard", "chart", "form", "display", "render", "visualize", "widget", "layout" } },
+    .{ .tool_name = "text_to_speech", .keywords = &.{ "speak", "say", "read aloud", "voice", "tts", "audio", "narrate", "pronounce", "speech", "synthesize" } },
+    .{ .tool_name = "spawn_agent", .keywords = &.{ "subagent", "spawn", "delegate", "parallel", "subtask", "child agent", "in parallel", "concurrently", "split task" } },
 };
 
 /// Case-insensitive substring search.
@@ -483,6 +499,21 @@ fn executeMemorySearch(alloc: Allocator, input_json: []const u8) ![]u8 {
     return buf.toOwnedSlice(alloc);
 }
 
+fn executeSpawnAgent(alloc: Allocator, input_json: []const u8) ![]u8 {
+    const mgr = subagent_mgr orelse
+        return alloc.dupe(u8, "Error: Subagent spawning not available. The subagent manager must be initialized.");
+
+    const task = sse.findJsonString(input_json, "task") orelse
+        return alloc.dupe(u8, "Error: 'task' field is required. Describe what the subagent should do.");
+
+    const model = sse.findJsonString(input_json, "model");
+
+    // spawnAndRun handles all errors internally and always returns a result string
+    const result = mgr.spawnAndRun(current_agent_depth, null, task, model) catch
+        return alloc.dupe(u8, "Error: Subagent spawn failed due to allocation error.");
+    return result;
+}
+
 fn executeSchedule(alloc: Allocator, input_json: []const u8) ![]u8 {
     const sched = scheduler_ptr orelse
         return alloc.dupe(u8, "Scheduler not initialized. The scheduler requires SQLite and is enabled in REPL mode.");
@@ -647,6 +678,20 @@ pub const tool_definitions = [_]protocol.ToolDefinition{
         .description = "Create or update an A2UI canvas surface for rich UI display. Renders components (text, buttons, code blocks, tables, headings, images) in the terminal or web UI. Use to show dashboards, forms, structured data, and interactive displays.",
         .input_schema_json =
         \\{"type":"object","properties":{"action":{"type":"string","enum":["create","update","delete"],"description":"Canvas action"},"surface_id":{"type":"string","description":"Surface ID (default: main)"},"title":{"type":"string","description":"Surface title"},"components":{"type":"array","description":"A2UI component tree","items":{"type":"object","properties":{"type":{"type":"string","description":"Component type: Text, Button, Code, Table, Image, Heading, Divider"},"value":{"type":"string","description":"Content value"},"label":{"type":"string","description":"Button label"},"language":{"type":"string","description":"Code language"},"alt":{"type":"string","description":"Image alt text"}}}},"data":{"type":"object","description":"Data model for dynamic binding"}},"required":["action"]}
+        ,
+    },
+    .{
+        .name = "text_to_speech",
+        .description = "Synthesize text to speech audio. Supports multiple providers: OpenAI TTS (cloud), ElevenLabs (cloud), Piper (local/offline), Edge TTS (Microsoft). Returns the path to the generated audio file. Use inline directives [[voice:alloy]] [[speed:1.2]] for per-utterance overrides.",
+        .input_schema_json =
+        \\{"type":"object","properties":{"text":{"type":"string","description":"The text to synthesize (max 4096 chars)"},"voice":{"type":"string","description":"Voice name (e.g. alloy, echo, nova for OpenAI; voice ID for ElevenLabs)"},"provider":{"type":"string","description":"TTS provider: openai, elevenlabs, piper, edge"},"play":{"type":"string","description":"Set to 'true' to play audio immediately via system speaker"}},"required":["text"]}
+        ,
+    },
+    .{
+        .name = "spawn_agent",
+        .description = "Spawn a subagent to handle a subtask independently. The subagent gets its own conversation context, runs the task to completion, and returns the result. Use for parallelizable work, research tasks, or when you want isolated context. Max depth: 3 levels.",
+        .input_schema_json =
+        \\{"type":"object","properties":{"task":{"type":"string","description":"The task for the subagent to complete. Be specific and self-contained — the subagent has no access to the parent's conversation context."},"model":{"type":"string","description":"Optional AI backend override (claude, ollama, openai, deepseek, qwen, gemini)"}},"required":["task"]}
         ,
     },
 };

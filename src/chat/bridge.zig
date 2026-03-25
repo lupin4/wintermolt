@@ -29,6 +29,12 @@ pub const ChatMessage = struct {
     from_name: ?[]const u8,
     channel: []const u8,
     text: []const u8,
+    // Threading & routing context (for multi-agent routing, threaded replies)
+    thread_id: ?[]const u8 = null,
+    reply_to: ?[]const u8 = null,
+    guild: ?[]const u8 = null,
+    roles: ?[]const u8 = null, // Comma-separated role list
+    attachments: ?[]const u8 = null, // JSON array of attachment URLs
     raw_json: []const u8, // Full JSON line (owned, for lifetime management)
 };
 
@@ -102,14 +108,34 @@ pub const ChatBridge = struct {
 
     /// Send a reply to the chat sidecar.
     pub fn sendReply(self: *ChatBridge, platform: []const u8, to: []const u8, text: []const u8) !void {
+        try self.sendReplyThreaded(platform, to, text, null);
+    }
+
+    /// Send a threaded reply to the chat sidecar.
+    pub fn sendReplyThreaded(self: *ChatBridge, platform: []const u8, to: []const u8, text: []const u8, thread_id: ?[]const u8) !void {
         const writer = self.stdin_file.deprecatedWriter();
-        // Build JSON line: {"type":"reply","platform":"...","to":"...","text":"..."}
         try writer.writeAll("{\"type\":\"reply\",\"platform\":\"");
         try writeJsonEscaped(writer, platform);
         try writer.writeAll("\",\"to\":\"");
         try writeJsonEscaped(writer, to);
         try writer.writeAll("\",\"text\":\"");
         try writeJsonEscaped(writer, text);
+        if (thread_id) |tid| {
+            try writer.writeAll("\",\"threadId\":\"");
+            try writeJsonEscaped(writer, tid);
+        }
+        try writer.writeAll("\"}\n");
+    }
+
+    /// Send a voice message to the chat sidecar (base64-encoded audio).
+    pub fn sendVoice(self: *ChatBridge, platform: []const u8, to: []const u8, audio_b64: []const u8) !void {
+        const writer = self.stdin_file.deprecatedWriter();
+        try writer.writeAll("{\"type\":\"voice\",\"platform\":\"");
+        try writeJsonEscaped(writer, platform);
+        try writer.writeAll("\",\"to\":\"");
+        try writeJsonEscaped(writer, to);
+        try writer.writeAll("\",\"audio\":\"");
+        try writeJsonEscaped(writer, audio_b64);
         try writer.writeAll("\"}\n");
     }
 
@@ -139,6 +165,11 @@ fn parseMessage(json: []const u8) ?ChatMessage {
             .from_name = sse.findJsonString(json, "fromName"),
             .channel = sse.findJsonString(json, "channel") orelse "dm",
             .text = sse.findJsonString(json, "text") orelse "",
+            .thread_id = sse.findJsonString(json, "threadId"),
+            .reply_to = sse.findJsonString(json, "replyTo"),
+            .guild = sse.findJsonString(json, "guild"),
+            .roles = sse.findJsonString(json, "roles"),
+            .attachments = sse.findJsonString(json, "attachments"),
             .raw_json = json,
         };
     }

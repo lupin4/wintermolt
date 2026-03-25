@@ -578,6 +578,7 @@ pub const Storage = struct {
             "  updated_at  INTEGER NOT NULL," ++
             "  token_count INTEGER DEFAULT 0," ++
             "  archived    INTEGER DEFAULT 0," ++
+            "  agent_id    TEXT DEFAULT 'main'," ++
             "  summary     TEXT," ++
             "  embedding   BLOB" ++
             ");" ++
@@ -594,6 +595,7 @@ pub const Storage = struct {
             "CREATE INDEX IF NOT EXISTS idx_msg_conv ON messages(conversation_id, sequence_num);" ++
             "CREATE INDEX IF NOT EXISTS idx_conv_updated ON conversations(updated_at DESC);" ++
             "CREATE INDEX IF NOT EXISTS idx_conv_platform ON conversations(platform, user_id);" ++
+            "CREATE INDEX IF NOT EXISTS idx_conv_agent ON conversations(agent_id, updated_at DESC);" ++
             "PRAGMA user_version = 1;";
 
         var errmsg: ?[*:0]u8 = null;

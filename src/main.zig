@@ -10,7 +10,7 @@
 //   wintermolt --help       — show help
 //   wintermolt -e "prompt"  — single-shot execution
 //   wintermolt --setup      — run OOBE wizard
-//   wintermolt --chat       — chat bridge mode (Discord/WhatsApp/Telegram/Slack)
+//   wintermolt --chat       — chat bridge mode (18 platforms)
 //   wintermolt --web        — web UI mode
 //   wintermolt --mcp-server — MCP JSON-RPC server over stdio
 
@@ -21,6 +21,11 @@ const loop_mod = @import("agent/loop.zig");
 const chat_bridge = @import("chat/bridge.zig");
 const web_bridge = @import("web/bridge.zig");
 const menubar_bridge = @import("menubar/bridge.zig");
+const router_mod = @import("agent/router.zig");
+const pool_mod = @import("agent/agent_pool.zig");
+const subagent_mod = @import("agent/subagent.zig");
+const tts_mod = @import("agent/tts.zig");
+const session_mod = @import("agent/session.zig");
 const tailscale_tool = @import("tools/tailscale.zig");
 const camera = @import("tools/camera.zig");
 const http_tool = @import("tools/http.zig");
@@ -146,29 +151,88 @@ pub fn main() !void {
     // This points to agent's struct field which lives for the entire program.
     if (agent.scheduler) |*s| tools_mod.setScheduler(s);
 
-    // Chat mode
+    // Initialize subagent manager for spawn_agent tool
+    var subagent_mgr = subagent_mod.SubagentManager.init(alloc);
+    defer subagent_mgr.deinit();
+    subagent_mgr.spawn_fn = &spawnSubagent;
+    agent.subagent_manager = @ptrCast(&subagent_mgr);
+
+    // Initialize session manager
+    var session_mgr = session_mod.SessionManager.init(alloc);
+    defer session_mgr.deinit();
+
+    // Chat mode — multi-agent routing
     if (chat_mode) {
-        try stderr.writeAll("[wintermolt] Starting chat mode...\n");
+        try stderr.writeAll("[wintermolt] Starting chat mode (multi-agent)...\n");
         var bridge = chat_bridge.ChatBridge.init(alloc) catch |e| {
             try stderr.print("[wintermolt] Failed to start chat sidecar: {s}\n", .{@errorName(e)});
             std.process.exit(1);
         };
         defer bridge.deinit();
 
+        // Initialize router, agent pool, and session manager for chat mode
+        var router = router_mod.Router.init(alloc);
+        defer router.deinit();
+
+        var pool = pool_mod.AgentPool.init(alloc, &config);
+        defer pool.deinit();
+
+        var chat_sessions = session_mod.SessionManager.init(alloc);
+        defer chat_sessions.deinit();
+
+        if (router.bindings.items.len > 0) {
+            try stderr.print("[wintermolt] Loaded {d} routing bindings\n", .{router.bindings.items.len});
+        }
+
         while (bridge.readMessage()) |msg| {
             try stderr.print("[{s}] {s}: {s}\n", .{ msg.platform, msg.from, msg.text });
-            agent.startConversation();
+
+            // Build routing context from the incoming message
+            const route_ctx = router_mod.RouteContext{
+                .platform = msg.platform,
+                .from = msg.from,
+                .channel = msg.channel,
+                .thread_id = msg.thread_id,
+                .guild = msg.guild,
+                .roles = msg.roles,
+            };
+
+            // Resolve which agent should handle this message
+            const route = router.resolve(&route_ctx);
+
+            // Get or create the agent from the pool
+            const routed_agent = pool.getOrCreate(route.agent_id) catch |e| {
+                try stderr.print("[Error] Agent pool failed: {s}\n", .{@errorName(e)});
+                continue;
+            };
+
+            // Ensure agent has a conversation started
+            if (routed_agent.conversation_id == null) {
+                routed_agent.startConversation();
+            }
+
+            // Track session
+            const session_id = chat_sessions.getOrCreateSession(
+                route.agent_id,
+                msg.platform,
+                msg.channel,
+                msg.from,
+            ) catch null;
+            if (session_id) |sid| {
+                chat_sessions.recordMessage(sid);
+                alloc.free(sid);
+            }
 
             var response_buf: ArrayList(u8) = .{};
             defer response_buf.deinit(alloc);
 
-            agent.processInputCapture(msg.text, &response_buf) catch |e| {
-                try stderr.print("[Error] Agent failed: {s}\n", .{@errorName(e)});
+            routed_agent.processInputCapture(msg.text, &response_buf) catch |e| {
+                try stderr.print("[Error] Agent {s} failed: {s}\n", .{ route.agent_id, @errorName(e) });
                 continue;
             };
 
             if (response_buf.items.len > 0) {
-                bridge.sendReply(msg.platform, msg.from, response_buf.items) catch |e| {
+                bridge.sendReplyThreaded(msg.platform, msg.from, response_buf.items, msg.thread_id) catch |e| {
                     try stderr.print("[Error] Reply failed: {s}\n", .{@errorName(e)});
                 };
             }
@@ -326,6 +390,28 @@ pub fn main() !void {
         }
         if (std.mem.eql(u8, trimmed, "/tailscale")) {
             try handleTailscale(alloc, stdout, stderr);
+            continue;
+        }
+        if (std.mem.startsWith(u8, trimmed, "/route")) {
+            const arg = std.mem.trim(u8, trimmed[6..], " \t");
+            try handleRouteCmd(alloc, stdout, stderr, arg);
+            continue;
+        }
+        if (std.mem.eql(u8, trimmed, "/agents")) {
+            try handleAgentsCmd(alloc, stdout);
+            continue;
+        }
+        if (std.mem.startsWith(u8, trimmed, "/tts ")) {
+            try handleTtsCmd(alloc, stdout, stderr, trimmed[5..]);
+            continue;
+        }
+        if (std.mem.eql(u8, trimmed, "/tts")) {
+            try handleTtsCmd(alloc, stdout, stderr, "");
+            continue;
+        }
+        if (std.mem.startsWith(u8, trimmed, "/session")) {
+            const arg = std.mem.trim(u8, trimmed[8..], " \t");
+            try handleSessionCmd(&session_mgr, alloc, stdout, arg);
             continue;
         }
 
@@ -539,6 +625,222 @@ fn handleScheduleCmd(alloc: std.mem.Allocator, w: anytype, _stderr: anytype, arg
     try w.writeAll("  /schedule enable|disable <id>           — Enable/disable\n");
 }
 
+/// Spawn function for subagents — called by SubagentManager.
+/// Creates a fresh AgentLoop, runs the task, captures output, returns result.
+/// This lives in main.zig to break the circular dependency (subagent.zig ← loop.zig).
+fn spawnSubagent(
+    alloc: std.mem.Allocator,
+    task: []const u8,
+    model_override: ?[]const u8,
+    child_depth: u8,
+    mgr: *subagent_mod.SubagentManager,
+) []u8 {
+    // Load config (re-use from env, already loaded)
+    var child_config = config_mod.Config.load(null) catch {
+        return alloc.dupe(u8, "Error: Failed to load config for subagent") catch return @constCast("");
+    };
+
+    var child_agent = loop_mod.AgentLoop.init(alloc, &child_config) catch {
+        return alloc.dupe(u8, "Error: Failed to create subagent") catch return @constCast("");
+    };
+    defer child_agent.deinit();
+
+    // Set depth and subagent manager for recursive spawning
+    child_agent.depth = child_depth;
+    child_agent.subagent_manager = @ptrCast(mgr);
+
+    // Apply model override
+    if (model_override) |model| {
+        child_agent.switchBackend(model, null);
+    }
+
+    child_agent.startConversation();
+
+    // Capture output
+    var output_buf: ArrayList(u8) = .{};
+    child_agent.processInputCapture(task, &output_buf) catch {
+        output_buf.deinit(alloc);
+        return alloc.dupe(u8, "Error: Subagent execution failed") catch return @constCast("");
+    };
+
+    if (output_buf.items.len == 0) {
+        output_buf.deinit(alloc);
+        return alloc.dupe(u8, "(Subagent produced no output)") catch return @constCast("");
+    }
+
+    // Truncate very long output
+    const max_output: usize = 50_000;
+    if (output_buf.items.len > max_output) {
+        const truncated = alloc.dupe(u8, output_buf.items[0..max_output]) catch {
+            output_buf.deinit(alloc);
+            return @constCast("");
+        };
+        output_buf.deinit(alloc);
+        return truncated;
+    }
+
+    return output_buf.toOwnedSlice(alloc) catch return @constCast("");
+}
+
+fn handleSessionCmd(mgr: *session_mod.SessionManager, alloc: std.mem.Allocator, w: anytype, arg: []const u8) !void {
+    if (arg.len == 0 or std.mem.eql(u8, arg, "list")) {
+        const list = try mgr.listSessions(alloc, 20);
+        defer alloc.free(list);
+        try w.writeAll(list);
+        return;
+    }
+
+    if (std.mem.startsWith(u8, arg, "end ")) {
+        const sid = std.mem.trim(u8, arg[4..], " \t");
+        mgr.endSession(sid) catch |e| {
+            try std.fmt.format(w, "[session] Error: {s}\n", .{@errorName(e)});
+            return;
+        };
+        try std.fmt.format(w, "[session] Ended: {s}\n", .{sid});
+        return;
+    }
+
+    if (std.mem.startsWith(u8, arg, "cleanup")) {
+        const timeout: i64 = 3600; // 1 hour default
+        mgr.cleanupStale(timeout);
+        try w.writeAll("[session] Cleaned up stale sessions.\n");
+        return;
+    }
+
+    try w.writeAll("Usage: /session [list|end|cleanup]\n");
+    try w.writeAll("  /session list             — Show active sessions\n");
+    try w.writeAll("  /session end <session_id>  — End a session\n");
+    try w.writeAll("  /session cleanup           — End stale sessions (idle > 1h)\n");
+}
+
+fn handleTtsCmd(alloc: std.mem.Allocator, w: anytype, _stderr: anytype, arg: []const u8) !void {
+    _ = _stderr;
+    const text = std.mem.trim(u8, arg, " \t");
+
+    if (text.len == 0) {
+        const provider = std.posix.getenv("WINTERMOLT_TTS_PROVIDER") orelse "not configured";
+        const voice = std.posix.getenv("WINTERMOLT_TTS_VOICE") orelse "alloy";
+        try std.fmt.format(w, "TTS Status\n", .{});
+        try std.fmt.format(w, "  Provider: {s}\n", .{provider});
+        try std.fmt.format(w, "  Voice: {s}\n", .{voice});
+        try w.writeAll("\nUsage: /tts <text to speak>\n");
+        try w.writeAll("Inline directives: [[voice:nova]] [[speed:1.2]] [[provider:openai]]\n");
+        try w.writeAll("\nProviders: openai, elevenlabs, piper, edge\n");
+        try w.writeAll("OpenAI voices: alloy, echo, fable, onyx, nova, shimmer\n");
+        return;
+    }
+
+    try w.writeAll("[tts] Synthesizing...\n");
+    var client = tts_mod.TtsClient.init(alloc);
+    const path = client.synthesizeToFile(text) catch |e| {
+        try std.fmt.format(w, "[tts] Error: {s}\n", .{@errorName(e)});
+        return;
+    };
+    defer alloc.free(path);
+    try std.fmt.format(w, "[tts] Audio saved: {s}\n", .{path});
+
+    // Auto-play on macOS
+    const play_cmd = std.fmt.allocPrint(alloc, "afplay \"{s}\" &", .{path}) catch return;
+    defer alloc.free(play_cmd);
+    const play_z = alloc.dupeZ(u8, play_cmd) catch return;
+    defer alloc.free(play_z);
+
+    const play_argv = [_][]const u8{ "/bin/sh", "-c", play_z };
+    var child = std.process.Child.init(&play_argv, alloc);
+    child.stdout_behavior = .Ignore;
+    child.stderr_behavior = .Ignore;
+    child.spawn() catch return;
+}
+
+fn handleRouteCmd(alloc: std.mem.Allocator, w: anytype, _stderr: anytype, arg: []const u8) !void {
+    _ = _stderr;
+    var router = router_mod.Router.init(alloc);
+    defer router.deinit();
+
+    if (arg.len == 0 or std.mem.eql(u8, arg, "list")) {
+        const list = try router.listBindings(alloc);
+        defer alloc.free(list);
+        try w.writeAll(list);
+        try w.writeByte('\n');
+        return;
+    }
+
+    // /route add <agent_id> <tier> [platform] [channel] [peer]
+    if (std.mem.startsWith(u8, arg, "add ")) {
+        const rest = std.mem.trim(u8, arg[4..], " \t");
+        var iter = std.mem.splitScalar(u8, rest, ' ');
+
+        const agent_id = iter.next() orelse {
+            try w.writeAll("Usage: /route add <agent_id> <tier> [platform] [channel] [peer]\n");
+            try w.writeAll("Tiers: peer, guild_role, guild, team, account, channel\n");
+            return;
+        };
+        const tier_str = iter.next() orelse {
+            try w.writeAll("Usage: /route add <agent_id> <tier> [platform] [channel] [peer]\n");
+            return;
+        };
+        const tier: router_mod.BindingTier = if (std.mem.eql(u8, tier_str, "peer"))
+            .peer
+        else if (std.mem.eql(u8, tier_str, "guild_role"))
+            .guild_role
+        else if (std.mem.eql(u8, tier_str, "guild"))
+            .guild
+        else if (std.mem.eql(u8, tier_str, "team"))
+            .team
+        else if (std.mem.eql(u8, tier_str, "account"))
+            .account
+        else if (std.mem.eql(u8, tier_str, "channel"))
+            .channel
+        else {
+            try w.writeAll("Invalid tier. Use: peer, guild_role, guild, team, account, channel\n");
+            return;
+        };
+
+        const platform = iter.next();
+        const channel_id = iter.next();
+        const peer_id = iter.next();
+
+        const binding_id = router.addBinding(
+            agent_id,
+            tier,
+            platform,
+            channel_id,
+            peer_id,
+            null, // guild_id
+            null, // team_id
+            null, // account_id
+            null, // roles
+        ) catch |e| {
+            try std.fmt.format(w, "[route] Failed to add: {s}\n", .{@errorName(e)});
+            return;
+        };
+        defer alloc.free(binding_id);
+        try std.fmt.format(w, "[route] Added binding [{s}] → agent:{s} (tier:{s})\n", .{ binding_id[0..8], agent_id, tier_str });
+        return;
+    }
+
+    // /route remove <binding_id>
+    if (std.mem.startsWith(u8, arg, "remove ")) {
+        const id = std.mem.trim(u8, arg[7..], " \t");
+        _ = router.removeBinding(id);
+        try std.fmt.format(w, "[route] Removed binding: {s}\n", .{id});
+        return;
+    }
+
+    try w.writeAll("Usage: /route [list|add|remove]\n");
+    try w.writeAll("  /route list                                  — Show all bindings\n");
+    try w.writeAll("  /route add <agent> <tier> [platform] [chan]   — Add a binding\n");
+    try w.writeAll("  /route remove <id>                           — Remove a binding\n");
+}
+
+fn handleAgentsCmd(alloc: std.mem.Allocator, w: anytype) !void {
+    // In REPL mode there's only the single main agent, but show pool info
+    // if it were running in chat mode. For REPL, just show current stats.
+    _ = alloc;
+    try w.writeAll("Agent pool is active in --chat mode.\n");
+    try w.writeAll("Use /route to configure multi-agent routing bindings.\n");
+}
+
 fn handleTailscale(alloc: std.mem.Allocator, w: anytype, _stderr: anytype) !void {
     _ = _stderr;
     const result = tailscale_tool.executeTool(alloc, "{\"action\":\"status\"}") catch |e| {
@@ -583,16 +885,40 @@ fn printHelp(w: anytype) !void {
         \\  /export [fmt]  — Export conversation (jsonl, csv)
         \\  /download URL  — Download a file
         \\  /schedule      — Manage scheduled jobs (list, add, remove)
+        \\  /tts <text>    — Synthesize text to speech (plays audio)
+        \\  /session       — Manage chat sessions (list, end, cleanup)
+        \\  /route         — Manage multi-agent routing bindings
+        \\  /agents        — Show agent pool status
         \\  /tailscale     — Show Tailscale network status
         \\
         \\Modes:
         \\  wintermolt              — Interactive REPL
         \\  wintermolt -e "prompt"  — Single-shot execution
         \\  wintermolt --setup      — Run setup wizard
-        \\  wintermolt --chat       — Chat bridge (Discord/WhatsApp/Telegram/Slack)
+        \\  wintermolt --chat       — Chat bridge (18 platforms)
         \\  wintermolt --web        — Web UI
         \\  wintermolt --menubar    — macOS menu bar sidecar
         \\  wintermolt --mcp-server — MCP JSON-RPC server
+        \\
+        \\Chat platforms (set env var to enable):
+        \\  Discord        DISCORD_BOT_TOKEN
+        \\  Telegram       TELEGRAM_BOT_TOKEN
+        \\  WhatsApp       WHATSAPP_PHONE_ID + WHATSAPP_ACCESS_TOKEN
+        \\  Slack          SLACK_BOT_TOKEN (+ SLACK_APP_TOKEN for Socket Mode)
+        \\  Signal         SIGNAL_PHONE_NUMBER (requires signal-cli)
+        \\  iMessage       IMESSAGE_APPLEID (macOS only)
+        \\  IRC            IRC_SERVER + IRC_NICK + IRC_CHANNELS
+        \\  Matrix         MATRIX_HOMESERVER + MATRIX_ACCESS_TOKEN + MATRIX_USER_ID
+        \\  Teams          TEAMS_APP_ID + TEAMS_APP_PASSWORD
+        \\  Google Chat    GOOGLE_CHAT_CREDENTIALS
+        \\  LINE           LINE_CHANNEL_SECRET + LINE_CHANNEL_TOKEN
+        \\  Feishu/Lark    FEISHU_APP_ID + FEISHU_APP_SECRET
+        \\  Mattermost     MATTERMOST_URL + MATTERMOST_TOKEN
+        \\  Twitch         TWITCH_ACCESS_TOKEN + TWITCH_CHANNELS
+        \\  Nostr          NOSTR_PRIVATE_KEY (+ NOSTR_RELAYS)
+        \\  XMPP/Jabber    XMPP_JID + XMPP_PASSWORD
+        \\  Zulip          ZULIP_EMAIL + ZULIP_API_KEY + ZULIP_SITE
+        \\  Rocket.Chat    ROCKETCHAT_URL + ROCKETCHAT_TOKEN + ROCKETCHAT_USER_ID
         \\
         \\Environment:
         \\  ANTHROPIC_API_KEY    — Claude API key (required)

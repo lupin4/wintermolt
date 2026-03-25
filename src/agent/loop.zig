@@ -53,6 +53,10 @@ pub const AgentLoop = struct {
     tool_errors_this_turn: u32,
     last_message_ts: i64,
 
+    // Subagent hierarchy
+    depth: u8, // 0 = root agent, >0 = subagent
+    subagent_manager: ?*anyopaque, // *subagent_mod.SubagentManager (opaque to avoid circular dep)
+
     // Streaming/bridge callbacks (for chat bridge and web UI)
     capture_buf: ?*ArrayList(u8),
     voice_callback: ?*const fn ([]const u8) void,
@@ -148,6 +152,8 @@ pub const AgentLoop = struct {
             .message_sequence = 0,
             .tool_errors_this_turn = 0,
             .last_message_ts = 0,
+            .depth = 0,
+            .subagent_manager = null,
             .capture_buf = null,
             .voice_callback = null,
             .voice_start_callback = null,
@@ -214,6 +220,14 @@ pub const AgentLoop = struct {
 
         self.last_message_ts = std.time.milliTimestamp();
         self.tool_errors_this_turn = 0;
+
+        // Wire subagent manager into tools module for spawn_agent tool
+        if (self.subagent_manager) |mgr_opaque| {
+            const subagent_mod = @import("subagent.zig");
+            const mgr: *subagent_mod.SubagentManager = @ptrCast(@alignCast(mgr_opaque));
+            tools.setSubagentManager(mgr, self.depth);
+        }
+        defer tools.setSubagentManager(null, 0);
 
         // Get relevant tool definitions based on user message
         const relevant_tools = tools.getRelevantDefinitions(user_text);
