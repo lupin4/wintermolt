@@ -66,6 +66,11 @@
 //   NEXTCLOUD_TALK_URL       — Nextcloud Talk server URL
 //   NEXTCLOUD_TALK_TOKEN     — Nextcloud Talk token
 //
+// Google Workspace (Gmail, Calendar, Drive):
+//   GOOGLE_CLIENT_ID         — OAuth2 client ID
+//   GOOGLE_CLIENT_SECRET     — OAuth2 client secret
+//   GOOGLE_REFRESH_TOKEN     — OAuth2 refresh token (offline access)
+//
 // TTS / Voice synthesis:
 //   WINTERMOLT_TTS_PROVIDER  — Optional. TTS provider: "openai", "elevenlabs", "edge" (default: off)
 //   WINTERMOLT_TTS_VOICE     — Optional. Voice name (default: "alloy" for OpenAI)
