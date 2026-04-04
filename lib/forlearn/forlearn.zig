@@ -234,7 +234,7 @@ fn genMainPy(alloc: std.mem.Allocator, config: HarnessConfig) ![]const u8 {
 }
 
 fn genCliPy(alloc: std.mem.Allocator, config: HarnessConfig) ![]const u8 {
-    var buf = std.ArrayList(u8).init(alloc);
+    var buf: std.ArrayList(u8) = .{};
     const w = buf.writer(alloc);
 
     try w.print(
