@@ -263,6 +263,7 @@ pub const AgentLoop = struct {
                     defer retry_resp.deinit();
                     try stdout.writeByte('\n');
                     try self.history.addAssistantResponse(&retry_resp);
+                    self.history.evictImages();
                     if (self.storage) |*s| {
                         if (self.conversation_id) |conv_id| {
                             s.saveMessage(conv_id, "assistant", self.message_sequence, retry_resp.content.items) catch {};
@@ -287,6 +288,10 @@ pub const AgentLoop = struct {
 
             // Add assistant response to history
             try self.history.addAssistantResponse(&response);
+
+            // Evict base64 images from history — Claude has seen them,
+            // no need to resend ~300KB per image on every subsequent turn.
+            self.history.evictImages();
 
             // Persist
             if (self.storage) |*s| {

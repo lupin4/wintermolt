@@ -189,6 +189,37 @@ pub const History = struct {
         try self.messages.append(self.alloc, msg);
     }
 
+    /// Replace base64 image blocks in history with text placeholders.
+    /// Call after Claude has seen and responded to an image, so the
+    /// ~300KB base64 data isn't resent on every subsequent turn.
+    pub fn evictImages(self: *History) void {
+        const placeholder = "[image was here — evicted from context to save tokens]";
+        for (self.messages.items) |*msg| {
+            for (msg.content.items) |*block| {
+                switch (block.*) {
+                    .tool_result => |*tr| {
+                        if (tr.content_blocks) |blocks| {
+                            // Cast away const — we own this allocation
+                            const mutable = @as([*]protocol.ContentBlock, @constCast(blocks.ptr))[0..blocks.len];
+                            for (mutable) |*cb| {
+                                switch (cb.*) {
+                                    .image => {
+                                        cb.* = .{ .text = placeholder };
+                                    },
+                                    else => {},
+                                }
+                            }
+                        }
+                    },
+                    .image => {
+                        block.* = .{ .text = placeholder };
+                    },
+                    else => {},
+                }
+            }
+        }
+    }
+
     /// Get messages as a slice for API serialization.
     pub fn getMessages(self: *const History) []const protocol.Message {
         return self.messages.items;

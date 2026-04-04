@@ -316,6 +316,11 @@ pub const SessionManager = struct {
             if (errmsg) |msg| sqlite3_free(@ptrCast(msg));
             return error.MigrationFailed;
         }
+
+        // v2 migration: add agent_id column to existing sessions tables that lack it
+        var migrate_err: ?[*:0]u8 = null;
+        _ = sqlite3_exec(db, "ALTER TABLE sessions ADD COLUMN agent_id TEXT NOT NULL DEFAULT 'main';", null, null, &migrate_err);
+        if (migrate_err) |msg| sqlite3_free(@ptrCast(msg)); // ignore "duplicate column" error
     }
 
     fn prepare(self: *SessionManager, db: *sqlite3, sql: [*:0]const u8) !*sqlite3_stmt {

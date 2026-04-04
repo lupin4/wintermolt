@@ -480,6 +480,11 @@ pub const Router = struct {
             if (errmsg) |msg| sqlite3_free(@ptrCast(msg));
             return error.MigrationFailed;
         }
+
+        // v2 migration: add agent_id column to existing bindings tables that lack it
+        var migrate_err: ?[*:0]u8 = null;
+        _ = sqlite3_exec(db, "ALTER TABLE bindings ADD COLUMN agent_id TEXT NOT NULL DEFAULT 'main';", null, null, &migrate_err);
+        if (migrate_err) |msg| sqlite3_free(@ptrCast(msg)); // ignore "duplicate column" error
     }
 
     fn bindOptionalText(self: *const Router, stmt: *sqlite3_stmt, index: c_int, value: []const u8) void {

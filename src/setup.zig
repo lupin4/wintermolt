@@ -275,6 +275,7 @@ fn promptKey(
         if (e == error.EndOfStream) return null;
         return e;
     };
+    drainPastedInput(); // consume any extra lines from multi-line pastes
     const trimmed = std.mem.trim(u8, line, " \t\r");
 
     // Empty input: return existing value if available, or null
@@ -292,6 +293,7 @@ fn promptKey(
             // Retry once
             try stdout.print("{s}: ", .{label});
             const retry = stdin.readUntilDelimiter(buf, '\n') catch return null;
+            drainPastedInput();
             const retry_trimmed = std.mem.trim(u8, retry, " \t\r");
             if (retry_trimmed.len == 0) return null;
             return retry_trimmed;
@@ -307,6 +309,32 @@ fn promptKey(
     }
 
     return trimmed;
+}
+
+/// Drain any extra pasted input from stdin (e.g., multi-line pastes from
+/// password managers). Temporarily sets stdin to non-blocking, reads until
+/// EAGAIN/EWOULDBLOCK, then restores blocking mode.
+fn drainPastedInput() void {
+    const fd = std.posix.STDIN_FILENO;
+    const F_GETFL = 3;
+    const F_SETFL = 4;
+    const O_NONBLOCK: u32 = if (comptime @import("builtin").os.tag == .macos) 0x0004 else 0o4000;
+
+    const flags = std.posix.system.fcntl(fd, F_GETFL);
+    if (flags == -1) return;
+
+    // Set non-blocking
+    if (std.posix.system.fcntl(fd, F_SETFL, @as(u32, @bitCast(flags)) | O_NONBLOCK) == -1) return;
+
+    // Drain all buffered input
+    var drain_buf: [4096]u8 = undefined;
+    while (true) {
+        const rc = std.posix.system.read(fd, &drain_buf, drain_buf.len);
+        if (rc <= 0) break;
+    }
+
+    // Restore blocking mode
+    _ = std.posix.system.fcntl(fd, F_SETFL, flags);
 }
 
 const OllamaResult = struct {

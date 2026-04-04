@@ -193,9 +193,11 @@ pub const OllamaClient = struct {
         _ = curl_easy_getinfo(handle, CURLINFO_RESPONSE_CODE, &http_code);
         if (http_code == 400 and tool_defs.len > 0) {
             // Model likely doesn't support tools — retry without them
+            // Also strip tool_use/tool_result messages from history since
+            // models reject tool-related messages when tools aren't declared.
             const stderr = std.fs.File.stderr().deprecatedWriter();
             stderr.print("[ollama] Model doesn't support tools, retrying without\n", .{}) catch {};
-            return self.sendMessage(system_prompt, messages, &.{}, text_cb);
+            return self.sendMessageNoTools(system_prompt, messages, text_cb);
         }
         if (http_code != 200) {
             const stderr = std.fs.File.stderr().deprecatedWriter();
@@ -204,6 +206,37 @@ pub const OllamaClient = struct {
         }
 
         return parser.toResponse();
+    }
+
+    /// Retry without tools — filters out tool_use/tool_result messages from
+    /// history so models that don't support tools won't reject the request.
+    fn sendMessageNoTools(
+        self: *const OllamaClient,
+        system_prompt: []const u8,
+        messages: []const protocol.Message,
+        text_cb: ?sse.TextCallback,
+    ) anyerror!protocol.Response {
+        // Build filtered message list: skip messages that contain tool blocks
+        var filtered: ArrayList(protocol.Message) = .{};
+        defer filtered.deinit(self.alloc);
+
+        for (messages) |msg| {
+            var has_tool = false;
+            for (msg.content.items) |block| {
+                switch (block) {
+                    .tool_use, .tool_result => {
+                        has_tool = true;
+                        break;
+                    },
+                    else => {},
+                }
+            }
+            if (!has_tool) {
+                try filtered.append(self.alloc, msg);
+            }
+        }
+
+        return self.sendMessage(system_prompt, filtered.items, &.{}, text_cb);
     }
 
     /// Serialize Ollama chat request with tool_use support.
