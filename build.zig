@@ -37,12 +37,18 @@ pub fn build(b: *std.Build) void {
     //
     // NO Fortran archives. NO forKernels. Pure Zig + system libs.
 
+    // --- forLearn: harness generation (scaffolds CLI-Anything projects) ---
+    const forlearn_module = b.createModule(.{
+        .root_source_file = b.path("lib/forlearn/forlearn.zig"),
+    });
+
     const exe_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
     });
+    exe_mod.addImport("forlearn", forlearn_module);
 
     // System libraries — dynamic linking
     exe_mod.linkSystemLibrary("curl", .{});
