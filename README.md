@@ -136,7 +136,7 @@ Fixed 5 vulnerabilities: 2 SQL injection, 2 XSS, 1 path traversal. All tests pas
 
 All backends support **streaming**. Ollama runs 100% local, air-gapped, no API key.
 
-### 15 Built-in Tools
+### 16 Built-in Tools
 
 The AI invokes these autonomously. No plugins needed.
 
@@ -157,6 +157,7 @@ The AI invokes these autonomously. No plugins needed.
 | `schedule` | Cron jobs — schedule recurring commands |
 | `tailscale` | Mesh VPN — query peers, devices, connectivity |
 | `canvas_update` | A2UI — render rich UI surfaces in terminal or web |
+| `harness_create` | Generate CLI-Anything harness for any software |
 
 ### Cron Scheduler
 
@@ -314,9 +315,56 @@ wintermolt --web     # Serves http://localhost:3000
 
 Real-time streaming via WebSocket. The AI's responses render token-by-token in the browser with tool execution previews.
 
+### CLI-Anything — Make Any Software Agent-Native
+
+Wintermolt integrates [CLI-Anything](https://github.com/forKernels/CLI-Anything), a framework that turns any software into an AI-controllable tool by generating structured CLI wrappers.
+
+```
+> Create a harness for OBS Studio using its WebSocket API
+
+[harness_create] Generating CLI-Anything harness for "obs"...
+  obs/agent-harness/
+    setup.py
+    cli_anything/obs/obs_cli.py          (Click CLI with --json)
+    cli_anything/obs/core/backend.py     (WebSocket backend)
+    cli_anything/obs/skills/SKILL.md     (AI-discoverable metadata)
+
+[bash] pip install -e obs/agent-harness/
+Done. OBS is now agent-native. Try: cli-anything-obs --json scene list
+```
+
+The generated harness follows CLI-Anything conventions: `--json` flag for structured output, Click command groups for tool dispatch, and a SKILL.md that lets any AI agent auto-discover the tool's capabilities. Wintermolt discovers installed harnesses automatically via the MCP bridge.
+
+Existing CLI-Anything harnesses include Blender, Audacity, ComfyUI, CloudCompare, and [many more](https://github.com/forKernels/CLI-Anything).
+
 ### Skills System
 
 Extensible skill catalog with built-in skills + runtime plugin discovery from `~/.wintermolt/plugins/`.
+
+### forAgent — Persistent Agent Sessions
+
+Wintermolt ships with [forAgent](https://github.com/forKernels/forAgent), a framework for persistent, stateful agent-to-software connections. forAgent provides session management, transport adapters (TCP, Unix socket, HTTP, subprocess), state tracking, tool registry, and MCP protocol handling.
+
+When Wintermolt connects to external software (Blender, OBS, Docker, etc.), forAgent manages the persistent session — keeping state, tracking changes, and providing a clean tool interface that the AI can use autonomously.
+
+### forLearn — Online Learning + Harness Generation
+
+Wintermolt ships with [forLearn](https://github.com/forKernels/forLearn), which provides two capabilities:
+
+**Online learning kernels** — unsupervised and reinforcement learning algorithms that run on-device with fixed memory budgets. All kernels are pure Zig (no Fortran dependency in Wintermolt):
+
+| Kernel | Algorithm |
+|--------|-----------|
+| Memory buffer | Circular ring buffer for streaming samples |
+| Hebbian network | Associative weight learning (no backprop) |
+| Online K-Means | Streaming clustering with EMA centroid update |
+| Self-Organizing Map | Topology-preserving 2D Kohonen network |
+| Anomaly detector | Welford's online mean/variance + pseudo-Mahalanobis |
+| Online predictor | Per-feature autoregressive model |
+| Q-Learning | Tabular RL with epsilon-greedy |
+| Curiosity | Intrinsic motivation via forward-model prediction error |
+
+**Harness generation** — scaffolds [CLI-Anything](https://github.com/forKernels/CLI-Anything) projects for connecting to new software. The `harness_create` tool generates a complete pip-installable Python CLI with `--json` support, backend adapter, and SKILL.md — making any application agent-native in one command.
 
 ---
 
@@ -413,12 +461,18 @@ wintermolt (3 MB arm64 binary)
 ├── src/chat/bridge.zig          Chat platform bridge (JSON lines IPC)
 ├── src/web/bridge.zig           Web UI bridge (WebSocket + JSON lines)
 │
+├── prebuilt/macos-arm64/lib/    Prebuilt Zig archives (no source needed)
+│   ├── libforagent.a            forAgent — sessions, MCP, tool registry
+│   └── libforlearn.a            forLearn — online learning + harness gen
+│
 └── menubar/                     macOS menu bar Swift sidecar
     ├── Package.swift            Swift package manifest
     └── Sources/main.swift       NSStatusBar app (~270 lines)
 ```
 
 **External dependencies:** `libcurl` (HTTPS) + `sqlite3` (persistence). That's it. Both are pre-installed on macOS and most Linux.
+
+**Prebuilt libraries:** `libforagent.a` and `libforlearn.a` are pure Zig static archives — no Fortran runtime, no gfortran needed. For kernel-accelerated inference and Fortran-backed compute, see [Wintermute](https://github.com/lupin4/Wintermute) (proprietary).
 
 **IPC pattern:** All sidecars (chat, web, menu bar) communicate via **JSON lines over stdin/stdout pipes**. The Zig binary spawns the sidecar as a child process. No sockets, no HTTP servers, no shared memory. Clean process boundaries.
 

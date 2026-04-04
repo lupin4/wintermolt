@@ -35,12 +35,8 @@ pub fn build(b: *std.Build) void {
     //   - libcurl (system — HTTPS)
     //   - sqlite3 (system — persistent history)
     //
-    // NO Fortran archives. NO forKernels. Pure Zig + system libs.
-
-    // --- forLearn: harness generation (scaffolds CLI-Anything projects) ---
-    const forlearn_module = b.createModule(.{
-        .root_source_file = b.path("lib/forlearn/forlearn.zig"),
-    });
+    // NO Fortran archives. NO forKernels compute libs.
+    // forAgent and forLearn are linked as prebuilt .a archives (pure Zig, no Fortran).
 
     const exe_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
@@ -48,7 +44,13 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
     });
-    exe_mod.addImport("forlearn", forlearn_module);
+
+    // --- forAgent + forLearn: built from sibling repos (zig-out/{target}/lib/) ---
+    const target_name = getTargetName(target.result);
+    const foragent_path = b.fmt("../forAgent/zig-out/{s}/lib/libforagent.a", .{target_name});
+    const forlearn_path = b.fmt("../forLearn/zig-out/{s}/lib/libforlearn.a", .{target_name});
+    exe_mod.addObjectFile(.{ .cwd_relative = foragent_path });
+    exe_mod.addObjectFile(.{ .cwd_relative = forlearn_path });
 
     // System libraries — dynamic linking
     exe_mod.linkSystemLibrary("curl", .{});
@@ -87,4 +89,23 @@ pub fn build(b: *std.Build) void {
     const run_unit_tests = b.addRunArtifact(unit_tests);
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_unit_tests.step);
+}
+
+fn getTargetName(t: std.Target) []const u8 {
+    return switch (t.os.tag) {
+        .macos => switch (t.cpu.arch) {
+            .aarch64 => "macos-arm64",
+            else => "macos-unknown",
+        },
+        .linux => switch (t.cpu.arch) {
+            .x86_64 => "linux-x86_64",
+            .aarch64 => "linux-arm64",
+            else => "linux-unknown",
+        },
+        .windows => switch (t.cpu.arch) {
+            .x86_64 => "windows-x86_64",
+            else => "windows-unknown",
+        },
+        else => "unknown",
+    };
 }
