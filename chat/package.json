@@ -14,7 +14,7 @@
     "telegraf": "^4.16.0",
     "whatsapp-web.js": "^1.26.0",
     "@slack/bolt": "^4.1.0",
-    "matrix-js-sdk": "^34.0.0",
+    "matrix-js-sdk": "^38.2.0",
     "irc-framework": "^4.13.0",
     "tmi.js": "^1.8.5",
     "mattermost-client": "^4.3.0",
