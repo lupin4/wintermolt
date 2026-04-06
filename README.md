@@ -24,7 +24,7 @@
 
 ```
 $ wintermolt
-Wintermolt v0.1.0 — AI Agent CLI
+Wintermolt v0.3.0 — AI Agent CLI
 Backend: ollama (qwen3:0.6b)
 
 > Refactor all error handling in src/ to use proper Zig error unions
@@ -59,7 +59,7 @@ Most AI coding tools ship hundreds of megabytes of Electron or Node.js runtime j
 | **Runtime** | **None** | Node.js 18+ | Electron | Python 3.8+ |
 | **Cross-compile** | **One command** | N/A | N/A | N/A |
 | **Runs on Jetson/Pi** | **Yes** | Barely | No | Slow |
-| **AI backends** | **6** | 1 | Multiple | Multiple |
+| **AI backends** | **5** | 1 | Multiple | Multiple |
 | **Camera + vision** | **Built-in** | No | No | No |
 | **Browser automation** | **Built-in** | No | No | No |
 | **MCP client + server** | **Both** | Client only | Client only | No |
@@ -123,18 +123,17 @@ Wintermolt doesn't just answer questions — it **plans and executes multi-step 
 Fixed 5 vulnerabilities: 2 SQL injection, 2 XSS, 1 path traversal. All tests pass.
 ```
 
-### 6 AI Backends — Switch Instantly
+### 5 AI Backends — Switch Instantly
 
 ```
-> /model ollama    — Local Ollama (default, no API key)
-> /model ollama    — Local models (Llama, Qwen, Mistral, Phi — no API key)
+> /model ollama    — Local models (Llama, Qwen, Mistral, Phi — no API key, default)
 > /model openai    — OpenAI GPT-4o, GPT-4.1
 > /model deepseek  — DeepSeek V3/R1
 > /model qwen      — Qwen 2.5+ Cloud
 > /model gemini    — Google Gemini
 ```
 
-All backends support **streaming**. Ollama runs 100% local, air-gapped, no API key.
+All backends support **streaming**. Ollama runs 100% local, air-gapped, no API key. Cloud backends are optional — bring your own key.
 
 ### 16 Built-in Tools
 
@@ -428,7 +427,7 @@ wintermolt (3 MB arm64 binary)
 │   ├── client.zig               (legacy, unused)
 │   ├── ollama.zig               Ollama local models (NDJSON streaming)
 │   ├── deepseek.zig             OpenAI-compatible (DeepSeek, Qwen, GPT, Gemini)
-│   ├── protocol.zig             Anthropic wire types
+│   ├── protocol.zig             Message wire types
 │   ├── sse.zig                  Server-Sent Events parser
 │   ├── openai_sse.zig           OpenAI SSE parser
 │   └── ndjson.zig               Newline-delimited JSON parser
@@ -482,25 +481,26 @@ wintermolt (3 MB arm64 binary)
 
 ### AI Backends
 
-| Variable | Description |
-|:---------|:------------|
-| `OPENAI_API_KEY` | OpenAI API key (optional) |
-| `OPENAI_API_KEY` | OpenAI API key (GPT-4o, GPT-4.1) |
-| `DEEPSEEK_API_KEY` | DeepSeek API key (V3, R1) |
-| `QWEN_API_KEY` | Qwen API key (Qwen 2.5+) |
-| `GEMINI_API_KEY` | Google Gemini API key |
-| `OLLAMA_HOST` | Ollama URL (default: `http://localhost:11434`) |
+| Variable | Default | Description |
+|:---------|:--------|:------------|
+| `WINTERMOLT_OLLAMA_URL` | `http://localhost:11434` | Ollama base URL |
+| `WINTERMOLT_OLLAMA_CTX` | `4096` | Context window cap (prevents OOM on small devices) |
+| `WINTERMOLT_OLLAMA_KEEP_ALIVE` | `5m` | Model unload timer (`0` = unload after each response) |
+| `WINTERMOLT_MODEL` | `qwen3:0.6b` | Default model |
+| `OPENAI_API_KEY` | — | OpenAI API key (GPT-4o, GPT-4.1) |
+| `DEEPSEEK_API_KEY` | — | DeepSeek API key (V3, R1) |
+| `QWEN_API_KEY` | — | Qwen API key (Qwen 2.5+) |
+| `GOOGLE_GEMINI_API_KEY` | — | Google Gemini API key |
 
 ### Configuration
 
-| Variable | Description |
-|:---------|:------------|
-| `WINTERMOLT_MODEL` | Default model name |
-| `WINTERMOLT_SYSTEM_PROMPT` | Custom system prompt |
-| `WINTERMOLT_NO_HISTORY` | Set `1` to disable SQLite persistence |
-| `TAILSCALE_API_KEY` | Tailscale REST API key (optional, for device listing) |
-| `PINECONE_API_KEY` | Pinecone API key (enables RAG memory) |
-| `PINECONE_HOST` | Pinecone index host URL |
+| Variable | Default | Description |
+|:---------|:--------|:------------|
+| `WINTERMOLT_TOKENS` | `8192` | Max output tokens |
+| `WINTERMOLT_NO_HISTORY` | — | Set `1` to disable SQLite persistence |
+| `TAILSCALE_API_KEY` | — | Tailscale REST API key (optional) |
+| `PINECONE_API_KEY` | — | Pinecone API key (enables RAG memory) |
+| `PINECONE_HOST` | — | Pinecone index host URL |
 
 Config file: `~/.wintermolt/.env` (created by `wintermolt --setup`)
 
