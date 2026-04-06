@@ -3,14 +3,15 @@
 // config.zig — Wintermolt configuration loading
 //
 // Reads configuration from environment variables:
-//   ANTHROPIC_API_KEY        — Required. Claude API key.
-//   WINTERMOLT_MODEL         — Optional. Model ID (default: claude-sonnet-4-20250514)
+//   WINTERMOLT_MODEL         — Optional. Model ID (default: qwen3:0.6b via Ollama)
 //   WINTERMOLT_TOKENS        — Optional. Max response tokens (default: 8192)
 //   WINTERMOLT_NO_HISTORY    — Optional. Set to "1" to disable SQLite history
 //   WINTERMOLT_OLLAMA_URL    — Optional. Ollama base URL (default: http://localhost:11434)
-//   WINTERMOLT_OLLAMA_MODEL  — Optional. Ollama model (default: llama3)
+//   WINTERMOLT_OLLAMA_MODEL  — Optional. Ollama model (default: qwen3:0.6b)
+//   WINTERMOLT_OLLAMA_CTX    — Optional. Context window cap (default: 4096). Prevents OOM.
+//   WINTERMOLT_OLLAMA_KEEP_ALIVE — Optional. Model unload timer (default: "5m"). "0" unloads immediately.
 //   WINTERMOLT_VISION_MODEL  — Optional. Vision model for /look (default: llava)
-//   WINTERMOLT_VISION_BACKEND — Optional. Vision routing: "claude" (default) or "ollama"
+//   WINTERMOLT_VISION_BACKEND — Optional. Vision routing: "ollama" (default) or "openai"
 //   OPENAI_API_KEY           — Optional. Enables OpenAI backend (/model openai)
 //   WINTERMOLT_OPENAI_MODEL  — Optional. OpenAI model (default: "gpt-4o-mini")
 //   DEEPSEEK_API_KEY         — Optional. Enables DeepSeek Cloud backend (/model deepseek)
@@ -170,6 +171,8 @@ pub const Config = struct {
     history_enabled: bool,
     ollama_url: []const u8,
     ollama_model: []const u8,
+    ollama_num_ctx: u32,
+    ollama_keep_alive: []const u8,
     vision_model: []const u8,
     vision_backend: []const u8,
     // Multi-backend support
@@ -203,22 +206,11 @@ pub const Config = struct {
     constitution_alloc: ?[]u8 = null,
 
     pub fn load(alloc: ?std.mem.Allocator) !Config {
-        const api_key = std.posix.getenv("ANTHROPIC_API_KEY") orelse {
-            const stderr = std.fs.File.stderr().deprecatedWriter();
-            try stderr.writeAll(
-                \\Error: ANTHROPIC_API_KEY environment variable not set.
-                \\
-                \\Set it with:
-                \\  export ANTHROPIC_API_KEY=sk-ant-...
-                \\
-                \\Or run: wintermolt --setup
-                \\
-            );
-            return error.MissingApiKey;
-        };
+        // Anthropic removed — Ollama is the default backend, no API key required
+        const api_key = "";
 
         const model = std.posix.getenv("WINTERMOLT_MODEL") orelse
-            "claude-sonnet-4-20250514";
+            "qwen3:0.6b";
 
         const max_tokens: u32 = blk: {
             const tokens_str = std.posix.getenv("WINTERMOLT_TOKENS") orelse break :blk 8192;
@@ -234,11 +226,17 @@ pub const Config = struct {
             std.posix.getenv("OLLAMA_HOST") orelse
             "http://localhost:11434";
         const ollama_model = std.posix.getenv("WINTERMOLT_OLLAMA_MODEL") orelse
-            "llama3";
+            "qwen3:0.6b";
+        const ollama_num_ctx: u32 = blk: {
+            const ctx_str = std.posix.getenv("WINTERMOLT_OLLAMA_CTX") orelse break :blk 4096;
+            break :blk std.fmt.parseInt(u32, ctx_str, 10) catch 4096;
+        };
+        const ollama_keep_alive = std.posix.getenv("WINTERMOLT_OLLAMA_KEEP_ALIVE") orelse
+            "5m";
         const vision_model = std.posix.getenv("WINTERMOLT_VISION_MODEL") orelse
             "llava";
         const vision_backend = std.posix.getenv("WINTERMOLT_VISION_BACKEND") orelse
-            "claude";
+            "ollama";
 
         const openai_api_key = std.posix.getenv("OPENAI_API_KEY");
         const openai_model = std.posix.getenv("WINTERMOLT_OPENAI_MODEL") orelse
@@ -295,6 +293,8 @@ pub const Config = struct {
             .history_enabled = history_enabled,
             .ollama_url = ollama_url,
             .ollama_model = ollama_model,
+            .ollama_num_ctx = ollama_num_ctx,
+            .ollama_keep_alive = ollama_keep_alive,
             .vision_model = vision_model,
             .vision_backend = vision_backend,
             .openai_api_key = openai_api_key,

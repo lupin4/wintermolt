@@ -17,7 +17,7 @@
   <img src="https://img.shields.io/badge/license-AGPL--3.0-blue?style=flat-square" alt="License">
   <img src="https://img.shields.io/badge/binary-3_MB-brightgreen?style=flat-square" alt="Size">
   <img src="https://img.shields.io/badge/deps-2_(libcurl%2C_sqlite3)-orange?style=flat-square" alt="Dependencies">
-  <img src="https://img.shields.io/badge/backends-6_(Claude%2C_Ollama%2C_GPT%2C_DeepSeek%2C_Qwen%2C_Gemini)-purple?style=flat-square" alt="Backends">
+  <img src="https://img.shields.io/badge/backends-5_(Ollama%2C_GPT%2C_DeepSeek%2C_Qwen%2C_Gemini)-purple?style=flat-square" alt="Backends">
 </p>
 
 ---
@@ -25,7 +25,7 @@
 ```
 $ wintermolt
 Wintermolt v0.1.0 — AI Agent CLI
-Backend: claude (claude-sonnet-4-5)
+Backend: ollama (qwen3:0.6b)
 
 > Refactor all error handling in src/ to use proper Zig error unions
 [grep] Searching for catch unreachable patterns...
@@ -77,7 +77,7 @@ Most AI coding tools ship hundreds of megabytes of Electron or Node.js runtime j
 
 - **[Zig 0.15.2+](https://ziglang.org/download/)** (single binary, no installer needed)
 - **libcurl** + **sqlite3** (pre-installed on macOS and most Linux distros)
-- An API key: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`, or just run [Ollama](https://ollama.com) locally
+- [Ollama](https://ollama.com) running locally (default, no API key needed), or an `OPENAI_API_KEY` / `DEEPSEEK_API_KEY` for cloud backends
 
 ### Build & Run
 
@@ -126,7 +126,7 @@ Fixed 5 vulnerabilities: 2 SQL injection, 2 XSS, 1 path traversal. All tests pas
 ### 6 AI Backends — Switch Instantly
 
 ```
-> /model claude    — Anthropic Claude (Haiku, Sonnet, Opus)
+> /model ollama    — Local Ollama (default, no API key)
 > /model ollama    — Local models (Llama, Qwen, Mistral, Phi — no API key)
 > /model openai    — OpenAI GPT-4o, GPT-4.1
 > /model deepseek  — DeepSeek V3/R1
@@ -215,7 +215,7 @@ wintermolt --menubar
 ┌─────────────────────────────────────┐
 │  W⚡ Wintermolt                      │
 ├─────────────────────────────────────┤
-│  Wintermolt — claude/sonnet (1.2k)  │
+│  Wintermolt — ollama/qwen3 (1.2k)   │
 │  ─────────────────────────────────  │
 │  Quick Prompt...              ⌘P    │
 │  New Chat                     ⌘N    │
@@ -425,7 +425,7 @@ wintermolt (3 MB arm64 binary)
 │   └── export.zig               History export
 │
 ├── src/api/                     Multi-backend AI clients
-│   ├── client.zig               Claude API + SSE streaming (libcurl)
+│   ├── client.zig               (legacy, unused)
 │   ├── ollama.zig               Ollama local models (NDJSON streaming)
 │   ├── deepseek.zig             OpenAI-compatible (DeepSeek, Qwen, GPT, Gemini)
 │   ├── protocol.zig             Anthropic wire types
@@ -484,7 +484,7 @@ wintermolt (3 MB arm64 binary)
 
 | Variable | Description |
 |:---------|:------------|
-| `ANTHROPIC_API_KEY` | Claude API key (Haiku, Sonnet, Opus) |
+| `OPENAI_API_KEY` | OpenAI API key (optional) |
 | `OPENAI_API_KEY` | OpenAI API key (GPT-4o, GPT-4.1) |
 | `DEEPSEEK_API_KEY` | DeepSeek API key (V3, R1) |
 | `QWEN_API_KEY` | Qwen API key (Qwen 2.5+) |

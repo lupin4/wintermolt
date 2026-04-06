@@ -14,7 +14,7 @@ const ArrayList = std.ArrayList;
 const Allocator = std.mem.Allocator;
 
 // Core imports (self-contained, no proprietary deps)
-const client_mod = @import("../api/client.zig");
+// Anthropic client removed — Ollama is the default backend
 const protocol = @import("../api/protocol.zig");
 const sse = @import("../api/sse.zig");
 const ollama_mod = @import("../api/ollama.zig");
@@ -31,7 +31,6 @@ const camera_tool = @import("../tools/camera.zig");
 const MAX_ITERATIONS = 25;
 
 pub const Backend = union(enum) {
-    claude: client_mod.Client,
     ollama: ollama_mod.OllamaClient,
     openai: deepseek_mod.DeepSeekClient,
 };
@@ -70,11 +69,13 @@ pub const AgentLoop = struct {
     pub fn init(alloc: Allocator, config: *config_mod.Config) !AgentLoop {
         const stderr = std.fs.File.stderr().deprecatedWriter();
 
-        // Initialize backend
-        const backend: Backend = .{ .claude = client_mod.Client.init(
+        // Initialize backend — Ollama is the default (no API key required)
+        const backend: Backend = .{ .ollama = ollama_mod.OllamaClient.initWithOptions(
             alloc,
-            config.api_key,
+            config.ollama_url,
             config.model,
+            config.ollama_num_ctx,
+            config.ollama_keep_alive,
         ) };
 
         // Initialize history
@@ -373,7 +374,6 @@ pub const AgentLoop = struct {
 
         // Try primary backend first
         const primary_result = switch (self.backend) {
-            .claude => |*c| c.sendMessage(system_prompt, messages, tool_defs, text_cb),
             .ollama => |*o| o.sendMessage(system_prompt, messages, tool_defs, text_cb),
             .openai => |*o| o.sendMessage(system_prompt, messages, tool_defs, text_cb),
         };
@@ -384,7 +384,6 @@ pub const AgentLoop = struct {
             if (primary_err == error.ContextOverflow) return primary_err;
 
             const backend_name: []const u8 = switch (self.backend) {
-                .claude => "Claude",
                 .ollama => "Ollama",
                 .openai => "OpenAI",
             };
@@ -393,10 +392,12 @@ pub const AgentLoop = struct {
             // Fallback: try Ollama (local, free)
             if (self.backend != .ollama) {
                 stderr.print("[fallback] Trying Ollama ({s})...\n", .{self.config.ollama_model}) catch {};
-                var ollama_client = ollama_mod.OllamaClient.init(
+                var ollama_client = ollama_mod.OllamaClient.initWithOptions(
                     self.alloc,
                     self.config.ollama_url,
                     self.config.ollama_model,
+                    self.config.ollama_num_ctx,
+                    self.config.ollama_keep_alive,
                 );
                 if (ollama_client.sendMessage(system_prompt, messages, tool_defs, text_cb)) |resp| {
                     stderr.writeAll("[fallback] Ollama succeeded\n") catch {};
@@ -433,18 +434,13 @@ pub const AgentLoop = struct {
     /// Switch backend at runtime (/model command).
     pub fn switchBackend(self: *AgentLoop, backend_name: []const u8, model_name: ?[]const u8) void {
         const stderr = std.fs.File.stderr().deprecatedWriter();
-        if (std.mem.eql(u8, backend_name, "claude")) {
-            self.backend = .{ .claude = client_mod.Client.init(
-                self.alloc,
-                self.config.api_key,
-                model_name orelse self.config.model,
-            ) };
-            stderr.writeAll("[backend] Switched to Claude\n") catch {};
-        } else if (std.mem.eql(u8, backend_name, "ollama")) {
-            self.backend = .{ .ollama = ollama_mod.OllamaClient.init(
+        if (std.mem.eql(u8, backend_name, "ollama")) {
+            self.backend = .{ .ollama = ollama_mod.OllamaClient.initWithOptions(
                 self.alloc,
                 self.config.ollama_url,
                 model_name orelse self.config.ollama_model,
+                self.config.ollama_num_ctx,
+                self.config.ollama_keep_alive,
             ) };
             stderr.writeAll("[backend] Switched to Ollama\n") catch {};
         } else if (std.mem.eql(u8, backend_name, "openai")) {
@@ -505,7 +501,6 @@ pub const AgentLoop = struct {
     /// Get current backend name and model.
     pub fn getBackendInfo(self: *const AgentLoop) struct { name: []const u8, model: []const u8 } {
         return switch (self.backend) {
-            .claude => |c| .{ .name = "claude", .model = c.model },
             .ollama => |o| .{ .name = "ollama", .model = o.model },
             .openai => |o| .{ .name = "openai", .model = o.model },
         };

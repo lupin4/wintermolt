@@ -424,7 +424,7 @@ pub const WebBridge = struct {
                 self.agent.switchBackend(arg, null);
                 return std.fmt.bufPrint(buf, "Backend switched to {s}", .{arg}) catch "Switched";
             }
-            return "Usage: /model claude|ollama|openai|deepseek|gemini";
+            return "Usage: /model ollama|openai|deepseek|qwen|gemini";
         }
 
         if (std.mem.eql(u8, command, "/clear") or std.mem.eql(u8, command, "/new")) {
@@ -492,7 +492,6 @@ pub const WebBridge = struct {
         var buf: [2048]u8 = undefined;
         const model_label: []const u8 = self.agent.config.model;
         const backend_name: []const u8 = switch (self.agent.backend) {
-            .claude => "claude",
             .ollama => "ollama",
             .openai => "openai",
         };

@@ -56,12 +56,26 @@ pub const OllamaClient = struct {
     alloc: Allocator,
     base_url: []const u8, // "http://localhost:11434"
     model: []const u8, // "llava", "llama3", etc.
+    num_ctx: u32, // Context window cap — prevents OOM on constrained devices
+    keep_alive: []const u8, // Model unload timer — "5m", "0" = unload immediately
 
     pub fn init(alloc: Allocator, base_url: []const u8, model: []const u8) OllamaClient {
         return .{
             .alloc = alloc,
             .base_url = base_url,
             .model = model,
+            .num_ctx = 4096,
+            .keep_alive = "5m",
+        };
+    }
+
+    pub fn initWithOptions(alloc: Allocator, base_url: []const u8, model: []const u8, num_ctx: u32, keep_alive: []const u8) OllamaClient {
+        return .{
+            .alloc = alloc,
+            .base_url = base_url,
+            .model = model,
+            .num_ctx = num_ctx,
+            .keep_alive = keep_alive,
         };
     }
 
@@ -82,7 +96,7 @@ pub const OllamaClient = struct {
         try writeJsonStr(bw, use_model);
         try bw.writeAll("\",\"prompt\":\"");
         try writeJsonStr(bw, prompt);
-        try bw.writeAll("\",\"stream\":false}");
+        try bw.print("\",\"stream\":false,\"keep_alive\":\"{s}\",\"options\":{{\"num_ctx\":{d}}}}}", .{ self.keep_alive, self.num_ctx });
         const body = try body_buf.toOwnedSlice(self.alloc);
         defer self.alloc.free(body);
 
@@ -252,7 +266,7 @@ pub const OllamaClient = struct {
 
         try w.writeAll("{\"model\":\"");
         try writeJsonStr(w, self.model);
-        try w.writeAll("\",\"stream\":true,\"messages\":[");
+        try w.print("\",\"stream\":true,\"keep_alive\":\"{s}\",\"options\":{{\"num_ctx\":{d}}},\"messages\":[", .{ self.keep_alive, self.num_ctx });
 
         var first = true;
 

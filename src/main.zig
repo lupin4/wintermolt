@@ -147,8 +147,8 @@ pub fn main() !void {
         return;
     }
 
-    // Auto-trigger OOBE setup if no API key AND no .env file, or explicit --setup
-    if (run_setup or (std.posix.getenv("ANTHROPIC_API_KEY") == null and !setup.envFileExists())) {
+    // Auto-trigger OOBE setup if explicit --setup or first run (no .env file)
+    if (run_setup or !setup.envFileExists()) {
         setup.runSetup(alloc, run_setup) catch |e| {
             if (e != error.SetupAborted) {
                 try stderr.print("[setup] Error: {s}\n", .{@errorName(e)});
@@ -513,7 +513,7 @@ fn handleModel(agent: *loop_mod.AgentLoop, w: anytype, arg: ?[]const u8) !void {
         const info = agent.getBackendInfo();
         try w.print("Current: {s} ({s})\n", .{ info.name, info.model });
         try w.writeAll("Usage: /model <backend> [model]\n");
-        try w.writeAll("Backends: claude, ollama, openai, deepseek, qwen, gemini\n");
+        try w.writeAll("Backends: ollama (default), openai, deepseek, qwen, gemini\n");
     }
 }
 
@@ -950,7 +950,7 @@ fn printHelp(w: anytype) !void {
         \\  /help          — Show this help
         \\  /quit, /exit   — Exit
         \\  /clear, /new   — Clear conversation history
-        \\  /model [name]  — Switch AI backend (claude, ollama, openai, deepseek, qwen, gemini)
+        \\  /model [name]  — Switch AI backend (ollama, openai, deepseek, qwen, gemini)
         \\  /look [prompt] — Capture camera image and describe it
         \\  /screenshot    — Capture screen and describe it
         \\  /stats         — Show session statistics
@@ -997,7 +997,7 @@ fn printHelp(w: anytype) !void {
         \\  Rocket.Chat    ROCKETCHAT_URL + ROCKETCHAT_TOKEN + ROCKETCHAT_USER_ID
         \\
         \\Environment:
-        \\  ANTHROPIC_API_KEY    — Claude API key (required)
+        \\  OPENAI_API_KEY       — OpenAI API key (optional)
         \\  WINTERMOLT_MODEL     — Default model
         \\  OLLAMA_HOST          — Ollama URL (default: http://localhost:11434)
         \\  OPENAI_API_KEY       — OpenAI API key

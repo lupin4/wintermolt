@@ -108,12 +108,12 @@ const translations = [_]Entry{
 
     // Errors
     .{ .key = "error_api_key", .values = .{
-        "Error: ANTHROPIC_API_KEY not set.",
-        "エラー: ANTHROPIC_API_KEYが設定されていません。",
-        "错误：未设置ANTHROPIC_API_KEY。",
-        "오류: ANTHROPIC_API_KEY가 설정되지 않았습니다.",
-        "Error: ANTHROPIC_API_KEY no configurada.",
-        "Erro: ANTHROPIC_API_KEY não definida.",
+        "Error: No backend configured. Ensure Ollama is running or set OPENAI_API_KEY.",
+        "エラー: バックエンドが設定されていません。Ollamaが実行中か確認してください。",
+        "错误：未配置后端。请确保Ollama正在运行。",
+        "오류: 백엔드가 구성되지 않았습니다. Ollama가 실행 중인지 확인하세요.",
+        "Error: No hay backend configurado. Asegúrese de que Ollama esté en ejecución.",
+        "Erro: Nenhum backend configurado. Certifique-se de que o Ollama está em execução.",
     } },
     .{ .key = "error_no_storage", .values = .{
         "No storage available (history disabled).",
