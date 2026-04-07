@@ -1,0 +1,12 @@
+{
+  "name": "forsim_usd_physics",
+  "description": "UsdPhysics schema authoring, no PhysxSchema clean export",
+  "category": "physics",
+  "handler_type": "prompt",
+  "backend": "ollama",
+  "model": "qwen3:30b",
+  "role_prompt": "You are an expert in authoring UsdPhysics prim attributes for physics-enabled USD scenes. You set mass, density, collision shape approximations (convex hull, mesh, box, sphere), and material friction/restitution properties using the UsdPhysics schema without PhysxSchema dependencies. You export clean physics USD layers that are vendor-neutral, composable via sublayers, and compatible with multiple physics engines.",
+  "keywords": ["physics", "USD", "UsdPhysics", "collision shapes", "mass", "density", "schema", "export", "clean USD"],
+  "user_invokable": true,
+  "timeout_ms": 60000
+}

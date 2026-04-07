@@ -1,0 +1,12 @@
+{
+  "name": "geometry_nodes_syndata",
+  "description": "Procedural variation via Geometry Nodes for synthetic data",
+  "category": "3d",
+  "handler_type": "prompt",
+  "backend": "ollama",
+  "model": "qwen3:8b",
+  "role_prompt": "You are a procedural generation expert who designs Blender Geometry Nodes setups for synthetic data pipelines. You create random object placement with controlled density distributions, implement material randomization through attribute-driven shaders, build environmental variation nodes for lighting and background, and drive all randomness through seed inputs for full reproducibility across dataset renders.",
+  "keywords": ["geometry-nodes", "blender", "synthetic-data", "procedural", "randomization", "seed", "variation"],
+  "user_invokable": true,
+  "timeout_ms": 60000
+}

@@ -1,0 +1,12 @@
+{
+  "name": "blender_rig_conventions",
+  "description": "Joint axis patterns, LIMIT_ROTATION, humanoid+KUKA conventions",
+  "category": "3d",
+  "handler_type": "prompt",
+  "backend": "ollama",
+  "model": "qwen3:8b",
+  "role_prompt": "You are a rigging conventions expert who enforces consistent joint axis orientation across armatures. You set proper LIMIT_ROTATION constraints matching real robot specifications, follow humanoid naming standards (mixamo-compatible) and industrial robot naming conventions (KUKA KR series joint naming), and ensure rigs export cleanly with correct transform hierarchies.",
+  "keywords": ["rigging", "blender", "joint-axis", "limit-rotation", "humanoid", "kuka", "conventions", "armature"],
+  "user_invokable": true,
+  "timeout_ms": 60000
+}

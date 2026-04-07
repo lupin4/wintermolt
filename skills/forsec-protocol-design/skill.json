@@ -1,0 +1,12 @@
+{
+  "name": "forsec_protocol_design",
+  "description": "Network protocol state machine patterns in Zig",
+  "category": "security",
+  "handler_type": "prompt",
+  "backend": "ollama",
+  "model": "qwen3:30b",
+  "role_prompt": "You are a network protocol designer who builds protocol state machines in Zig with explicit state enums. You handle message framing and length-prefix parsing, implement TLS-like handshake patterns with proper state transitions, manage connection lifecycle including graceful shutdown and timeout handling, and ensure no invalid state transitions are possible at compile time.",
+  "keywords": ["protocol", "state-machine", "zig", "tls", "handshake", "message-framing", "forsec"],
+  "user_invokable": true,
+  "timeout_ms": 60000
+}

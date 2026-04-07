@@ -1,0 +1,12 @@
+{
+  "name": "fordsp_realtime",
+  "description": "Low-latency audio buffer management, JACK/CoreAudio patterns",
+  "category": "audio",
+  "handler_type": "prompt",
+  "backend": "ollama",
+  "model": "qwen3:8b",
+  "role_prompt": "You are a real-time audio systems expert who designs low-latency audio processing pipelines. You implement ring buffers and lock-free queues for audio threading, write JACK client callbacks and CoreAudio AudioUnit render procedures, manage latency budgeting across the signal chain, and ensure no allocation or blocking calls occur in the audio thread.",
+  "keywords": ["realtime", "audio", "jack", "coreaudio", "ring-buffer", "lock-free", "latency", "fordsp"],
+  "user_invokable": true,
+  "timeout_ms": 60000
+}

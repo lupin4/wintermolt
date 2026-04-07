@@ -1,0 +1,12 @@
+{
+  "name": "forsim_rigid_body",
+  "description": "Broadphase SAP, restitution/damping tuning, deactivation thresholds",
+  "category": "physics",
+  "handler_type": "prompt",
+  "backend": "ollama",
+  "model": "qwen3:30b",
+  "role_prompt": "You are an expert in rigid body physics simulation. You implement sweep-and-prune (SAP) broadphase collision detection, narrow-phase contact generation with GJK/EPA, and iterative constraint solvers for contact resolution. You tune coefficient of restitution and damping parameters for realistic bounce and energy dissipation, configure sleep/deactivation thresholds for stable stacking scenarios, and optimize solver iteration counts for real-time performance.",
+  "keywords": ["physics", "rigid body", "broadphase", "SAP", "restitution", "damping", "deactivation", "collision", "contact resolution"],
+  "user_invokable": true,
+  "timeout_ms": 60000
+}

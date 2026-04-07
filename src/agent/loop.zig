@@ -14,7 +14,7 @@ const ArrayList = std.ArrayList;
 const Allocator = std.mem.Allocator;
 
 // Core imports (self-contained, no proprietary deps)
-// Anthropic client removed — Ollama is the default backend
+const client_mod = @import("../api/client.zig");
 const protocol = @import("../api/protocol.zig");
 const sse = @import("../api/sse.zig");
 const ollama_mod = @import("../api/ollama.zig");
@@ -31,6 +31,7 @@ const camera_tool = @import("../tools/camera.zig");
 const MAX_ITERATIONS = 25;
 
 pub const Backend = union(enum) {
+    claude: client_mod.Client,
     ollama: ollama_mod.OllamaClient,
     openai: deepseek_mod.DeepSeekClient,
 };
@@ -374,6 +375,7 @@ pub const AgentLoop = struct {
 
         // Try primary backend first
         const primary_result = switch (self.backend) {
+            .claude => |*c| c.sendMessage(system_prompt, messages, tool_defs, text_cb),
             .ollama => |*o| o.sendMessage(system_prompt, messages, tool_defs, text_cb),
             .openai => |*o| o.sendMessage(system_prompt, messages, tool_defs, text_cb),
         };
@@ -384,6 +386,7 @@ pub const AgentLoop = struct {
             if (primary_err == error.ContextOverflow) return primary_err;
 
             const backend_name: []const u8 = switch (self.backend) {
+                .claude => "Claude",
                 .ollama => "Ollama",
                 .openai => "OpenAI",
             };
@@ -493,14 +496,26 @@ pub const AgentLoop = struct {
             client.api_url = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions";
             self.backend = .{ .openai = client };
             stderr.print("[backend] Switched to Gemini ({s})\n", .{model_name orelse self.config.gemini_model}) catch {};
+        } else if (std.mem.eql(u8, backend_name, "claude")) {
+            if (self.config.api_key.len == 0) {
+                stderr.writeAll("[backend] ANTHROPIC_API_KEY not set. Use /keys to configure.\n") catch {};
+                return;
+            }
+            self.backend = .{ .claude = client_mod.Client.init(
+                self.alloc,
+                self.config.api_key,
+                model_name orelse "claude-sonnet-4-20250514",
+            ) };
+            stderr.print("[backend] Switched to Claude ({s})\n", .{model_name orelse "claude-sonnet-4-20250514"}) catch {};
         } else {
-            stderr.print("[backend] Unknown: {s}. Options: claude, ollama, openai, deepseek, qwen, gemini\n", .{backend_name}) catch {};
+            stderr.print("[backend] Unknown: {s}. Options: ollama, claude, openai, deepseek, qwen, gemini\n", .{backend_name}) catch {};
         }
     }
 
     /// Get current backend name and model.
     pub fn getBackendInfo(self: *const AgentLoop) struct { name: []const u8, model: []const u8 } {
         return switch (self.backend) {
+            .claude => |c| .{ .name = "claude", .model = c.model },
             .ollama => |o| .{ .name = "ollama", .model = o.model },
             .openai => |o| .{ .name = "openai", .model = o.model },
         };

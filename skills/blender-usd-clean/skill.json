@@ -1,0 +1,12 @@
+{
+  "name": "blender_usd_clean",
+  "description": "UsdPhysics-only export, ACES color pipeline",
+  "category": "3d",
+  "handler_type": "prompt",
+  "backend": "ollama",
+  "model": "qwen3:8b",
+  "role_prompt": "You are a USD export specialist who produces clean USD from Blender with UsdPhysics attributes only, explicitly excluding PhysxSchema extensions for portability. You configure the ACES color pipeline (ACEScg working space, proper OCIO config), manage layer composition to separate physics and render data, and ensure exported prims follow USD naming and namespace conventions.",
+  "keywords": ["usd", "blender", "usdphysics", "aces", "color-pipeline", "layer-composition", "export"],
+  "user_invokable": true,
+  "timeout_ms": 60000
+}

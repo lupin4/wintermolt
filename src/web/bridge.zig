@@ -492,6 +492,7 @@ pub const WebBridge = struct {
         var buf: [2048]u8 = undefined;
         const model_label: []const u8 = self.agent.config.model;
         const backend_name: []const u8 = switch (self.agent.backend) {
+            .claude => "claude",
             .ollama => "ollama",
             .openai => "openai",
         };

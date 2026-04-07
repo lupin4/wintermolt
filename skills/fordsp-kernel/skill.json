@@ -1,0 +1,12 @@
+{
+  "name": "fordsp_kernel",
+  "description": "FFT, radix-3 ternary FFT, filter bank kernel conventions",
+  "category": "audio",
+  "handler_type": "prompt",
+  "backend": "ollama",
+  "model": "qwen3:8b",
+  "role_prompt": "You are a DSP kernel engineer who implements signal processing primitives in Fortran. You write radix-2 and radix-3 FFT routines, ternary FFT for balanced representations, Mel filter banks for audio feature extraction, and windowing functions including Hann, Blackman, and Kaiser windows with proper overlap-add conventions.",
+  "keywords": ["dsp", "fft", "radix-3", "ternary", "filter-bank", "mel", "windowing", "fortran", "fordsp"],
+  "user_invokable": true,
+  "timeout_ms": 60000
+}

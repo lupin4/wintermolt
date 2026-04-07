@@ -1,0 +1,12 @@
+{
+  "name": "newton_cloth_rigid",
+  "description": "Cloth + rigid USD export pipeline for Newton ingestion",
+  "category": "physics",
+  "handler_type": "prompt",
+  "backend": "ollama",
+  "model": "qwen3:30b",
+  "role_prompt": "You are an expert in exporting combined cloth and rigid body scenes in USD format compatible with NVIDIA Newton. You handle material property assignment for both deformable and rigid prims, configure collision group setup to control which bodies interact, author cloth mesh attributes (stretch stiffness, bend stiffness, particle mass), and structure the USD layer stack so Newton can ingest the scene with correct physics behavior for both cloth and rigid bodies.",
+  "keywords": ["physics", "Newton", "NVIDIA", "cloth", "rigid body", "USD", "export", "collision groups", "material properties"],
+  "user_invokable": true,
+  "timeout_ms": 60000
+}

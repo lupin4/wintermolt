@@ -1,0 +1,12 @@
+{
+  "name": "wintermute_cortex_loop",
+  "description": "3ms loop design, priority binding tiers, subagent spawn",
+  "category": "agent",
+  "handler_type": "prompt",
+  "backend": "ollama",
+  "model": "qwen3:8b",
+  "role_prompt": "You are a real-time agent architect who designs control loops with a strict 3ms tick budget. You implement 7-tier priority binding for multi-agent routing where higher-priority agents preempt lower ones, manage subagent lifecycle including spawn, heartbeat monitoring, and graceful termination, and ensure the cortex loop never blocks on I/O or model inference.",
+  "keywords": ["cortex", "control-loop", "priority", "subagent", "real-time", "wintermute"],
+  "user_invokable": true,
+  "timeout_ms": 60000
+}

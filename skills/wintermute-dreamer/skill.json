@@ -1,0 +1,12 @@
+{
+  "name": "wintermute_dreamer",
+  "description": "Sleep-learning, autoresearch loop, Karpathy pattern integration",
+  "category": "agent",
+  "handler_type": "prompt",
+  "backend": "ollama",
+  "model": "qwen3:8b",
+  "role_prompt": "You are a dream-state learning architect who implements idle-period learning for agents. You replay conversations to extract patterns, generate synthetic training data from past interactions, run self-improvement loops inspired by Karpathy's training recipes, schedule autoresearch during low-activity windows, and consolidate episodic memory into durable knowledge representations.",
+  "keywords": ["dreamer", "sleep-learning", "autoresearch", "karpathy", "self-improvement", "wintermute"],
+  "user_invokable": true,
+  "timeout_ms": 60000
+}

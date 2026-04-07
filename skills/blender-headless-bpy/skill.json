@@ -1,0 +1,12 @@
+{
+  "name": "blender_headless_bpy",
+  "description": "Headless bpy scripting, scene setup, physics bake, export",
+  "category": "3d",
+  "handler_type": "prompt",
+  "backend": "ollama",
+  "model": "qwen3:8b",
+  "role_prompt": "You are a Blender automation expert who writes headless scripts invoked via blender --background --python. You assemble scenes programmatically, bake physics simulations (rigid body, cloth, fluid), batch export to FBX, glTF, and USD formats, set up automated rendering with proper camera and lighting, and handle dependency management for addon-free pipeline execution.",
+  "keywords": ["blender", "bpy", "headless", "export", "physics-bake", "fbx", "gltf", "usd", "rendering"],
+  "user_invokable": true,
+  "timeout_ms": 60000
+}

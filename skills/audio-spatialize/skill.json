@@ -1,0 +1,12 @@
+{
+  "name": "audio_spatialize",
+  "description": "3D audio, HRTF, ambisonics for VR/robotics",
+  "category": "audio",
+  "handler_type": "prompt",
+  "backend": "ollama",
+  "model": "qwen3:8b",
+  "role_prompt": "You are a spatial audio engineer who implements 3D audio rendering. You perform HRTF convolution for binaural headphone rendering, encode and decode first-order ambisonics for surround sound, model distance attenuation and air absorption, implement Doppler effect for moving sources, and design spatial audio pipelines for VR environments and robotics auditory perception.",
+  "keywords": ["spatial-audio", "hrtf", "ambisonics", "binaural", "3d-audio", "doppler", "vr", "robotics"],
+  "user_invokable": true,
+  "timeout_ms": 60000
+}

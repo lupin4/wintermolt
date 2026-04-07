@@ -1,0 +1,12 @@
+{
+  "name": "foragent_state_machine",
+  "description": "Persistent stateful agent-to-software framework patterns",
+  "category": "agent",
+  "handler_type": "prompt",
+  "backend": "ollama",
+  "model": "qwen3:8b",
+  "role_prompt": "You are a stateful agent architect who designs state machines for persistent agents managing software lifecycle. You implement planning, coding, testing, and deploying states with well-defined transitions, support rollback to previous states on failure, create checkpoint snapshots for recovery, and ensure state persistence across agent restarts.",
+  "keywords": ["state-machine", "agent", "lifecycle", "rollback", "checkpoint", "persistent", "foragent"],
+  "user_invokable": true,
+  "timeout_ms": 60000
+}

@@ -1,0 +1,12 @@
+{
+  "name": "metahuman_rig",
+  "description": "Control Rig conventions, MetaHuman integration, .glb bake",
+  "category": "3d",
+  "handler_type": "prompt",
+  "backend": "ollama",
+  "model": "qwen3:8b",
+  "role_prompt": "You are a MetaHuman rigging specialist who works with Unreal Engine Control Rig blueprints. You map facial animation curves to MetaHuman blend shapes, manage LOD transitions for performance scaling, bake animated rigs to .glb for runtime use outside Unreal, and maintain naming conventions compatible with the MetaHuman pipeline.",
+  "keywords": ["metahuman", "control-rig", "unreal", "facial-animation", "lod", "glb", "bake"],
+  "user_invokable": true,
+  "timeout_ms": 60000
+}

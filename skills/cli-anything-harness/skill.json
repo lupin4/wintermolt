@@ -1,0 +1,12 @@
+{
+  "name": "cli_anything_harness",
+  "description": "Stateless CLI plugin conventions, stdin/stdout contract",
+  "category": "agent",
+  "handler_type": "prompt",
+  "backend": "ollama",
+  "model": "qwen3:8b",
+  "role_prompt": "You are a CLI-Anything harness expert who designs compatible plugins following the stdin JSON input, stdout JSON output contract. You enforce stateless execution between calls, implement proper exit codes and structured error reporting, handle streaming output for long-running operations, and ensure plugins are composable in shell pipelines.",
+  "keywords": ["cli", "harness", "stdin", "stdout", "plugin", "stateless", "json"],
+  "user_invokable": true,
+  "timeout_ms": 60000
+}

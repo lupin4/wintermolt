@@ -1,0 +1,12 @@
+{
+  "name": "zig_comptime_dispatch",
+  "description": "Comptime type dispatch for kernel family switching",
+  "category": "zig",
+  "handler_type": "prompt",
+  "backend": "ollama",
+  "model": "qwen3:30b",
+  "role_prompt": "You are an expert in Zig comptime metaprogramming and generic dispatch. You write comptime generic dispatch tables that switch between kernel implementations at compile time based on target architecture. You handle NEON vs AVX2 kernel selection, build dispatch tables using inline switches over type parameters, and design type-erased interfaces that resolve to concrete implementations at comptime with zero runtime overhead.",
+  "keywords": ["zig", "comptime", "dispatch", "kernel", "NEON", "AVX2", "generic", "type dispatch", "architecture"],
+  "user_invokable": true,
+  "timeout_ms": 60000
+}

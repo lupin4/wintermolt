@@ -2,14 +2,14 @@
 //
 // main.zig — Wintermolt entry point
 //
-// Lite AI assistant CLI powered by Claude API + multi-backend AI.
-// Open-core: AGPL-3.0. No forKernels, no proprietary subsystems.
+// Lite AI assistant CLI powered by Ollama (local) + multi-backend AI.
+// Open-core: MIT. No forKernels, no proprietary subsystems.
 //
 // Usage:
 //   wintermolt              — interactive REPL
 //   wintermolt --help       — show help
 //   wintermolt -e "prompt"  — single-shot execution
-//   wintermolt --setup      — run OOBE wizard
+//   wintermolt --keys       — configure API keys
 //   wintermolt --chat       — chat bridge mode (18 platforms)
 //   wintermolt --web        — web UI mode
 //   wintermolt --mcp-server — MCP JSON-RPC server over stdio
@@ -78,7 +78,7 @@ pub fn main() !void {
         if (std.mem.eql(u8, arg, "--menubar")) {
             menubar_mode = true;
         }
-        if (std.mem.eql(u8, arg, "--setup")) {
+        if (std.mem.eql(u8, arg, "--setup") or std.mem.eql(u8, arg, "--keys")) {
             run_setup = true;
         }
         if (std.mem.eql(u8, arg, "--mcp-server")) {
@@ -147,15 +147,14 @@ pub fn main() !void {
         return;
     }
 
-    // Auto-trigger OOBE setup if explicit --setup or first run (no .env file)
-    if (run_setup or !setup.envFileExists()) {
-        setup.runSetup(alloc, run_setup) catch |e| {
+    // Explicit --keys / --setup to configure API keys (no auto-trigger OOBE)
+    if (run_setup) {
+        setup.runSetup(alloc, true) catch |e| {
             if (e != error.SetupAborted) {
                 try stderr.print("[setup] Error: {s}\n", .{@errorName(e)});
             }
-            if (!run_setup) std.process.exit(1);
         };
-        if (run_setup) return;
+        return;
     }
 
     // Load .env file
@@ -409,6 +408,11 @@ pub fn main() !void {
             try handleModel(&agent, stdout, if (arg.len > 0) arg else null);
             continue;
         }
+        if (std.mem.startsWith(u8, trimmed, "/keys")) {
+            const arg = std.mem.trim(u8, trimmed[5..], " \t");
+            try handleKeysCmd(alloc, stdout, stdin, if (arg.len > 0) arg else null);
+            continue;
+        }
         if (std.mem.eql(u8, trimmed, "/look")) {
             try handleLook(&agent, alloc, stdout, stderr, null);
             continue;
@@ -513,8 +517,194 @@ fn handleModel(agent: *loop_mod.AgentLoop, w: anytype, arg: ?[]const u8) !void {
         const info = agent.getBackendInfo();
         try w.print("Current: {s} ({s})\n", .{ info.name, info.model });
         try w.writeAll("Usage: /model <backend> [model]\n");
-        try w.writeAll("Backends: ollama (default), openai, deepseek, qwen, gemini\n");
+        try w.writeAll("Backends: ollama (default), claude, openai, deepseek, qwen, gemini\n");
     }
+}
+
+/// /keys command — add, update, or list individual API keys.
+fn handleKeysCmd(alloc: std.mem.Allocator, w: anytype, r: anytype, arg: ?[]const u8) !void {
+    const ApiEntry = struct { key: []const u8, label: []const u8, hint: ?[]const u8 };
+    const api_keys = [_]ApiEntry{
+        .{ .key = "ANTHROPIC_API_KEY", .label = "Anthropic (Claude)", .hint = "sk-ant-" },
+        .{ .key = "OPENAI_API_KEY", .label = "OpenAI (GPT + TTS)", .hint = "sk-" },
+        .{ .key = "GOOGLE_GEMINI_API_KEY", .label = "Google Gemini", .hint = "AIza" },
+        .{ .key = "DEEPSEEK_API_KEY", .label = "DeepSeek", .hint = "sk-" },
+        .{ .key = "QWEN_API_KEY", .label = "Qwen", .hint = null },
+        .{ .key = "PINECONE_API_KEY", .label = "Pinecone (RAG)", .hint = null },
+        .{ .key = "PINECONE_HOST", .label = "Pinecone Host URL", .hint = "https://" },
+        .{ .key = "ELEVENLABS_API_KEY", .label = "ElevenLabs (voice)", .hint = null },
+        .{ .key = "DISCORD_BOT_TOKEN", .label = "Discord Bot", .hint = null },
+        .{ .key = "TELEGRAM_BOT_TOKEN", .label = "Telegram Bot", .hint = null },
+        .{ .key = "SLACK_BOT_TOKEN", .label = "Slack Bot", .hint = "xoxb-" },
+        .{ .key = "SLACK_APP_TOKEN", .label = "Slack App", .hint = "xapp-" },
+    };
+
+    var existing = setup.loadExistingEnv(alloc);
+
+    // /keys list
+    if (arg) |a| {
+        if (std.mem.eql(u8, a, "list") or std.mem.eql(u8, a, "status")) {
+            try w.writeAll("\n \x1b[1;36m─── API Keys ───────────────────────────────\x1b[0m\n");
+            for (api_keys, 0..) |entry, i| {
+                const val = existing.get(entry.key) orelse std.posix.getenv(entry.key);
+                const num = i + 1;
+                if (val) |v| {
+                    if (v.len > 8) {
+                        try w.print("  \x1b[32m✓\x1b[0m {d:>2}. {s}: {s}...{s}\n", .{ num, entry.label, v[0..4], v[v.len - 4 ..] });
+                    } else if (v.len > 0) {
+                        try w.print("  \x1b[32m✓\x1b[0m {d:>2}. {s}: ***\n", .{ num, entry.label });
+                    } else {
+                        try w.print("  \x1b[90m·\x1b[0m {d:>2}. {s}\n", .{ num, entry.label });
+                    }
+                } else {
+                    try w.print("  \x1b[90m·\x1b[0m {d:>2}. {s}\n", .{ num, entry.label });
+                }
+            }
+            try w.writeAll("\n  \x1b[90mUse /keys <number> or /keys <name> to configure\x1b[0m\n\n");
+            return;
+        }
+
+        // /keys <number>
+        const num = std.fmt.parseInt(usize, a, 10) catch 0;
+        if (num >= 1 and num <= api_keys.len) {
+            const entry = api_keys[num - 1];
+            try configureKey(alloc, w, r, &existing, entry.key, entry.label, entry.hint);
+            return;
+        }
+
+        // /keys <name> — match by keyword
+        for (api_keys) |entry| {
+            if (std.ascii.eqlIgnoreCase(a, entry.key)) {
+                try configureKey(alloc, w, r, &existing, entry.key, entry.label, entry.hint);
+                return;
+            }
+            // Match by label keyword (first word)
+            const lower_label = entry.label;
+            if (lower_label.len > 0) {
+                var word_iter = std.mem.splitScalar(u8, lower_label, ' ');
+                const first_word = word_iter.next() orelse "";
+                if (first_word.len > 0 and std.ascii.eqlIgnoreCase(a, first_word)) {
+                    try configureKey(alloc, w, r, &existing, entry.key, entry.label, entry.hint);
+                    return;
+                }
+            }
+        }
+
+        try w.print("  \x1b[31mUnknown key: {s}\x1b[0m\n", .{a});
+        try w.writeAll("  Use /keys list to see available keys, or /keys <number>\n\n");
+        return;
+    }
+
+    // /keys with no args — interactive menu
+    try w.writeAll("\n \x1b[1;36m─── Configure API Key ──────────────────────\x1b[0m\n");
+    for (api_keys, 0..) |entry, i| {
+        const val = existing.get(entry.key) orelse std.posix.getenv(entry.key);
+        const num = i + 1;
+        const mark: []const u8 = if (val != null and val.?.len > 0) "\x1b[32m✓\x1b[0m" else "\x1b[90m·\x1b[0m";
+        try w.print("  {s} {d:>2}. {s}\n", .{ mark, num, entry.label });
+    }
+    try w.writeAll("\n  Enter number: ");
+    var line_buf: [256]u8 = undefined;
+    const line = r.readUntilDelimiter(&line_buf, '\n') catch return;
+    const choice = std.mem.trim(u8, line, " \t\r");
+    const num = std.fmt.parseInt(usize, choice, 10) catch {
+        try w.writeAll("  \x1b[31mInvalid choice.\x1b[0m\n\n");
+        return;
+    };
+    if (num < 1 or num > api_keys.len) {
+        try w.writeAll("  \x1b[31mInvalid choice.\x1b[0m\n\n");
+        return;
+    }
+
+    const entry = api_keys[num - 1];
+    try configureKey(alloc, w, r, &existing, entry.key, entry.label, entry.hint);
+}
+
+/// Configure a single API key (prompt, validate, save to .env).
+fn configureKey(
+    alloc: std.mem.Allocator,
+    w: anytype,
+    r: anytype,
+    existing: *std.StringHashMap([]const u8),
+    env_key: []const u8,
+    label: []const u8,
+    hint: ?[]const u8,
+) !void {
+    const current = existing.get(env_key) orelse std.posix.getenv(env_key);
+
+    try w.print("\n  \x1b[1m{s}\x1b[0m ({s})\n", .{ label, env_key });
+    if (current) |v| {
+        if (v.len > 8) {
+            try w.print("  Current: {s}...{s}\n", .{ v[0..4], v[v.len - 4 ..] });
+        } else if (v.len > 0) {
+            try w.writeAll("  Current: ***\n");
+        }
+    }
+    if (hint) |h| {
+        try w.print("  Expected prefix: {s}\n", .{h});
+    }
+    try w.writeAll("  Enter value (or 'clear' to remove): ");
+
+    var line_buf: [4096]u8 = undefined;
+    const line = r.readUntilDelimiter(&line_buf, '\n') catch return;
+    const value = std.mem.trim(u8, line, " \t\r");
+
+    if (value.len == 0) {
+        try w.writeAll("  \x1b[90mNo change.\x1b[0m\n\n");
+        return;
+    }
+
+    var clearing = false;
+    if (std.mem.eql(u8, value, "clear") or std.mem.eql(u8, value, "remove") or std.mem.eql(u8, value, "delete")) {
+        clearing = true;
+        try w.print("  \x1b[33mCleared {s}\x1b[0m\n", .{env_key});
+    } else {
+        if (hint) |h| {
+            if (!std.mem.startsWith(u8, value, h)) {
+                try w.print("  \x1b[33m⚠ Expected prefix \"{s}\". Saving anyway.\x1b[0m\n", .{h});
+            }
+        }
+        try w.print("  \x1b[32m✓ Saved {s}\x1b[0m (restart to take effect)\n", .{env_key});
+    }
+
+    // Rewrite .env file
+    const home = std.posix.getenv("HOME") orelse return;
+    var path_buf: [512]u8 = undefined;
+    const env_path = std.fmt.bufPrint(&path_buf, "{s}/.wintermolt/.env", .{home}) catch return;
+
+    var all_keys = setup.loadExistingEnv(alloc);
+
+    if (clearing) {
+        _ = all_keys.remove(env_key);
+    } else {
+        all_keys.put(env_key, value) catch {};
+    }
+
+    // Write updated file
+    var content_buf: [8192]u8 = undefined;
+    var stream = std.io.fixedBufferStream(&content_buf);
+    const sw = stream.writer();
+
+    try sw.writeAll("# Wintermolt configuration\n");
+    try sw.writeAll("# Edit manually or use /keys command to reconfigure.\n\n");
+    try sw.print("WINTERMOLT_CONFIG_VERSION={d}\n\n", .{config_mod.CONFIG_VERSION});
+
+    var it = all_keys.iterator();
+    while (it.next()) |kv| {
+        if (std.mem.eql(u8, kv.key_ptr.*, "WINTERMOLT_CONFIG_VERSION")) continue;
+        try sw.print("{s}=\"{s}\"\n", .{ kv.key_ptr.*, kv.value_ptr.* });
+    }
+
+    // Ensure directory exists
+    var dir_buf: [512]u8 = undefined;
+    const dir_path = std.fmt.bufPrint(&dir_buf, "{s}/.wintermolt", .{home}) catch return;
+    std.fs.cwd().makePath(dir_path) catch {};
+
+    const file = std.fs.cwd().createFile(env_path, .{ .truncate = true }) catch return;
+    defer file.close();
+    file.writeAll(stream.getWritten()) catch {};
+
+    try w.writeByte('\n');
 }
 
 fn handleLook(agent: *loop_mod.AgentLoop, alloc: std.mem.Allocator, w: anytype, _stderr: anytype, custom_prompt: ?[]const u8) !void {
@@ -938,7 +1128,7 @@ fn printBanner(w: anytype) !void {
         \\  ╚╩╝┴┘└┘ ┴ └─┘┴└─┴ ┴└─┘┴─┘┴
         \\
     );
-    try w.print("  v{s} — Lite AI Agent CLI (AGPL-3.0)\n", .{VERSION});
+    try w.print("  v{s} — Lite AI Agent CLI (MIT)\n", .{VERSION});
     try w.writeAll("  Type /help for commands, /quit to exit.\n\n");
 }
 
@@ -950,7 +1140,9 @@ fn printHelp(w: anytype) !void {
         \\  /help          — Show this help
         \\  /quit, /exit   — Exit
         \\  /clear, /new   — Clear conversation history
-        \\  /model [name]  — Switch AI backend (ollama, openai, deepseek, qwen, gemini)
+        \\  /model [name]  — Switch AI backend (ollama, claude, openai, deepseek, qwen, gemini)
+        \\  /keys          — Add/update API keys (interactive menu)
+        \\  /keys list     — Show all configured keys
         \\  /look [prompt] — Capture camera image and describe it
         \\  /screenshot    — Capture screen and describe it
         \\  /stats         — Show session statistics
@@ -968,7 +1160,8 @@ fn printHelp(w: anytype) !void {
         \\Modes:
         \\  wintermolt              — Interactive REPL
         \\  wintermolt -e "prompt"  — Single-shot execution
-        \\  wintermolt --setup      — Run setup wizard
+        \\  wintermolt --keys       — Configure API keys
+        \\  wintermolt --setup      — Alias for --keys
         \\  wintermolt --chat       — Chat bridge (18 platforms)
         \\  wintermolt --web        — Web UI
         \\  wintermolt --menubar    — macOS menu bar sidecar

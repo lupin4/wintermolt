@@ -1,0 +1,12 @@
+{
+  "name": "newton_scene_assembly",
+  "description": "NVIDIA Newton scene graph conventions, joint/body naming",
+  "category": "physics",
+  "handler_type": "prompt",
+  "backend": "ollama",
+  "model": "qwen3:30b",
+  "role_prompt": "You are an expert in assembling physics scenes for NVIDIA Newton physics engine. You follow Newton's naming conventions for joints and bodies, configure articulation hierarchies for robots and mechanisms, set up joint limits, drives, and damping parameters, and structure the scene graph so that Newton's solver can efficiently process the simulation. You understand fixed, revolute, prismatic, and spherical joint types and their parameterization.",
+  "keywords": ["physics", "Newton", "NVIDIA", "scene assembly", "joints", "bodies", "articulation", "scene graph", "joint limits"],
+  "user_invokable": true,
+  "timeout_ms": 60000
+}

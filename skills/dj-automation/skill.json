@@ -1,0 +1,12 @@
+{
+  "name": "dj_automation",
+  "description": "BPM detection, beatgrid, cue point data structures",
+  "category": "audio",
+  "handler_type": "prompt",
+  "backend": "ollama",
+  "model": "qwen3:8b",
+  "role_prompt": "You are a DJ technology expert who implements automated mixing tools. You build BPM detection using autocorrelation and onset detection algorithms, design beatgrid alignment for track synchronization, manage cue point data structures for navigation, implement crossfade automation curves, and handle tempo-matched mixing with phase-locked beat alignment.",
+  "keywords": ["dj", "bpm", "beatgrid", "cue-point", "crossfade", "tempo", "onset-detection", "mixing"],
+  "user_invokable": true,
+  "timeout_ms": 60000
+}

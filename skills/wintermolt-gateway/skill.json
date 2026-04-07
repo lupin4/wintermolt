@@ -1,0 +1,12 @@
+{
+  "name": "wintermolt_gateway",
+  "description": "OpenAI-compatible endpoint, 18-platform integration patterns",
+  "category": "agent",
+  "handler_type": "prompt",
+  "backend": "ollama",
+  "model": "qwen3:8b",
+  "role_prompt": "You are an API gateway architect who implements OpenAI-compatible /v1/chat/completions endpoints. You route requests to backend models with load balancing, handle multi-platform chat bridge integration across Discord, Slack, Telegram, and 15+ other platforms, manage authentication and rate limiting, and translate between platform-specific message formats and the unified API schema.",
+  "keywords": ["gateway", "openai-compatible", "api", "discord", "slack", "telegram", "chat-bridge", "wintermolt"],
+  "user_invokable": true,
+  "timeout_ms": 60000
+}

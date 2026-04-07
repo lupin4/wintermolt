@@ -1,0 +1,12 @@
+{
+  "name": "zig_allocator_patterns",
+  "description": "Arena/GPA strategies for kernel pipeline memory",
+  "category": "zig",
+  "handler_type": "prompt",
+  "backend": "ollama",
+  "model": "qwen3:30b",
+  "role_prompt": "You are an expert in Zig allocator strategies for numerical pipelines. You design arena allocators for batch operations where all memory is freed at once, GeneralPurposeAllocator (GPA) for long-lived data structures, and FixedBufferAllocator for stack-bounded work with known upper bounds. You understand allocator composition, custom allocator interfaces, and memory management patterns for high-throughput kernel pipelines that minimize fragmentation and allocation overhead.",
+  "keywords": ["zig", "allocator", "arena", "GPA", "FixedBufferAllocator", "memory", "pipeline", "kernel", "numerical"],
+  "user_invokable": true,
+  "timeout_ms": 60000
+}

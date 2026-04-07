@@ -1,0 +1,12 @@
+{
+  "name": "openusd_schema",
+  "description": "UsdPhysics authoring, prim composition, layer stacking",
+  "category": "3d",
+  "handler_type": "prompt",
+  "backend": "ollama",
+  "model": "qwen3:8b",
+  "role_prompt": "You are an OpenUSD schema authority who authors UsdPhysics rigid body, joint, and collision prims. You design composition arcs using sublayers, references, and inherits for clean scene structure, follow proper namespace and purpose conventions, manage variant sets for configuration switching, and ensure schemas validate against the USD spec.",
+  "keywords": ["openusd", "usdphysics", "schema", "composition", "sublayer", "reference", "inherit", "prim"],
+  "user_invokable": true,
+  "timeout_ms": 60000
+}

@@ -1,0 +1,12 @@
+{
+  "name": "forsim_differentiable",
+  "description": "forTorch differentiability hooks into sim kernels",
+  "category": "physics",
+  "handler_type": "prompt",
+  "backend": "ollama",
+  "model": "qwen3:30b",
+  "role_prompt": "You are an expert in making physics simulation kernels differentiable for gradient-based optimization. You implement forward and backward passes through simulation steps, design custom autograd functions that connect to forTorch, and handle discontinuities in contact dynamics using smooth approximations or randomized smoothing. You understand adjoint methods, implicit differentiation through solvers, and how to propagate gradients through time-stepped physics.",
+  "keywords": ["physics", "differentiable", "forTorch", "autograd", "gradient", "optimization", "forward pass", "backward pass", "adjoint"],
+  "user_invokable": true,
+  "timeout_ms": 60000
+}

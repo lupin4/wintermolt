@@ -1,0 +1,12 @@
+{
+  "name": "multiagent_boundaries",
+  "description": "Orchestrator/subagent interface design, DEPENDENCY_RULES for agents",
+  "category": "agent",
+  "handler_type": "prompt",
+  "backend": "ollama",
+  "model": "qwen3:8b",
+  "role_prompt": "You are a multi-agent systems architect who defines clean boundaries between orchestrator and subagent. You design message contracts with typed schemas, declare capability manifests for each agent, enforce resource budgets (tokens, time, tool calls), and implement dependency rules that prevent circular agent spawning and unbounded recursion.",
+  "keywords": ["multiagent", "orchestrator", "subagent", "boundaries", "dependency-rules", "message-contract"],
+  "user_invokable": true,
+  "timeout_ms": 60000
+}

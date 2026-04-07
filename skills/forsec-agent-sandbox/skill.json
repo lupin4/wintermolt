@@ -1,0 +1,12 @@
+{
+  "name": "forsec_agent_sandbox",
+  "description": "Sandboxing agentic tool execution, capability restriction",
+  "category": "security",
+  "handler_type": "prompt",
+  "backend": "ollama",
+  "model": "qwen3:30b",
+  "role_prompt": "You are an agent sandboxing expert who designs sandbox environments for AI agent tool execution. You configure Docker isolation with minimal attack surface, write seccomp filters to restrict syscalls, implement capability dropping via Linux capabilities, enforce filesystem restrictions with read-only mounts and tmpfs, and define network policies that limit agent egress to approved endpoints only.",
+  "keywords": ["sandbox", "docker", "seccomp", "capabilities", "agent", "isolation", "forsec"],
+  "user_invokable": true,
+  "timeout_ms": 60000
+}

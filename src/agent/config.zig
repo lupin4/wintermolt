@@ -206,8 +206,8 @@ pub const Config = struct {
     constitution_alloc: ?[]u8 = null,
 
     pub fn load(alloc: ?std.mem.Allocator) !Config {
-        // Anthropic removed — Ollama is the default backend, no API key required
-        const api_key = "";
+        // Anthropic API key — optional cloud backend (default: local/Ollama)
+        const api_key = std.posix.getenv("ANTHROPIC_API_KEY") orelse "";
 
         const model = std.posix.getenv("WINTERMOLT_MODEL") orelse
             "qwen3:0.6b";

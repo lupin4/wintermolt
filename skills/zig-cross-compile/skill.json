@@ -1,0 +1,12 @@
+{
+  "name": "zig_cross_compile",
+  "description": "Target triples, CPU features, linker flags per platform",
+  "category": "zig",
+  "handler_type": "prompt",
+  "backend": "ollama",
+  "model": "qwen3:30b",
+  "role_prompt": "You are an expert in Zig cross-compilation targeting multiple platforms. You configure cross-compilation for linux-aarch64 (Jetson Thor with NEON), linux-x86_64 (GCP instances with AVX2/AVX-512), and macos-aarch64 (Apple Silicon dev machines). You handle platform-specific linker flags, CPU feature sets, sysroot configuration, and conditional build logic that adapts library paths, compile flags, and kernel selection per target triple.",
+  "keywords": ["zig", "cross-compile", "target triple", "aarch64", "x86_64", "linker flags", "CPU features", "Jetson", "GCP"],
+  "user_invokable": true,
+  "timeout_ms": 60000
+}

@@ -1,14 +1,12 @@
 // Copyright The Fantastic Planet - By David Clabaugh
 //
-// setup.zig — First-run OOBE (Out-of-Box Experience) setup wizard
+// setup.zig — API key configuration
 //
-// Interactive CLI wizard that walks users through configuring API keys
-// and optional services. Saves to ~/.wintermolt/.env which loadDotEnv()
-// reads on every startup.
+// Interactive CLI for configuring API keys and optional services.
+// Saves to ~/.wintermolt/.env which loadDotEnv() reads on every startup.
 //
 // Triggers:
-//   - Automatically when ANTHROPIC_API_KEY not set AND no ~/.wintermolt/.env
-//   - Explicitly via `wintermolt --setup`
+//   - Explicitly via `wintermolt --keys` or `wintermolt --setup`
 
 const std = @import("std");
 
@@ -22,7 +20,6 @@ const KeyValue = struct {
 /// After completion, ~/.wintermolt/.env will contain all configured keys.
 pub fn runSetup(alloc: std.mem.Allocator, force: bool) !void {
     const stdout = std.fs.File.stdout().deprecatedWriter();
-    const stderr = std.fs.File.stderr().deprecatedWriter();
     const stdin = std.fs.File.stdin().deprecatedReader();
 
     // Load existing values if re-running setup
@@ -53,10 +50,11 @@ pub fn runSetup(alloc: std.mem.Allocator, force: bool) !void {
     var keys: std.ArrayList(KeyValue) = .{};
     var line_buf: [4096]u8 = undefined;
 
-    // ─── Required ────────────────────────────
-    try stdout.writeAll("\n \x1b[1;33m─── Required ────────────────────────────────\x1b[0m\n");
+    // ─── AI Providers (all optional, press Enter to skip) ──
+    try stdout.writeAll("\n \x1b[1;33m─── AI Providers (press Enter to skip) ──────\x1b[0m\n");
+    try stdout.writeAll(" \x1b[90mDefault backend: Ollama (local, no key needed)\x1b[0m\n");
 
-    // 1. Anthropic API Key
+    // 1. Anthropic API Key (optional)
     const anthropic_key = try promptKey(
         stdin,
         stdout,
@@ -64,19 +62,11 @@ pub fn runSetup(alloc: std.mem.Allocator, force: bool) !void {
         " \x1b[1m1.\x1b[0m Anthropic API Key (Claude)",
         "sk-ant-",
         existing.get("ANTHROPIC_API_KEY"),
-        true,
+        false,
     );
     if (anthropic_key) |key| {
         try keys.append(alloc, .{ .key = "ANTHROPIC_API_KEY", .value = key });
-    } else {
-        // Anthropic key is required — abort setup
-        try stderr.writeAll("\n \x1b[31mAnthropic API key is required. Setup aborted.\x1b[0m\n");
-        try stderr.writeAll(" Get a key at: https://console.anthropic.com/settings/keys\n\n");
-        return error.SetupAborted;
     }
-
-    // ─── Optional ────────────────────────────
-    try stdout.writeAll("\n \x1b[1;33m─── Optional (press Enter to skip) ──────────\x1b[0m\n");
 
     // 2. OpenAI API Key
     const openai_key = try promptKey(
@@ -136,10 +126,10 @@ pub fn runSetup(alloc: std.mem.Allocator, force: bool) !void {
 
     // ─── Model Selection ────────────────────
     try stdout.writeAll("\n \x1b[1;33m─── Model Selection ────────────────────────\x1b[0m\n");
-    try stdout.writeAll(" \x1b[1m5.\x1b[0m Default Claude model:\n");
-    try stdout.writeAll("    \x1b[90m[1]\x1b[0m Sonnet (balanced, default)\n");
-    try stdout.writeAll("    \x1b[90m[2]\x1b[0m Haiku  (fast, cheaper)\n");
-    try stdout.writeAll("    \x1b[90m[3]\x1b[0m Opus   (most capable, expensive)\n");
+    try stdout.writeAll(" \x1b[1m5.\x1b[0m Default model tier (Ollama local):\n");
+    try stdout.writeAll("    \x1b[90m[1]\x1b[0m Sonnet — qwen3:0.6b (balanced, default)\n");
+    try stdout.writeAll("    \x1b[90m[2]\x1b[0m Haiku  — qwen3:0.6b (fast, lightweight)\n");
+    try stdout.writeAll("    \x1b[90m[3]\x1b[0m Opus   — qwen3:8b (most capable)\n");
 
     const tier_choice = try promptKey(stdin, stdout, &line_buf, "     Choice (1/2/3)", null, existing.get("WINTERMOLT_TIER"), false);
     if (tier_choice) |choice| {
@@ -181,10 +171,10 @@ pub fn runSetup(alloc: std.mem.Allocator, force: bool) !void {
     }
 
     // ─── Local AI ────────────────────────────
-    try stdout.writeAll("\n \x1b[1;33m─── Local AI ───────────────────────────────\x1b[0m\n");
+    try stdout.writeAll("\n \x1b[1;33m─── Local AI (default backend) ─────────────\x1b[0m\n");
 
     // Check for Ollama
-    try stdout.writeAll(" \x1b[1m10.\x1b[0m Checking for Ollama... ");
+    try stdout.writeAll(" Checking for Ollama... ");
     const ollama_result = checkOllama(alloc);
     if (ollama_result.detected) {
         try stdout.writeAll("\x1b[32m✓\x1b[0m Ollama detected at localhost:11434");
@@ -193,8 +183,9 @@ pub fn runSetup(alloc: std.mem.Allocator, force: bool) !void {
         }
         try stdout.writeByte('\n');
     } else {
-        try stdout.writeAll("\x1b[90m✗ Ollama not found.\x1b[0m\n");
-        try stdout.writeAll("   Install from \x1b[4mhttps://ollama.ai\x1b[0m for local models\n");
+        try stdout.writeAll("\x1b[33m✗ Ollama not found.\x1b[0m\n");
+        try stdout.writeAll("   \x1b[1mOllama is the default backend.\x1b[0m Install from \x1b[4mhttps://ollama.ai\x1b[0m\n");
+        try stdout.writeAll("   Then: ollama pull qwen3:0.6b\n");
     }
 
     // ─── Write .env ──────────────────────────
@@ -431,7 +422,7 @@ fn writeEnvFile(path: []const u8, keys: []const KeyValue) !void {
     try w.writeAll("# Edit manually or re-run `wintermolt --setup` to reconfigure.\n");
     try w.writeAll("#\n");
     try w.writeAll("# Shell env vars take precedence over values in this file.\n");
-    try w.writeAll("# To override: export ANTHROPIC_API_KEY=sk-ant-your-key-here\n\n");
+    try w.writeAll("# To override: export WINTERMOLT_MODEL=qwen3:8b\n\n");
 
     // Write config version stamp for migration tracking
     const config_mod = @import("agent/config.zig");
@@ -463,7 +454,7 @@ fn writeEnvFile(path: []const u8, keys: []const KeyValue) !void {
 }
 
 /// Load existing key-value pairs from ~/.wintermolt/.env
-fn loadExistingEnv(alloc: std.mem.Allocator) std.StringHashMap([]const u8) {
+pub fn loadExistingEnv(alloc: std.mem.Allocator) std.StringHashMap([]const u8) {
     var map = std.StringHashMap([]const u8).init(alloc);
 
     const home = std.posix.getenv("HOME") orelse return map;

@@ -1,0 +1,12 @@
+{
+  "name": "zig_error_unions",
+  "description": "Error set design for wrapping Fortran return codes",
+  "category": "zig",
+  "handler_type": "prompt",
+  "backend": "ollama",
+  "model": "qwen3:30b",
+  "role_prompt": "You are an expert in Zig error handling patterns, specializing in wrapping Fortran return codes. You convert Fortran integer return codes (INFO parameters from LAPACK/BLAS routines) to Zig error unions, design error sets that preserve diagnostic information such as which parameter was invalid or which pivot failed, and structure error propagation through kernel call chains using try, catch, and errdefer.",
+  "keywords": ["zig", "error unions", "error sets", "fortran", "return codes", "INFO", "LAPACK", "error handling", "errdefer"],
+  "user_invokable": true,
+  "timeout_ms": 60000
+}

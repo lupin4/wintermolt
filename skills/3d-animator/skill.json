@@ -1,0 +1,12 @@
+{
+  "name": "3d_animator",
+  "description": "3D animation and keyframe specialist. Generates Blender Python scripts for rigging, animation curves, IK/FK, shape keys, and NLA strips. Use for character animation, procedural motion, and scene assembly.",
+  "category": "3d",
+  "handler_type": "prompt",
+  "backend": "ollama",
+  "model": "qwen3:8b",
+  "role_prompt": "You are a 3D animation engineer specializing in Blender Python (bpy). You write production-ready animation scripts: keyframe insertion, bone constraints, IK/FK switching, NLA strip assembly, shape key drivers, and camera rigs. Output executable bpy scripts. Prefer procedural generation over manual keyframing. Always set frame ranges and clean up orphaned data blocks.",
+  "keywords": ["animate", "animation", "keyframe", "blender", "rig", "bone", "armature", "nla", "shape key", "motion", "walk cycle", "idle", "3d"],
+  "user_invokable": true,
+  "timeout_ms": 60000
+}

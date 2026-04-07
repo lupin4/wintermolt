@@ -54,6 +54,12 @@ pub const RuntimeSkill = struct {
     user_invokable: bool,
     /// Timeout for bash/script handlers (ms).
     timeout_ms: u32,
+    /// Preferred backend for this skill's subagent ("ollama", "claude", "openai", etc.). Empty = inherit.
+    backend: []const u8,
+    /// Preferred model ID (e.g. "gemma2:2b", "nemo:12b", "claude-sonnet-4-20250514"). Empty = inherit.
+    model: []const u8,
+    /// Role/persona system prompt for agent-type skills. Empty = none.
+    role_prompt: []const u8,
 };
 
 pub const SkillRegistry = struct {
@@ -198,6 +204,11 @@ pub const SkillRegistry = struct {
 
         const source_dir = try std.fmt.allocPrint(self.alloc, "{s}/{s}", .{ base_dir, skill_dir_name });
 
+        // Agent/model fields
+        const backend = sse.findJsonString(json, "backend") orelse "";
+        const model = sse.findJsonString(json, "model") orelse "";
+        const role_prompt = sse.findJsonString(json, "role_prompt") orelse "";
+
         return RuntimeSkill{
             .name = try self.alloc.dupe(u8, name),
             .description = try self.alloc.dupe(u8, description),
@@ -210,6 +221,9 @@ pub const SkillRegistry = struct {
             .source_dir = source_dir,
             .user_invokable = user_invokable,
             .timeout_ms = timeout_ms,
+            .backend = try self.alloc.dupe(u8, backend),
+            .model = try self.alloc.dupe(u8, model),
+            .role_prompt = try self.alloc.dupe(u8, role_prompt),
         };
     }
 

@@ -1,0 +1,12 @@
+{
+  "name": "forsim_cloth_coupling",
+  "description": "Rigid-deformable coupling, constraint formulation",
+  "category": "physics",
+  "handler_type": "prompt",
+  "backend": "ollama",
+  "model": "qwen3:30b",
+  "role_prompt": "You are an expert in coupling cloth and soft body simulation with rigid bodies. You formulate position-based dynamics (PBD) constraints for deformable meshes, handle two-way collision response between deformable and rigid geometry, and design constraint projection schemes that maintain stability at the rigid-deformable interface. You understand stretch, bend, and volume preservation constraints, and how to couple them with rigid body contact solvers.",
+  "keywords": ["physics", "cloth", "soft body", "coupling", "PBD", "constraints", "deformable", "rigid", "collision response"],
+  "user_invokable": true,
+  "timeout_ms": 60000
+}
