@@ -14,10 +14,10 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/lang-Zig_0.15-f7a41d?style=flat-square&logo=zig&logoColor=white" alt="Zig">
-  <img src="https://img.shields.io/badge/license-AGPL--3.0-blue?style=flat-square" alt="License">
+  <img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="License">
   <img src="https://img.shields.io/badge/binary-3_MB-brightgreen?style=flat-square" alt="Size">
   <img src="https://img.shields.io/badge/deps-2_(libcurl%2C_sqlite3)-orange?style=flat-square" alt="Dependencies">
-  <img src="https://img.shields.io/badge/backends-5_(Ollama%2C_GPT%2C_DeepSeek%2C_Qwen%2C_Gemini)-purple?style=flat-square" alt="Backends">
+  <img src="https://img.shields.io/badge/backends-6_(Ollama%2C_Claude%2C_GPT%2C_DeepSeek%2C_Qwen%2C_Gemini)-purple?style=flat-square" alt="Backends">
 </p>
 
 ---
@@ -59,7 +59,7 @@ Most AI coding tools ship hundreds of megabytes of Electron or Node.js runtime j
 | **Runtime** | **None** | Node.js 18+ | Electron | Python 3.8+ |
 | **Cross-compile** | **One command** | N/A | N/A | N/A |
 | **Runs on Jetson/Pi** | **Yes** | Barely | No | Slow |
-| **AI backends** | **5** | 1 | Multiple | Multiple |
+| **AI backends** | **6** | 1 | Multiple | Multiple |
 | **Camera + vision** | **Built-in** | No | No | No |
 | **Browser automation** | **Built-in** | No | No | No |
 | **MCP client + server** | **Both** | Client only | Client only | No |
@@ -67,7 +67,7 @@ Most AI coding tools ship hundreds of megabytes of Electron or Node.js runtime j
 | **Cron scheduler** | **Built-in** | No | No | No |
 | **Mesh networking** | **Tailscale** | No | No | No |
 | **Menu bar app** | **macOS native** | No | No | No |
-| **License** | **AGPL-3.0** | Proprietary | Proprietary | Apache-2.0 |
+| **License** | **MIT** | Proprietary | Proprietary | Apache-2.0 |
 
 ---
 
@@ -77,7 +77,8 @@ Most AI coding tools ship hundreds of megabytes of Electron or Node.js runtime j
 
 - **[Zig 0.15.2+](https://ziglang.org/download/)** (single binary, no installer needed)
 - **libcurl** + **sqlite3** (pre-installed on macOS and most Linux distros)
-- [Ollama](https://ollama.com) running locally (default, no API key needed), or an `OPENAI_API_KEY` / `DEEPSEEK_API_KEY` for cloud backends
+- [Ollama](https://ollama.com) running locally (default, no API key needed)
+- Cloud backends are optional: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`, etc.
 
 ### Build & Run
 
@@ -85,10 +86,11 @@ Most AI coding tools ship hundreds of megabytes of Electron or Node.js runtime j
 git clone https://github.com/lupin4/wintermolt.git
 cd wintermolt
 zig build
-./zig-out/bin/wintermolt --setup   # interactive wizard — sets up API keys
+./zig-out/bin/wintermolt              # starts immediately with Ollama (no setup needed)
+./zig-out/bin/wintermolt --keys       # optional: configure cloud API keys
 ```
 
-Three lines. No `npm install`. No `pip install`. No Docker. Just Zig.
+Three lines. No `npm install`. No `pip install`. No Docker. No mandatory API keys. Just Zig.
 
 ### Cross-Compile (one command)
 
@@ -123,17 +125,40 @@ Wintermolt doesn't just answer questions — it **plans and executes multi-step 
 Fixed 5 vulnerabilities: 2 SQL injection, 2 XSS, 1 path traversal. All tests pass.
 ```
 
-### 5 AI Backends — Switch Instantly
+### 6 AI Backends — Switch Instantly
 
 ```
-> /model ollama    — Local models (Llama, Qwen, Mistral, Phi — no API key, default)
+> /model ollama    — Local models (Llama, Qwen, Mistral, Phi — no API key, DEFAULT)
+> /model claude    — Anthropic Claude (API key required)
 > /model openai    — OpenAI GPT-4o, GPT-4.1
 > /model deepseek  — DeepSeek V3/R1
 > /model qwen      — Qwen 2.5+ Cloud
 > /model gemini    — Google Gemini
 ```
 
-All backends support **streaming**. Ollama runs 100% local, air-gapped, no API key. Cloud backends are optional — bring your own key.
+All backends support **streaming**. Ollama runs 100% local, air-gapped, no API key. Cloud backends are optional — bring your own key via `/keys`.
+
+> **Note on Claude:** Claude was previously removed when Anthropic restricted non-API usage. It has been re-added as an optional backend for users who want Claude via the API. The default remains local (Ollama) — no API key is required to use Wintermolt. Use `/keys` or `--keys` to configure your `ANTHROPIC_API_KEY` if you want Claude.
+
+### 79 Model-Agnostic Skills
+
+Wintermolt ships with 79 skill definitions across 11 domains. Each skill defines a specialized agent role with a preferred model — but any skill can run on any backend.
+
+| Domain | Skills | Default Model |
+|--------|:------:|---------------|
+| Zortran Core | 6 | qwen3:30b |
+| Fortran Kernels | 6 | qwen3:30b |
+| Zig Systems | 6 | qwen3:30b |
+| Physics / Simulation | 6 | qwen3:30b |
+| AI / ML Kernels | 6 | qwen3:30b |
+| Cybersecurity | 6 | qwen3:30b |
+| Synthetic Data | 6 | qwen3:8b |
+| Agent Architecture | 6 | qwen3:8b |
+| Audio / Music | 8 | qwen3:8b |
+| 3D / VFX | 9 | qwen3:8b |
+| Engineering (general) | 14 | qwen3:8b |
+
+Skills live in `skills/` as `skill.json` manifests. Each specifies `backend`, `model`, and `role_prompt` — swap to Claude, GPT, or any Ollama model by editing one field. Subagents automatically switch to the skill's preferred backend when spawned.
 
 ### 16 Built-in Tools
 
