@@ -517,7 +517,7 @@ fn handleModel(agent: *loop_mod.AgentLoop, w: anytype, arg: ?[]const u8) !void {
         const info = agent.getBackendInfo();
         try w.print("Current: {s} ({s})\n", .{ info.name, info.model });
         try w.writeAll("Usage: /model <backend> [model]\n");
-        try w.writeAll("Backends: ollama (default), claude, openai, deepseek, qwen, gemini\n");
+        try w.writeAll("Backends: ollama (default), forai, claude, openai, deepseek, qwen, gemini\n");
     }
 }
 

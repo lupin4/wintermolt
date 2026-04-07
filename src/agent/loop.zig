@@ -496,6 +496,17 @@ pub const AgentLoop = struct {
             client.api_url = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions";
             self.backend = .{ .openai = client };
             stderr.print("[backend] Switched to Gemini ({s})\n", .{model_name orelse self.config.gemini_model}) catch {};
+        } else if (std.mem.eql(u8, backend_name, "forai")) {
+            const forai_url = std.posix.getenv("WINTERMOLT_FORAI_URL") orelse "http://localhost:8000";
+            const forai_model = model_name orelse std.posix.getenv("WINTERMOLT_FORAI_MODEL") orelse "qwen3:8b";
+            var client = deepseek_mod.DeepSeekClient.init(
+                self.alloc,
+                "",
+                forai_model,
+            );
+            client.api_url = std.fmt.allocPrint(self.alloc, "{s}/v1/chat/completions", .{forai_url}) catch "http://localhost:8000/v1/chat/completions";
+            self.backend = .{ .openai = client };
+            stderr.print("[backend] Switched to forAI ({s} at {s})\n", .{ forai_model, forai_url }) catch {};
         } else if (std.mem.eql(u8, backend_name, "claude")) {
             if (self.config.api_key.len == 0) {
                 stderr.writeAll("[backend] ANTHROPIC_API_KEY not set. Use /keys to configure.\n") catch {};
@@ -508,7 +519,7 @@ pub const AgentLoop = struct {
             ) };
             stderr.print("[backend] Switched to Claude ({s})\n", .{model_name orelse "claude-sonnet-4-20250514"}) catch {};
         } else {
-            stderr.print("[backend] Unknown: {s}. Options: ollama, claude, openai, deepseek, qwen, gemini\n", .{backend_name}) catch {};
+            stderr.print("[backend] Unknown: {s}. Options: ollama, forai, claude, openai, deepseek, qwen, gemini\n", .{backend_name}) catch {};
         }
     }
 
