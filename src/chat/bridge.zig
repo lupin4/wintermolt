@@ -17,6 +17,7 @@
 // child alive (long-running) and reads/writes continuously.
 
 const std = @import("std");
+const compat = @import("../compat.zig");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 const Child = std.process.Child;
@@ -219,7 +220,7 @@ fn writeJsonEscaped(w: anytype, s: []const u8) !void {
 
 fn getChatBinaryPath() []const u8 {
     // Check env var first
-    if (std.posix.getenv("WINTERMOLT_CHAT_BINARY")) |path| return path;
+    if (compat.getenv("WINTERMOLT_CHAT_BINARY")) |path| return path;
 
     // Check for compiled binary
     if (fileExists("./wintermolt-chat")) return "./wintermolt-chat";
@@ -266,7 +267,7 @@ fn fileExists(path: []const u8) bool {
 
 /// Search $PATH for an executable by name.
 fn commandExists(name: []const u8) bool {
-    const path_env = std.posix.getenv("PATH") orelse return false;
+    const path_env = compat.getenv("PATH") orelse return false;
     var iter = std.mem.splitScalar(u8, path_env, ':');
     while (iter.next()) |dir| {
         var path_buf: [1024]u8 = undefined;

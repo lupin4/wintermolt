@@ -10,6 +10,7 @@
 // no RL, no council/debate, no compressor, no dreamer, no forKernels.
 
 const std = @import("std");
+const compat = @import("../compat.zig");
 const ArrayList = std.ArrayList;
 const Allocator = std.mem.Allocator;
 
@@ -497,8 +498,8 @@ pub const AgentLoop = struct {
             self.backend = .{ .openai = client };
             stderr.print("[backend] Switched to Gemini ({s})\n", .{model_name orelse self.config.gemini_model}) catch {};
         } else if (std.mem.eql(u8, backend_name, "forai")) {
-            const forai_url = std.posix.getenv("WINTERMOLT_FORAI_URL") orelse "http://localhost:8000";
-            const forai_model = model_name orelse std.posix.getenv("WINTERMOLT_FORAI_MODEL") orelse "qwen3:8b";
+            const forai_url = compat.getenv("WINTERMOLT_FORAI_URL") orelse "http://localhost:8000";
+            const forai_model = model_name orelse compat.getenv("WINTERMOLT_FORAI_MODEL") orelse "qwen3:8b";
             var client = deepseek_mod.DeepSeekClient.init(
                 self.alloc,
                 "",

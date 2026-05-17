@@ -12,6 +12,7 @@
 // Inline directives allow per-utterance overrides: [[voice:alloy]] [[speed:1.2]]
 
 const std = @import("std");
+const compat = @import("../compat.zig");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 
@@ -101,7 +102,7 @@ pub const TtsClient = struct {
     piper_model: ?[]const u8,
 
     pub fn init(alloc: Allocator) TtsClient {
-        const provider_str = std.posix.getenv("WINTERMOLT_TTS_PROVIDER") orelse "openai";
+        const provider_str = compat.getenv("WINTERMOLT_TTS_PROVIDER") orelse "openai";
         const provider: TtsProvider = if (std.mem.eql(u8, provider_str, "elevenlabs"))
             .elevenlabs
         else if (std.mem.eql(u8, provider_str, "piper"))
@@ -114,11 +115,11 @@ pub const TtsClient = struct {
         return .{
             .alloc = alloc,
             .provider = provider,
-            .default_voice = std.posix.getenv("WINTERMOLT_TTS_VOICE") orelse "alloy",
-            .openai_api_key = std.posix.getenv("OPENAI_API_KEY"),
-            .elevenlabs_api_key = std.posix.getenv("ELEVENLABS_API_KEY"),
-            .elevenlabs_voice_id = std.posix.getenv("ELEVENLABS_VOICE_ID"),
-            .piper_model = std.posix.getenv("PIPER_MODEL"),
+            .default_voice = compat.getenv("WINTERMOLT_TTS_VOICE") orelse "alloy",
+            .openai_api_key = compat.getenv("OPENAI_API_KEY"),
+            .elevenlabs_api_key = compat.getenv("ELEVENLABS_API_KEY"),
+            .elevenlabs_voice_id = compat.getenv("ELEVENLABS_VOICE_ID"),
+            .piper_model = compat.getenv("PIPER_MODEL"),
         };
     }
 

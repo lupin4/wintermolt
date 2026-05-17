@@ -22,6 +22,7 @@
 //      {"type":"status","tier":"sonnet","model":"claude-sonnet-4-5","backend":"claude"}
 
 const std = @import("std");
+const compat = @import("../compat.zig");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 const Child = std.process.Child;
@@ -278,7 +279,7 @@ pub const WebBridge = struct {
         try stderr.print("[web] Listen {s}: {d} bytes audio\n", .{ id, audio_data.len });
 
         // Check for Whisper API key
-        if (std.posix.getenv("OPENAI_API_KEY") == null) {
+        if (compat.getenv("OPENAI_API_KEY") == null) {
             self.sendError(id, "Set OPENAI_API_KEY to enable Whisper transcription") catch {};
             return;
         }
@@ -818,7 +819,7 @@ const WebPath = struct {
 
 fn getWebPath() WebPath {
     // 1. Explicit env var (supports "node /path/to/server.js" split on first space)
-    if (std.posix.getenv("WINTERMOLT_WEB_BINARY")) |p| {
+    if (compat.getenv("WINTERMOLT_WEB_BINARY")) |p| {
         if (std.mem.indexOfScalar(u8, p, ' ')) |space_idx| {
             return .{ .binary = p[0..space_idx], .server_path = p[space_idx + 1 ..] };
         }
@@ -1005,7 +1006,7 @@ fn decodeBase64(alloc: Allocator, encoded: []const u8) ![]u8 {
 // ---------------------------------------------------------------------------
 
 fn transcribeWhisperWeb(alloc: Allocator, audio_path: []const u8) ?[]u8 {
-    const api_key = std.posix.getenv("OPENAI_API_KEY") orelse return null;
+    const api_key = compat.getenv("OPENAI_API_KEY") orelse return null;
 
     const auth_header = std.fmt.allocPrint(alloc, "Authorization: Bearer {s}", .{api_key}) catch return null;
     defer alloc.free(auth_header);

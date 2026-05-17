@@ -20,6 +20,7 @@
 //      {"type":"status","agents":2,"uptime":3600}
 
 const std = @import("std");
+const compat = @import("../compat.zig");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 const Child = std.process.Child;
@@ -166,7 +167,7 @@ fn writeJsonEscaped(w: anytype, s: []const u8) !void {
 }
 
 fn getGatewayPath() []const u8 {
-    if (std.posix.getenv("WINTERMOLT_GATEWAY_BINARY")) |p| return p;
+    if (compat.getenv("WINTERMOLT_GATEWAY_BINARY")) |p| return p;
     if (fileExists("./wintermolt-gateway")) return "./wintermolt-gateway";
     if (fileExists("./gateway/dist/server.js")) return "node";
     if (fileExists("./gateway/src/index.ts")) {
@@ -201,7 +202,7 @@ fn fileExists(path: []const u8) bool {
 }
 
 fn commandExists(name: []const u8) bool {
-    const path_env = std.posix.getenv("PATH") orelse return false;
+    const path_env = compat.getenv("PATH") orelse return false;
     var iter = std.mem.splitScalar(u8, path_env, ':');
     while (iter.next()) |dir| {
         var path_buf: [1024]u8 = undefined;

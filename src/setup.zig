@@ -9,6 +9,7 @@
 //   - Explicitly via `wintermolt --keys` or `wintermolt --setup`
 
 const std = @import("std");
+const compat = @import("compat.zig");
 
 /// Key-value pair for .env file generation
 const KeyValue = struct {
@@ -228,7 +229,7 @@ pub fn runSetup(alloc: std.mem.Allocator, force: bool) !void {
 
 /// Check if the .env file exists at ~/.wintermolt/.env
 pub fn envFileExists() bool {
-    const home = std.posix.getenv("HOME") orelse return false;
+    const home = compat.getenv("HOME") orelse return false;
     var path_buf: [512]u8 = undefined;
     const path = std.fmt.bufPrint(&path_buf, "{s}/.wintermolt/.env", .{home}) catch return false;
     std.fs.cwd().access(path, .{}) catch return false;
@@ -303,29 +304,10 @@ fn promptKey(
 }
 
 /// Drain any extra pasted input from stdin (e.g., multi-line pastes from
-/// password managers). Temporarily sets stdin to non-blocking, reads until
-/// EAGAIN/EWOULDBLOCK, then restores blocking mode.
+/// password managers). Delegates to compat.drainStdinNonBlocking — uses
+/// poll/fcntl on POSIX and FlushConsoleInputBuffer on Windows.
 fn drainPastedInput() void {
-    const fd = std.posix.STDIN_FILENO;
-    const F_GETFL = 3;
-    const F_SETFL = 4;
-    const O_NONBLOCK: u32 = if (comptime @import("builtin").os.tag == .macos) 0x0004 else 0o4000;
-
-    const flags = std.posix.system.fcntl(fd, F_GETFL);
-    if (flags == -1) return;
-
-    // Set non-blocking
-    if (std.posix.system.fcntl(fd, F_SETFL, @as(u32, @bitCast(flags)) | O_NONBLOCK) == -1) return;
-
-    // Drain all buffered input
-    var drain_buf: [4096]u8 = undefined;
-    while (true) {
-        const rc = std.posix.system.read(fd, &drain_buf, drain_buf.len);
-        if (rc <= 0) break;
-    }
-
-    // Restore blocking mode
-    _ = std.posix.system.fcntl(fd, F_SETFL, flags);
+    compat.drainStdinNonBlocking();
 }
 
 const OllamaResult = struct {
@@ -399,7 +381,7 @@ fn checkOllama(alloc: std.mem.Allocator) OllamaResult {
 
 /// Ensure ~/.wintermolt/ directory exists and return the .env file path.
 fn ensureWintermoltDir(alloc: std.mem.Allocator) ![]const u8 {
-    const home = std.posix.getenv("HOME") orelse return error.NoHome;
+    const home = compat.getenv("HOME") orelse return error.NoHome;
 
     // Create ~/.wintermolt/ if it doesn't exist
     const dir_path = try std.fmt.allocPrint(alloc, "{s}/.wintermolt", .{home});
@@ -457,7 +439,7 @@ fn writeEnvFile(path: []const u8, keys: []const KeyValue) !void {
 pub fn loadExistingEnv(alloc: std.mem.Allocator) std.StringHashMap([]const u8) {
     var map = std.StringHashMap([]const u8).init(alloc);
 
-    const home = std.posix.getenv("HOME") orelse return map;
+    const home = compat.getenv("HOME") orelse return map;
     var path_buf: [512]u8 = undefined;
     const path = std.fmt.bufPrint(&path_buf, "{s}/.wintermolt/.env", .{home}) catch return map;
 

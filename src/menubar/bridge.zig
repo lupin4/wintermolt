@@ -24,6 +24,7 @@
 // On non-macOS platforms, init() returns an error.
 
 const std = @import("std");
+const compat = @import("../compat.zig");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 const Child = std.process.Child;
@@ -247,7 +248,7 @@ fn menubarStreamText(text: []const u8) void {
 
 fn getMenuBarBinary() []const u8 {
     // 1. Explicit env var
-    if (std.posix.getenv("WINTERMOLT_MENUBAR_BINARY")) |p| return p;
+    if (compat.getenv("WINTERMOLT_MENUBAR_BINARY")) |p| return p;
 
     // 2. Look for binary alongside wintermolt
     // (in distribution, wintermolt-menubar is placed next to wintermolt)

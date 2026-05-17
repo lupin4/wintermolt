@@ -15,6 +15,7 @@
 //   wintermolt --mcp-server — MCP JSON-RPC server over stdio
 
 const std = @import("std");
+const compat = @import("compat.zig");
 const ArrayList = std.ArrayList;
 const config_mod = @import("agent/config.zig");
 const loop_mod = @import("agent/loop.zig");
@@ -36,7 +37,7 @@ const protocol = @import("api/protocol.zig");
 const setup = @import("setup.zig");
 const export_mod = @import("agent/export.zig");
 
-const VERSION = "0.1.0";
+const VERSION = "0.4.0";
 
 pub fn main() !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
@@ -303,7 +304,7 @@ pub fn main() !void {
 
     // Web mode
     if (web_mode) {
-        const port = std.posix.getenv("PORT") orelse std.posix.getenv("WINTERMOLT_WEB_PORT") orelse "3000";
+        const port = compat.getenv("PORT") orelse compat.getenv("WINTERMOLT_WEB_PORT") orelse "3000";
         try stderr.print("[wintermolt] Starting web mode on port {s}...\n", .{port});
         var bridge = web_bridge.WebBridge.init(alloc, &agent) catch |e| {
             try stderr.print("[wintermolt] Failed to start web sidecar: {s}\n", .{@errorName(e)});
@@ -312,8 +313,8 @@ pub fn main() !void {
         defer bridge.deinit();
 
         std.Thread.sleep(500 * std.time.ns_per_ms);
-        const is_headless = std.posix.getenv("K_SERVICE") != null or
-            std.posix.getenv("WINTERMOLT_HEADLESS") != null;
+        const is_headless = compat.getenv("K_SERVICE") != null or
+            compat.getenv("WINTERMOLT_HEADLESS") != null;
         if (!is_headless) {
             const url = std.fmt.allocPrint(alloc, "http://localhost:{s}", .{port}) catch "http://localhost:3000";
             try stderr.print("[wintermolt] Opening {s}\n", .{url});
@@ -347,7 +348,7 @@ pub fn main() !void {
 
     // Gateway mode — OpenAI-compatible API server
     if (gateway_mode) {
-        const gw_port = std.posix.getenv("WINTERMOLT_GATEWAY_PORT") orelse "8080";
+        const gw_port = compat.getenv("WINTERMOLT_GATEWAY_PORT") orelse "8080";
         try stderr.print("[wintermolt] Starting gateway mode on port {s}...\n", .{gw_port});
         var gw_bridge = gateway_bridge.GatewayBridge.init(alloc, &agent) catch |e| {
             try stderr.print("[wintermolt] Failed to start gateway sidecar: {s}\n", .{@errorName(e)});
@@ -546,7 +547,7 @@ fn handleKeysCmd(alloc: std.mem.Allocator, w: anytype, r: anytype, arg: ?[]const
         if (std.mem.eql(u8, a, "list") or std.mem.eql(u8, a, "status")) {
             try w.writeAll("\n \x1b[1;36m─── API Keys ───────────────────────────────\x1b[0m\n");
             for (api_keys, 0..) |entry, i| {
-                const val = existing.get(entry.key) orelse std.posix.getenv(entry.key);
+                const val = existing.get(entry.key) orelse compat.getenv(entry.key);
                 const num = i + 1;
                 if (val) |v| {
                     if (v.len > 8) {
@@ -598,7 +599,7 @@ fn handleKeysCmd(alloc: std.mem.Allocator, w: anytype, r: anytype, arg: ?[]const
     // /keys with no args — interactive menu
     try w.writeAll("\n \x1b[1;36m─── Configure API Key ──────────────────────\x1b[0m\n");
     for (api_keys, 0..) |entry, i| {
-        const val = existing.get(entry.key) orelse std.posix.getenv(entry.key);
+        const val = existing.get(entry.key) orelse compat.getenv(entry.key);
         const num = i + 1;
         const mark: []const u8 = if (val != null and val.?.len > 0) "\x1b[32m✓\x1b[0m" else "\x1b[90m·\x1b[0m";
         try w.print("  {s} {d:>2}. {s}\n", .{ mark, num, entry.label });
@@ -630,7 +631,7 @@ fn configureKey(
     label: []const u8,
     hint: ?[]const u8,
 ) !void {
-    const current = existing.get(env_key) orelse std.posix.getenv(env_key);
+    const current = existing.get(env_key) orelse compat.getenv(env_key);
 
     try w.print("\n  \x1b[1m{s}\x1b[0m ({s})\n", .{ label, env_key });
     if (current) |v| {
@@ -668,7 +669,7 @@ fn configureKey(
     }
 
     // Rewrite .env file
-    const home = std.posix.getenv("HOME") orelse return;
+    const home = compat.getenv("HOME") orelse return;
     var path_buf: [512]u8 = undefined;
     const env_path = std.fmt.bufPrint(&path_buf, "{s}/.wintermolt/.env", .{home}) catch return;
 
@@ -982,8 +983,8 @@ fn handleTtsCmd(alloc: std.mem.Allocator, w: anytype, _stderr: anytype, arg: []c
     const text = std.mem.trim(u8, arg, " \t");
 
     if (text.len == 0) {
-        const provider = std.posix.getenv("WINTERMOLT_TTS_PROVIDER") orelse "not configured";
-        const voice = std.posix.getenv("WINTERMOLT_TTS_VOICE") orelse "alloy";
+        const provider = compat.getenv("WINTERMOLT_TTS_PROVIDER") orelse "not configured";
+        const voice = compat.getenv("WINTERMOLT_TTS_VOICE") orelse "alloy";
         try std.fmt.format(w, "TTS Status\n", .{});
         try std.fmt.format(w, "  Provider: {s}\n", .{provider});
         try std.fmt.format(w, "  Voice: {s}\n", .{voice});

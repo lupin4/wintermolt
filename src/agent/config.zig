@@ -79,13 +79,14 @@
 //   ELEVENLABS_VOICE_ID      — Optional. ElevenLabs voice ID
 
 const std = @import("std");
+const compat = @import("../compat.zig");
 
 /// Current config version.
 pub const CONFIG_VERSION: u32 = 1;
 
 /// Check config version from .env and print migration notices if needed.
 pub fn migrateConfig() void {
-    const version_str = std.posix.getenv("WINTERMOLT_CONFIG_VERSION") orelse "0";
+    const version_str = compat.getenv("WINTERMOLT_CONFIG_VERSION") orelse "0";
     const version = std.fmt.parseInt(u32, version_str, 10) catch 0;
 
     if (version >= CONFIG_VERSION) return;
@@ -101,7 +102,7 @@ pub fn migrateConfig() void {
 /// Shell env vars take precedence (overwrite=0 in setenv).
 /// Supports: KEY=VALUE, KEY="VALUE", KEY='VALUE', # comments, blank lines, export prefix.
 pub fn loadDotEnv() void {
-    const home = std.posix.getenv("HOME") orelse return;
+    const home = compat.getenv("HOME") orelse return;
 
     var path_buf: [512]u8 = undefined;
     const path = std.fmt.bufPrint(&path_buf, "{s}/.wintermolt/.env", .{home}) catch return;
@@ -149,7 +150,7 @@ pub fn loadDotEnv() void {
         @memcpy(val_z[0..value.len], value);
         val_z[value.len] = 0;
 
-        if (std.posix.getenv(key_z[0..key.len :0]) != null) continue;
+        if (compat.getenv(key_z[0..key.len :0]) != null) continue;
 
         _ = libc_setenv(key_z[0..key.len :0].ptr, val_z[0..value.len :0].ptr, 0);
         loaded += 1;
@@ -207,78 +208,78 @@ pub const Config = struct {
 
     pub fn load(alloc: ?std.mem.Allocator) !Config {
         // Anthropic API key — optional cloud backend (default: local/Ollama)
-        const api_key = std.posix.getenv("ANTHROPIC_API_KEY") orelse "";
+        const api_key = compat.getenv("ANTHROPIC_API_KEY") orelse "";
 
-        const model = std.posix.getenv("WINTERMOLT_MODEL") orelse
+        const model = compat.getenv("WINTERMOLT_MODEL") orelse
             "qwen3:0.6b";
 
         const max_tokens: u32 = blk: {
-            const tokens_str = std.posix.getenv("WINTERMOLT_TOKENS") orelse break :blk 8192;
+            const tokens_str = compat.getenv("WINTERMOLT_TOKENS") orelse break :blk 8192;
             break :blk std.fmt.parseInt(u32, tokens_str, 10) catch 8192;
         };
 
         const history_enabled = blk: {
-            const no_hist = std.posix.getenv("WINTERMOLT_NO_HISTORY") orelse break :blk true;
+            const no_hist = compat.getenv("WINTERMOLT_NO_HISTORY") orelse break :blk true;
             break :blk !std.mem.eql(u8, no_hist, "1");
         };
 
-        const ollama_url = std.posix.getenv("WINTERMOLT_OLLAMA_URL") orelse
-            std.posix.getenv("OLLAMA_HOST") orelse
+        const ollama_url = compat.getenv("WINTERMOLT_OLLAMA_URL") orelse
+            compat.getenv("OLLAMA_HOST") orelse
             "http://localhost:11434";
-        const ollama_model = std.posix.getenv("WINTERMOLT_OLLAMA_MODEL") orelse
+        const ollama_model = compat.getenv("WINTERMOLT_OLLAMA_MODEL") orelse
             "qwen3:0.6b";
         const ollama_num_ctx: u32 = blk: {
-            const ctx_str = std.posix.getenv("WINTERMOLT_OLLAMA_CTX") orelse break :blk 4096;
+            const ctx_str = compat.getenv("WINTERMOLT_OLLAMA_CTX") orelse break :blk 4096;
             break :blk std.fmt.parseInt(u32, ctx_str, 10) catch 4096;
         };
-        const ollama_keep_alive = std.posix.getenv("WINTERMOLT_OLLAMA_KEEP_ALIVE") orelse
+        const ollama_keep_alive = compat.getenv("WINTERMOLT_OLLAMA_KEEP_ALIVE") orelse
             "5m";
-        const vision_model = std.posix.getenv("WINTERMOLT_VISION_MODEL") orelse
+        const vision_model = compat.getenv("WINTERMOLT_VISION_MODEL") orelse
             "llava";
-        const vision_backend = std.posix.getenv("WINTERMOLT_VISION_BACKEND") orelse
+        const vision_backend = compat.getenv("WINTERMOLT_VISION_BACKEND") orelse
             "ollama";
 
-        const openai_api_key = std.posix.getenv("OPENAI_API_KEY");
-        const openai_model = std.posix.getenv("WINTERMOLT_OPENAI_MODEL") orelse
+        const openai_api_key = compat.getenv("OPENAI_API_KEY");
+        const openai_model = compat.getenv("WINTERMOLT_OPENAI_MODEL") orelse
             "gpt-4o-mini";
-        const deepseek_cloud_key = std.posix.getenv("DEEPSEEK_API_KEY");
-        const qwen_api_key = std.posix.getenv("QWEN_API_KEY");
-        const qwen_model = std.posix.getenv("WINTERMOLT_QWEN_MODEL") orelse
+        const deepseek_cloud_key = compat.getenv("DEEPSEEK_API_KEY");
+        const qwen_api_key = compat.getenv("QWEN_API_KEY");
+        const qwen_model = compat.getenv("WINTERMOLT_QWEN_MODEL") orelse
             "qwen-plus";
-        const gemini_api_key = std.posix.getenv("GOOGLE_GEMINI_API_KEY");
-        const gemini_model = std.posix.getenv("WINTERMOLT_GEMINI_MODEL") orelse
+        const gemini_api_key = compat.getenv("GOOGLE_GEMINI_API_KEY");
+        const gemini_model = compat.getenv("WINTERMOLT_GEMINI_MODEL") orelse
             "gemini-2.0-flash";
 
         // Pinecone RAG
-        const pinecone_api_key = std.posix.getenv("PINECONE_API_KEY");
-        const pinecone_host = std.posix.getenv("PINECONE_HOST");
-        const pinecone_index = std.posix.getenv("PINECONE_INDEX") orelse "wintermolt";
+        const pinecone_api_key = compat.getenv("PINECONE_API_KEY");
+        const pinecone_host = compat.getenv("PINECONE_HOST");
+        const pinecone_index = compat.getenv("PINECONE_INDEX") orelse "wintermolt";
 
         // Tailscale
-        const tailscale_api_key = std.posix.getenv("TAILSCALE_API_KEY");
+        const tailscale_api_key = compat.getenv("TAILSCALE_API_KEY");
 
         // Tool policies
-        const tool_allowlist = std.posix.getenv("WINTERMOLT_TOOL_ALLOWLIST");
-        const tool_blocklist = std.posix.getenv("WINTERMOLT_TOOL_BLOCKLIST");
+        const tool_allowlist = compat.getenv("WINTERMOLT_TOOL_ALLOWLIST");
+        const tool_blocklist = compat.getenv("WINTERMOLT_TOOL_BLOCKLIST");
 
         // Docker sandbox
         const sandbox_enabled = blk: {
-            const val = std.posix.getenv("WINTERMOLT_SANDBOX") orelse break :blk false;
+            const val = compat.getenv("WINTERMOLT_SANDBOX") orelse break :blk false;
             break :blk std.mem.eql(u8, val, "docker") or std.mem.eql(u8, val, "1");
         };
-        const sandbox_image = std.posix.getenv("WINTERMOLT_SANDBOX_IMAGE") orelse "wintermolt-sandbox:latest";
+        const sandbox_image = compat.getenv("WINTERMOLT_SANDBOX_IMAGE") orelse "wintermolt-sandbox:latest";
         const sandbox_timeout: u32 = blk: {
-            const val = std.posix.getenv("WINTERMOLT_SANDBOX_TIMEOUT") orelse break :blk 30;
+            const val = compat.getenv("WINTERMOLT_SANDBOX_TIMEOUT") orelse break :blk 30;
             break :blk std.fmt.parseInt(u32, val, 10) catch 30;
         };
-        const sandbox_memory = std.posix.getenv("WINTERMOLT_SANDBOX_MEMORY") orelse "256m";
-        const sandbox_network = std.posix.getenv("WINTERMOLT_SANDBOX_NETWORK") orelse "none";
+        const sandbox_memory = compat.getenv("WINTERMOLT_SANDBOX_MEMORY") orelse "256m";
+        const sandbox_network = compat.getenv("WINTERMOLT_SANDBOX_NETWORK") orelse "none";
 
         // TTS / Voice
-        const tts_provider = std.posix.getenv("WINTERMOLT_TTS_PROVIDER");
-        const tts_voice = std.posix.getenv("WINTERMOLT_TTS_VOICE") orelse "alloy";
-        const elevenlabs_api_key = std.posix.getenv("ELEVENLABS_API_KEY");
-        const elevenlabs_voice_id = std.posix.getenv("ELEVENLABS_VOICE_ID");
+        const tts_provider = compat.getenv("WINTERMOLT_TTS_PROVIDER");
+        const tts_voice = compat.getenv("WINTERMOLT_TTS_VOICE") orelse "alloy";
+        const elevenlabs_api_key = compat.getenv("ELEVENLABS_API_KEY");
+        const elevenlabs_voice_id = compat.getenv("ELEVENLABS_VOICE_ID");
 
         // Load constitution from file or use built-in default
         const constitution_result = if (alloc) |a| loadConstitution(a) else .{ null, default_constitution };
@@ -349,7 +350,7 @@ pub const Config = struct {
 };
 
 fn loadConstitution(alloc: std.mem.Allocator) struct { ?[]u8, []const u8 } {
-    if (std.posix.getenv("WINTERMOLT_CONSTITUTION")) |custom_path| {
+    if (compat.getenv("WINTERMOLT_CONSTITUTION")) |custom_path| {
         if (custom_path.len > 0) {
             const file = std.fs.cwd().openFile(custom_path, .{}) catch {
                 const stderr = std.fs.File.stderr().deprecatedWriter();
@@ -364,7 +365,7 @@ fn loadConstitution(alloc: std.mem.Allocator) struct { ?[]u8, []const u8 } {
 }
 
 fn loadConstitutionFromHome(alloc: std.mem.Allocator) struct { ?[]u8, []const u8 } {
-    const home = std.posix.getenv("HOME") orelse return .{ null, default_constitution };
+    const home = compat.getenv("HOME") orelse return .{ null, default_constitution };
 
     var path_buf: [512]u8 = undefined;
     const path = std.fmt.bufPrint(&path_buf, "{s}/.wintermolt/constitution.md", .{home}) catch
@@ -400,7 +401,7 @@ fn readConstitutionFile(alloc: std.mem.Allocator, file: std.fs.File, path: []con
 }
 
 pub fn getConstitutionPath() ?[]const u8 {
-    const home = std.posix.getenv("HOME") orelse return null;
+    const home = compat.getenv("HOME") orelse return null;
     var buf: [512]u8 = undefined;
     const path = std.fmt.bufPrint(&buf, "{s}/.wintermolt/constitution.md", .{home}) catch return null;
     std.fs.cwd().access(path, .{}) catch return null;

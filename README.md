@@ -24,7 +24,7 @@
 
 ```
 $ wintermolt
-Wintermolt v0.3.0 — AI Agent CLI
+Wintermolt v0.4.0 — AI Agent CLI
 Backend: ollama (qwen3:0.6b)
 
 > Refactor all error handling in src/ to use proper Zig error unions
@@ -73,10 +73,35 @@ Most AI coding tools ship hundreds of megabytes of Electron or Node.js runtime j
 
 ## Quick Start
 
+### Download Prebuilt Binary
+
+The repository ships pre-built binaries under `prebuilt/`. Pick the one
+matching your platform — no Zig toolchain needed.
+
+| Platform                          | Binary                                                                                                | Notes                                          |
+| :-------------------------------- | :---------------------------------------------------------------------------------------------------- | :--------------------------------------------- |
+| **macOS (Apple Silicon)**         | [`wintermolt-darwin-arm64`](prebuilt/wintermolt-darwin-arm64)                                         | Mach-O arm64, ships with `libcurl` + `sqlite3` |
+| **Linux (ARM64 — Jetson, Pi 5)**  | [`wintermolt-linux-arm64`](prebuilt/wintermolt-linux-arm64)                                           | ELF aarch64, dynamic                           |
+| **Linux (x86_64 — servers, VMs)** | _(build from source — see below)_                                                                     | Cross-compile target `x86_64-linux-gnu`        |
+| **Windows (x86_64) — NEW in v0.4** | [`wintermolt-windows-x86_64.exe`](prebuilt/wintermolt-windows-x86_64.exe)                            | PE32+, requires MSYS2 UCRT64 DLLs at runtime   |
+
+```bash
+# macOS / Linux — make executable and run
+chmod +x prebuilt/wintermolt-darwin-arm64
+./prebuilt/wintermolt-darwin-arm64
+
+# Windows (PowerShell)
+.\prebuilt\wintermolt-windows-x86_64.exe
+```
+
 ### Prerequisites
 
+If building from source:
+
 - **[Zig 0.15.2+](https://ziglang.org/download/)** (single binary, no installer needed)
-- **libcurl** + **sqlite3** (pre-installed on macOS and most Linux distros)
+- **libcurl** + **sqlite3**
+  - **macOS / Linux**: pre-installed on most distros
+  - **Windows**: install via [MSYS2 UCRT64](https://www.msys2.org/) — `pacman -S mingw-w64-ucrt-x86_64-curl mingw-w64-ucrt-x86_64-sqlite3`
 - [Ollama](https://ollama.com) running locally (default, no API key needed)
 - Cloud backends are optional: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`, etc.
 
@@ -101,7 +126,13 @@ zig build -Dtarget=aarch64-linux-gnu
 # x86_64 Linux — servers, CI, cloud VMs
 zig build -Dtarget=x86_64-linux-gnu
 
-# Same 3MB binary. Same features. Zero config.
+# macOS Apple Silicon
+zig build -Dtarget=aarch64-macos-none
+
+# Windows x86_64 (requires MSYS2 UCRT64 dev libs on the build host)
+zig build -Dtarget=x86_64-windows-gnu
+
+# Same binary. Same features. Zero config.
 ```
 
 ---
@@ -485,16 +516,17 @@ wintermolt (3 MB arm64 binary)
 ├── src/chat/bridge.zig          Chat platform bridge (JSON lines IPC)
 ├── src/web/bridge.zig           Web UI bridge (WebSocket + JSON lines)
 │
-├── prebuilt/macos-arm64/lib/    Prebuilt Zig archives (no source needed)
-│   ├── libforagent.a            forAgent — sessions, MCP, tool registry
-│   └── libforlearn.a            forLearn — online learning + harness gen
+├── prebuilt/                    Prebuilt executables (committed to repo)
+│   ├── wintermolt-darwin-arm64        macOS Apple Silicon
+│   ├── wintermolt-linux-arm64         Linux ARM64 (Jetson, Pi 5)
+│   └── wintermolt-windows-x86_64.exe  Windows x86_64
 │
 └── menubar/                     macOS menu bar Swift sidecar
     ├── Package.swift            Swift package manifest
     └── Sources/main.swift       NSStatusBar app (~270 lines)
 ```
 
-**External dependencies:** `libcurl` (HTTPS) + `sqlite3` (persistence). That's it. Both are pre-installed on macOS and most Linux.
+**External dependencies:** `libcurl` (HTTPS) + `sqlite3` (persistence). That's it. Pre-installed on macOS and most Linux. On Windows, install via MSYS2 UCRT64 (see [Prerequisites](#prerequisites)).
 
 **Prebuilt libraries:** `libforagent.a` and `libforlearn.a` are pure Zig static archives — no Fortran runtime, no gfortran needed. For kernel-accelerated inference and Fortran-backed compute, see [Wintermute](https://github.com/lupin4/Wintermute) (proprietary).
 

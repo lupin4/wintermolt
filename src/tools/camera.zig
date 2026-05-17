@@ -10,6 +10,7 @@
 // Returns base64-encoded JPEG data for inclusion as Claude Vision content blocks.
 
 const std = @import("std");
+const compat = @import("../compat.zig");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 const Child = std.process.Child;
@@ -415,8 +416,8 @@ fn objectDetect(alloc: Allocator, input_json: []const u8, device: ?[]const u8) !
     defer alloc.free(result.data);
 
     // Step 2: Get Ollama config from environment
-    const ollama_url = std.posix.getenv("WINTERMOLT_OLLAMA_URL") orelse "http://localhost:11434";
-    const vision_model = std.posix.getenv("WINTERMOLT_VISION_MODEL") orelse "llava";
+    const ollama_url = compat.getenv("WINTERMOLT_OLLAMA_URL") orelse "http://localhost:11434";
+    const vision_model = compat.getenv("WINTERMOLT_VISION_MODEL") orelse "llava";
 
     // Step 3: Build the detection prompt
     const detect_prompt = custom_prompt orelse

@@ -12,6 +12,7 @@
 //   ping    — Run `tailscale ping <hostname>` for connectivity check
 
 const std = @import("std");
+const compat = @import("../compat.zig");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 const sse = @import("../api/sse.zig");
@@ -88,7 +89,7 @@ fn getTailscaleStatus(alloc: Allocator) ![]u8 {
 fn getTailscaleDevices(alloc: Allocator, input_json: []const u8) ![]u8 {
     _ = input_json;
 
-    const api_key = std.posix.getenv("TAILSCALE_API_KEY") orelse {
+    const api_key = compat.getenv("TAILSCALE_API_KEY") orelse {
         return alloc.dupe(u8,
             "TAILSCALE_API_KEY not set. To use the devices API:\n" ++
             "  1. Go to https://login.tailscale.com/admin/settings/keys\n" ++

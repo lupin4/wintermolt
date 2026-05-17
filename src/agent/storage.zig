@@ -14,6 +14,7 @@
 // for planned RAG vector search and MongoDB cloud sync.
 
 const std = @import("std");
+const compat = @import("../compat.zig");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 const protocol = @import("../api/protocol.zig");
@@ -646,7 +647,7 @@ pub const Storage = struct {
 /// Get the database path: ~/.wintermolt/history.db
 /// Creates the directory if it doesn't exist.
 fn getDbPath(alloc: Allocator) ![]u8 {
-    const home = std.posix.getenv("HOME") orelse return error.NoHomeDir;
+    const home = compat.getenv("HOME") orelse return error.NoHomeDir;
     const dir_path = try std.fmt.allocPrint(alloc, "{s}/.wintermolt", .{home});
     defer alloc.free(dir_path);
 

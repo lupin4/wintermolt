@@ -18,6 +18,7 @@
 //   - Subagents do NOT inherit parent's conversation context
 
 const std = @import("std");
+const compat = @import("../compat.zig");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 
@@ -64,10 +65,10 @@ pub const SubagentManager = struct {
     spawn_fn: ?SpawnFn,
 
     pub fn init(alloc: Allocator) SubagentManager {
-        const max_depth_str = std.posix.getenv("WINTERMOLT_SUBAGENT_MAX_DEPTH") orelse "3";
+        const max_depth_str = compat.getenv("WINTERMOLT_SUBAGENT_MAX_DEPTH") orelse "3";
         const max_depth = std.fmt.parseInt(u8, max_depth_str, 10) catch DEFAULT_MAX_DEPTH;
 
-        const max_concurrent_str = std.posix.getenv("WINTERMOLT_SUBAGENT_MAX_CONCURRENT") orelse "4";
+        const max_concurrent_str = compat.getenv("WINTERMOLT_SUBAGENT_MAX_CONCURRENT") orelse "4";
         const max_concurrent = std.fmt.parseInt(u8, max_concurrent_str, 10) catch DEFAULT_MAX_CONCURRENT;
 
         return .{

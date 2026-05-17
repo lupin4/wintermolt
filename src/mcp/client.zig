@@ -18,6 +18,7 @@
 // Tool names are prefixed: "filesystem__read_file", "database__query"
 
 const std = @import("std");
+const compat = @import("../compat.zig");
 const Allocator = std.mem.Allocator;
 const Child = std.process.Child;
 const mcp = @import("protocol.zig");
@@ -230,8 +231,8 @@ pub const McpClientManager = struct {
         const stderr = std.fs.File.stderr().deprecatedWriter();
 
         // Check env override first
-        const config_path = std.posix.getenv("WINTERMOLT_MCP_CONFIG") orelse blk: {
-            const home = std.posix.getenv("HOME") orelse return;
+        const config_path = compat.getenv("WINTERMOLT_MCP_CONFIG") orelse blk: {
+            const home = compat.getenv("HOME") orelse return;
             var buf: [512]u8 = undefined;
             const path = std.fmt.bufPrint(&buf, "{s}/.wintermolt/mcp.json", .{home}) catch return;
             break :blk path;

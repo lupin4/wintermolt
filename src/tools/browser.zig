@@ -23,6 +23,7 @@
 //   - Falls back gracefully when Chrome is not running
 
 const std = @import("std");
+const compat = @import("../compat.zig");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 const Child = std.process.Child;
@@ -88,7 +89,7 @@ const CDP_HTTP_TIMEOUT: c_long = 10;
 const CDP_WS_TIMEOUT: u32 = 15;
 
 fn getCdpPort() u16 {
-    const port_str = std.posix.getenv("WINTERMOLT_CDP_PORT") orelse return DEFAULT_CDP_PORT;
+    const port_str = compat.getenv("WINTERMOLT_CDP_PORT") orelse return DEFAULT_CDP_PORT;
     return std.fmt.parseInt(u16, port_str, 10) catch DEFAULT_CDP_PORT;
 }
 

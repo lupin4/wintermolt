@@ -7,6 +7,7 @@
 // and optionally base64 data for vision feedback loops.
 
 const std = @import("std");
+const compat = @import("../compat.zig");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 const sse = @import("../api/sse.zig");
@@ -49,7 +50,7 @@ pub fn executeTool(alloc: Allocator, input_json: []const u8) ![]u8 {
     const prompt = sse.findJsonString(input_json, "prompt") orelse
         return alloc.dupe(u8, "Error: 'prompt' field is required.");
 
-    const api_key = std.posix.getenv("OPENAI_API_KEY") orelse
+    const api_key = compat.getenv("OPENAI_API_KEY") orelse
         return alloc.dupe(u8, "Error: OPENAI_API_KEY not set. Required for image generation.");
 
     const size = sse.findJsonString(input_json, "size") orelse "1024x1024";

@@ -12,6 +12,7 @@
 // Tokens are cached in memory and auto-refreshed when expired.
 
 const std = @import("std");
+const compat = @import("../compat.zig");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 
@@ -64,9 +65,9 @@ pub const GoogleAuth = struct {
     pub fn init(alloc: Allocator) GoogleAuth {
         return .{
             .alloc = alloc,
-            .client_id = std.posix.getenv("GOOGLE_CLIENT_ID"),
-            .client_secret = std.posix.getenv("GOOGLE_CLIENT_SECRET"),
-            .refresh_token = std.posix.getenv("GOOGLE_REFRESH_TOKEN"),
+            .client_id = compat.getenv("GOOGLE_CLIENT_ID"),
+            .client_secret = compat.getenv("GOOGLE_CLIENT_SECRET"),
+            .refresh_token = compat.getenv("GOOGLE_REFRESH_TOKEN"),
             .access_token = null,
             .token_expiry = 0,
         };

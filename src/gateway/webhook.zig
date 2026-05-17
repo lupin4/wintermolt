@@ -19,6 +19,7 @@
 // appropriate agent via the standard IPC bridge.
 
 const std = @import("std");
+const compat = @import("../compat.zig");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 
@@ -55,7 +56,7 @@ pub fn verifySignature(body: []const u8, signature_header: []const u8, secret: [
 
 /// Parse a webhook payload from raw JSON body.
 pub fn parsePayload(alloc: Allocator, body: []const u8, signature: ?[]const u8) !WebhookPayload {
-    const secret = std.posix.getenv("WINTERMOLT_WEBHOOK_SECRET");
+    const secret = compat.getenv("WINTERMOLT_WEBHOOK_SECRET");
 
     const sig_valid = if (signature) |sig| blk: {
         if (secret) |s| {

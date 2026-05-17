@@ -12,6 +12,7 @@
 //   cron   — standard cron expression ("*/5 * * * *")
 
 const std = @import("std");
+const compat = @import("../compat.zig");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 const bash_tool = @import("../tools/bash.zig");
@@ -746,7 +747,7 @@ const FormatDurationResult = struct {
 };
 
 fn getDbPath(alloc: Allocator) ![]u8 {
-    const home = std.posix.getenv("HOME") orelse return error.NoHomeDir;
+    const home = compat.getenv("HOME") orelse return error.NoHomeDir;
     const dir_path = try std.fmt.allocPrint(alloc, "{s}/.wintermolt", .{home});
     defer alloc.free(dir_path);
     std.fs.makeDirAbsolute(dir_path) catch |e| {

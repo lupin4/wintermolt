@@ -10,6 +10,7 @@
 //   // Returns localized string or English fallback
 
 const std = @import("std");
+const compat = @import("../compat.zig");
 
 pub const Locale = enum {
     en,
@@ -34,9 +35,9 @@ pub const Locale = enum {
 
 /// Detect locale from environment.
 pub fn detectLocale() Locale {
-    if (std.posix.getenv("WINTERMOLT_LOCALE")) |loc| return Locale.fromString(loc);
-    if (std.posix.getenv("LANG")) |lang| return Locale.fromString(lang);
-    if (std.posix.getenv("LC_ALL")) |lc| return Locale.fromString(lc);
+    if (compat.getenv("WINTERMOLT_LOCALE")) |loc| return Locale.fromString(loc);
+    if (compat.getenv("LANG")) |lang| return Locale.fromString(lang);
+    if (compat.getenv("LC_ALL")) |lc| return Locale.fromString(lc);
     return .en;
 }
 

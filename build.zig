@@ -45,21 +45,58 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
 
-    // --- forAgent + forLearn: built from sibling repos (zig-out/{target}/lib/) ---
+    // --- forAgent + forLearn: built from sibling repos.
+    // The 2026-05-16 decree made winX86/linX86/thor/macos the canonical
+    // delivery dirs, but older builds still publish at the Zig triple-style
+    // {arch-os-abi}. Try canonical first, then fall back. Names are
+    // probed in both Unix (libfoo.a) and Zig-native Windows (foo.lib) form.
     const target_name = getTargetName(target.result);
-    const foragent_path = b.fmt("../forAgent/zig-out/{s}/lib/libforagent.a", .{target_name});
-    const forlearn_path = b.fmt("../forLearn/zig-out/{s}/lib/libforlearn.a", .{target_name});
-    exe_mod.addObjectFile(.{ .cwd_relative = foragent_path });
-    exe_mod.addObjectFile(.{ .cwd_relative = forlearn_path });
+    addSiblingArchive(exe_mod, b, "forAgent", "libforagent.a", target_name);
+    addSiblingArchive(exe_mod, b, "forLearn", "libforlearn.a", target_name);
 
     // System libraries — dynamic linking
+    const t = target.result;
+
+    // On Windows the linker can't find libs without explicit paths. MSYS2
+    // UCRT64 is the assumed toolchain (matches Wintermute).
+    if (t.os.tag == .windows) {
+        exe_mod.addLibraryPath(.{ .cwd_relative = "C:/msys64/ucrt64/lib" });
+        exe_mod.addLibraryPath(.{ .cwd_relative = "C:/msys64/ucrt64/lib/gcc/x86_64-w64-mingw32/15.2.0" });
+    }
+
     exe_mod.linkSystemLibrary("curl", .{});
     exe_mod.linkSystemLibrary("sqlite3", .{});
+
+    // Windows / MSYS2: libcurl is built with HTTP/3 (QUIC) and pulls in a
+    // long chain of dependencies that must be linked explicitly.
+    if (t.os.tag == .windows) {
+        const win_deps = [_][]const u8{
+            // libcurl HTTP/3 stack
+            "nghttp3",       "ngtcp2",   "ngtcp2_crypto_ossl", "nghttp2",
+            // TLS + crypto
+            "ssl",           "crypto",
+            // compression
+            "zstd",          "brotlidec", "brotlicommon",      "z",
+            // libcurl misc deps
+            "idn2",          "psl",       "ssh2",
+            // libidn2/libpsl deps
+            "unistring",     "iconv",
+            // Windows system
+            "ws2_32",        "wldap32",   "crypt32",            "bcrypt",
+            "normaliz",      "iphlpapi",  "advapi32",           "secur32",
+        };
+        for (win_deps) |lib| exe_mod.linkSystemLibrary(lib, .{});
+    }
 
     const exe = b.addExecutable(.{
         .name = "wintermolt",
         .root_module = exe_mod,
     });
+
+    // Let LLD warnings (e.g. LNK4217 locally-defined-symbol-imported) pass
+    // through without aborting the build. Zig 0.15.2 otherwise treats any
+    // LLD stderr as a hard failure.
+    exe.allow_so_scripts = true;
 
     b.installArtifact(exe);
 
@@ -91,6 +128,33 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_unit_tests.step);
 }
 
+/// Try sibling delivery paths in canonical-first order. Probes both Unix
+/// (libfoo.a) and Zig-native Windows (foo.lib) naming.
+fn addSiblingArchive(mod: *std.Build.Module, b: *std.Build, sibling: []const u8, name: []const u8, target_name: []const u8) void {
+    const delivery_dirs = [_][]const u8{ target_name, "winX86", "linX86", "thor", "macos", "windows-x86_64", "linux-x86_64" };
+    const win_name: ?[]const u8 = blk: {
+        if (!std.mem.startsWith(u8, name, "lib")) break :blk null;
+        if (!std.mem.endsWith(u8, name, ".a")) break :blk null;
+        const base = name[3 .. name.len - 2];
+        break :blk b.fmt("{s}.lib", .{base});
+    };
+    for (delivery_dirs) |od| {
+        const p = b.fmt("../{s}/zig-out/{s}/lib/{s}", .{ sibling, od, name });
+        if (std.fs.cwd().access(p, .{})) |_| {
+            mod.addObjectFile(.{ .cwd_relative = p });
+            return;
+        } else |_| {}
+        if (win_name) |wn| {
+            const pw = b.fmt("../{s}/zig-out/{s}/lib/{s}", .{ sibling, od, wn });
+            if (std.fs.cwd().access(pw, .{})) |_| {
+                mod.addObjectFile(.{ .cwd_relative = pw });
+                return;
+            } else |_| {}
+        }
+    }
+    std.log.warn("archive not found: {s}/{s} (build the source repo first)", .{ sibling, name });
+}
+
 fn getTargetName(t: std.Target) []const u8 {
     return switch (t.os.tag) {
         .macos => switch (t.cpu.arch) {
@@ -103,7 +167,9 @@ fn getTargetName(t: std.Target) []const u8 {
             else => "linux-unknown",
         },
         .windows => switch (t.cpu.arch) {
-            .x86_64 => "windows-x86_64",
+            // Per 2026-05-16 delivery-dir decree: canonical Windows delivery
+            // is "winX86" (matches sibling repos' zig-out/{delivery}/lib/).
+            .x86_64 => "winX86",
             else => "windows-unknown",
         },
         else => "unknown",

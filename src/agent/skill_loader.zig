@@ -19,6 +19,7 @@
 //   prompt — Description-only (injected into system prompt, no execution)
 
 const std = @import("std");
+const compat = @import("../compat.zig");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 const sse = @import("../api/sse.zig");
@@ -101,7 +102,7 @@ pub const SkillRegistry = struct {
     fn loadFromPlugins(self: *SkillRegistry) !void {
         // Scan default plugin directory
         var home_buf: [512]u8 = undefined;
-        const home = std.posix.getenv("HOME") orelse return;
+        const home = compat.getenv("HOME") orelse return;
         const plugin_dir = std.fmt.bufPrint(&home_buf, "{s}/.wintermolt/plugins", .{home}) catch return;
         self.scanDirectory(plugin_dir) catch {};
     }

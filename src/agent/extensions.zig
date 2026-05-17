@@ -17,6 +17,7 @@
 //                    "url": "...", "checksum": "..."}]}
 
 const std = @import("std");
+const compat = @import("../compat.zig");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 
@@ -59,10 +60,10 @@ pub const ExtensionManager = struct {
     plugins_dir: []const u8,
 
     pub fn init(alloc: Allocator) ExtensionManager {
-        const registry = std.posix.getenv("WINTERMOLT_EXTENSION_REGISTRY") orelse
+        const registry = compat.getenv("WINTERMOLT_EXTENSION_REGISTRY") orelse
             "https://raw.githubusercontent.com/forKernels/wintermolt-extensions/main/registry.json";
 
-        const home = std.posix.getenv("HOME") orelse "/tmp";
+        const home = compat.getenv("HOME") orelse "/tmp";
         const plugins_dir = std.fmt.allocPrint(alloc, "{s}/.wintermolt/plugins", .{home}) catch "/tmp/wintermolt-plugins";
 
         // Ensure plugins directory exists

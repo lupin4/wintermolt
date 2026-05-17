@@ -14,6 +14,7 @@
 //   - Each agent gets its own History, Storage conversation, and session state
 
 const std = @import("std");
+const compat = @import("../compat.zig");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 const loop_mod = @import("loop.zig");
@@ -37,10 +38,10 @@ pub const AgentPool = struct {
     idle_timeout: i64, // seconds
 
     pub fn init(alloc: Allocator, config: *config_mod.Config) AgentPool {
-        const max_str = std.posix.getenv("WINTERMOLT_MAX_AGENTS") orelse "16";
+        const max_str = compat.getenv("WINTERMOLT_MAX_AGENTS") orelse "16";
         const max_agents = std.fmt.parseInt(usize, max_str, 10) catch 16;
 
-        const idle_str = std.posix.getenv("WINTERMOLT_AGENT_IDLE_TIMEOUT") orelse "1800";
+        const idle_str = compat.getenv("WINTERMOLT_AGENT_IDLE_TIMEOUT") orelse "1800";
         const idle_timeout = std.fmt.parseInt(i64, idle_str, 10) catch 1800;
 
         return .{

@@ -14,6 +14,7 @@
 //   - Lifecycle events: on_create, on_message, on_end
 
 const std = @import("std");
+const compat = @import("../compat.zig");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 
@@ -365,7 +366,7 @@ fn generateUuid() [36]u8 {
 }
 
 fn getDbPath(alloc: Allocator) ![]u8 {
-    const home = std.posix.getenv("HOME") orelse return error.NoHomeDir;
+    const home = compat.getenv("HOME") orelse return error.NoHomeDir;
     const dir_path = try std.fmt.allocPrint(alloc, "{s}/.wintermolt", .{home});
     defer alloc.free(dir_path);
     std.fs.makeDirAbsolute(dir_path) catch |e| {

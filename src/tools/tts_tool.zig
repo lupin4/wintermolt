@@ -7,6 +7,7 @@
 // Can also play audio directly via system audio (afplay on macOS, aplay on Linux).
 
 const std = @import("std");
+const compat = @import("../compat.zig");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 const sse = @import("../api/sse.zig");
@@ -25,9 +26,9 @@ pub fn executeTool(alloc: Allocator, input_json: []const u8) ![]u8 {
         return alloc.dupe(u8, "Error: Text too long. Maximum 4096 characters per synthesis.");
 
     // Check if TTS is configured
-    const provider_str = std.posix.getenv("WINTERMOLT_TTS_PROVIDER");
+    const provider_str = compat.getenv("WINTERMOLT_TTS_PROVIDER");
     if (provider_str == null) {
-        const has_openai = std.posix.getenv("OPENAI_API_KEY") != null;
+        const has_openai = compat.getenv("OPENAI_API_KEY") != null;
         if (!has_openai) {
             return alloc.dupe(u8, "Error: TTS not configured. Set WINTERMOLT_TTS_PROVIDER (openai, elevenlabs, piper, edge) and the relevant API key.");
         }
@@ -70,8 +71,8 @@ pub fn executeTool(alloc: Allocator, input_json: []const u8) ![]u8 {
 
     return std.fmt.allocPrint(alloc, "Audio saved to: {s}\nFormat: mp3\nProvider: {s}\nVoice: {s}", .{
         file_path,
-        provider_override orelse (std.posix.getenv("WINTERMOLT_TTS_PROVIDER") orelse "openai"),
-        voice_override orelse (std.posix.getenv("WINTERMOLT_TTS_VOICE") orelse "alloy"),
+        provider_override orelse (compat.getenv("WINTERMOLT_TTS_PROVIDER") orelse "openai"),
+        voice_override orelse (compat.getenv("WINTERMOLT_TTS_VOICE") orelse "alloy"),
     });
 }
 
