@@ -4,7 +4,7 @@
   ║║║││││ │ ├┤ ├┬┘││││ ││  │
   ╚╩╝┴┘└┘ ┴ └─┘┴└─┴ ┴└─┘┴─┘┴
   </pre>
-  <strong>One binary. 3 MB. Zero runtime. Every AI backend.</strong><br>
+  <strong>One binary. Zero runtime. Every AI backend.</strong><br>
   An autonomous AI agent CLI written entirely in Zig.<br><br>
   <a href="#quick-start">Quick Start</a> &bull;
   <a href="#features">Features</a> &bull;
@@ -15,9 +15,10 @@
 <p align="center">
   <img src="https://img.shields.io/badge/lang-Zig_0.15-f7a41d?style=flat-square&logo=zig&logoColor=white" alt="Zig">
   <img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="License">
-  <img src="https://img.shields.io/badge/binary-3_MB-brightgreen?style=flat-square" alt="Size">
+  <img src="https://img.shields.io/badge/binary-1%E2%80%9312_MB-brightgreen?style=flat-square" alt="Size">
+  <img src="https://img.shields.io/badge/platforms-macOS_%7C_Linux_%7C_Windows-success?style=flat-square" alt="Platforms">
   <img src="https://img.shields.io/badge/deps-2_(libcurl%2C_sqlite3)-orange?style=flat-square" alt="Dependencies">
-  <img src="https://img.shields.io/badge/backends-6_(Ollama%2C_Claude%2C_GPT%2C_DeepSeek%2C_Qwen%2C_Gemini)-purple?style=flat-square" alt="Backends">
+  <img src="https://img.shields.io/badge/backends-7_(Ollama%2C_Claude%2C_GPT%2C_DeepSeek%2C_Qwen%2C_Gemini%2C_forAI)-purple?style=flat-square" alt="Backends">
 </p>
 
 ---
@@ -51,15 +52,16 @@ Tailscale peers:
 
 ## Why Wintermolt?
 
-Most AI coding tools ship hundreds of megabytes of Electron or Node.js runtime just to send API calls and edit files. Wintermolt compiles to a **single 3 MB native binary** that cross-compiles to any platform Zig supports — including ARM boards like Jetson and Raspberry Pi.
+Most AI coding tools ship hundreds of megabytes of Electron or Node.js runtime just to send API calls and edit files. Wintermolt compiles to a **single native binary** — 1 MB on macOS Apple Silicon, 7 MB on Linux ARM, 12 MB on Windows (statically-linked HTTP/3 stack) — and cross-compiles to any platform Zig supports, including ARM boards like Jetson and Raspberry Pi.
 
 | | Wintermolt | Claude Code | Cursor | Aider |
 |---|:---:|:---:|:---:|:---:|
-| **Binary size** | **3 MB** | ~200 MB | ~500 MB | ~50 MB |
+| **Binary size** | **1–12 MB** | ~200 MB | ~500 MB | ~50 MB |
 | **Runtime** | **None** | Node.js 18+ | Electron | Python 3.8+ |
 | **Cross-compile** | **One command** | N/A | N/A | N/A |
 | **Runs on Jetson/Pi** | **Yes** | Barely | No | Slow |
-| **AI backends** | **6** | 1 | Multiple | Multiple |
+| **Runs on Windows** | **Yes (v0.4+)** | Via WSL | Yes | Yes |
+| **AI backends** | **7** | 1 | Multiple | Multiple |
 | **Camera + vision** | **Built-in** | No | No | No |
 | **Browser automation** | **Built-in** | No | No | No |
 | **MCP client + server** | **Both** | Client only | Client only | No |
