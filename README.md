@@ -75,66 +75,109 @@ Most AI coding tools ship hundreds of megabytes of Electron or Node.js runtime j
 
 ## Quick Start
 
-### Download Prebuilt Binary
+> **Two-step setup.** Download the binary, install Ollama, run. No
+> compiler, no `npm install`, no Docker. Total time: ~2 minutes.
 
-The repository ships pre-built binaries under `prebuilt/`. Pick the one
-matching your platform — no Zig toolchain needed.
+### Step 1 — Grab the binary for your platform
 
-| Platform                          | Binary                                                                                                | Notes                                          |
-| :-------------------------------- | :---------------------------------------------------------------------------------------------------- | :--------------------------------------------- |
-| **macOS (Apple Silicon)**         | [`wintermolt-darwin-arm64`](prebuilt/wintermolt-darwin-arm64)                                         | Mach-O arm64, ships with `libcurl` + `sqlite3` |
-| **Linux (ARM64 — Jetson, Pi 5)**  | [`wintermolt-linux-arm64`](prebuilt/wintermolt-linux-arm64)                                           | ELF aarch64, dynamic                           |
-| **Linux (x86_64 — servers, VMs)** | _(build from source — see below)_                                                                     | Cross-compile target `x86_64-linux-gnu`        |
-| **Windows (x86_64) — NEW in v0.4** | [`wintermolt-windows-x86_64.exe`](prebuilt/wintermolt-windows-x86_64.exe)                            | PE32+, requires MSYS2 UCRT64 DLLs at runtime   |
+Pick the line that matches you and paste it into a terminal. The binary
+lands as `./wintermolt` (or `wintermolt.exe` on Windows) in your current
+directory.
+
+**macOS (Apple Silicon — M1/M2/M3/M4):**
 
 ```bash
-# macOS / Linux — make executable and run
-chmod +x prebuilt/wintermolt-darwin-arm64
-./prebuilt/wintermolt-darwin-arm64
-
-# Windows (PowerShell)
-.\prebuilt\wintermolt-windows-x86_64.exe
+curl -L -o wintermolt https://github.com/lupin4/wintermolt/raw/main/prebuilt/wintermolt-darwin-arm64 \
+  && chmod +x wintermolt
 ```
+
+**Linux (ARM64 — Jetson, Raspberry Pi 5, AWS Graviton, etc.):**
+
+```bash
+curl -L -o wintermolt https://github.com/lupin4/wintermolt/raw/main/prebuilt/wintermolt-linux-arm64 \
+  && chmod +x wintermolt
+```
+
+**Windows (x86_64) — PowerShell:**
+
+```powershell
+Invoke-WebRequest `
+  -Uri https://github.com/lupin4/wintermolt/raw/main/prebuilt/wintermolt-windows-x86_64.exe `
+  -OutFile wintermolt.exe
+```
+
+**Linux (x86_64 — servers, cloud VMs):** prebuilt binary not yet
+shipped — [build from source](#build-from-source) (one Zig command).
+
+### Step 2 — Install Ollama (optional but recommended)
+
+Wintermolt's default backend is [Ollama](https://ollama.com), which
+runs models locally. No API key needed.
+
+```bash
+# macOS / Linux
+curl -fsSL https://ollama.com/install.sh | sh
+
+# Windows: download installer from https://ollama.com/download/windows
+
+# Then pull the default model (~500 MB)
+ollama pull qwen3:0.6b
+```
+
+Prefer cloud models? Skip Ollama and run `./wintermolt --keys` to set
+an API key for Claude, GPT, DeepSeek, Qwen, Gemini, or forAI.
+
+### Step 3 — Run
+
+```bash
+./wintermolt                          # interactive REPL
+./wintermolt -e "list files in pwd"   # one-shot prompt
+./wintermolt --keys                   # configure cloud API keys
+./wintermolt --help                   # all commands
+```
+
+That's it. You're running.
+
+### Platform notes
+
+| Platform | Binary | Size | Notes |
+|:---|:---|---:|:---|
+| macOS arm64 | [`wintermolt-darwin-arm64`](prebuilt/wintermolt-darwin-arm64) | 1.1 MB | Mach-O, dynamic libcurl + sqlite3 |
+| Linux arm64 | [`wintermolt-linux-arm64`](prebuilt/wintermolt-linux-arm64) | 7 MB | ELF aarch64, dynamic |
+| Windows x86_64 | [`wintermolt-windows-x86_64.exe`](prebuilt/wintermolt-windows-x86_64.exe) | 12 MB | PE32+, static HTTP/3 + crypto. **Runtime needs MSYS2 UCRT64 DLLs on `PATH`** — install via [MSYS2](https://www.msys2.org/) once, then `pacman -S mingw-w64-ucrt-x86_64-curl mingw-w64-ucrt-x86_64-sqlite3`. |
+| Linux x86_64 | _build from source_ | — | `zig build -Dtarget=x86_64-linux-gnu` |
+
+---
+
+## Build from source
+
+If you want to compile yourself (also required for Linux x86_64 today).
 
 ### Prerequisites
 
-If building from source:
-
-- **[Zig 0.15.2+](https://ziglang.org/download/)** (single binary, no installer needed)
-- **libcurl** + **sqlite3**
-  - **macOS / Linux**: pre-installed on most distros
-  - **Windows**: install via [MSYS2 UCRT64](https://www.msys2.org/) — `pacman -S mingw-w64-ucrt-x86_64-curl mingw-w64-ucrt-x86_64-sqlite3`
-- [Ollama](https://ollama.com) running locally (default, no API key needed)
-- Cloud backends are optional: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`, etc.
+- **[Zig 0.15.2+](https://ziglang.org/download/)** (one binary, no installer)
+- **libcurl** + **sqlite3** dev headers:
+  - **macOS**: `brew install curl sqlite3` (usually preinstalled)
+  - **Linux (Debian/Ubuntu)**: `sudo apt-get install libcurl4-openssl-dev libsqlite3-dev`
+  - **Linux (Fedora/RHEL)**: `sudo dnf install libcurl-devel sqlite-devel`
+  - **Windows**: install [MSYS2 UCRT64](https://www.msys2.org/), then `pacman -S mingw-w64-ucrt-x86_64-curl mingw-w64-ucrt-x86_64-sqlite3`
 
 ### Build & Run
 
 ```bash
 git clone https://github.com/lupin4/wintermolt.git
 cd wintermolt
-zig build
-./zig-out/bin/wintermolt              # starts immediately with Ollama (no setup needed)
-./zig-out/bin/wintermolt --keys       # optional: configure cloud API keys
+zig build -Doptimize=ReleaseSmall
+./zig-out/bin/wintermolt
 ```
-
-Three lines. No `npm install`. No `pip install`. No Docker. No mandatory API keys. Just Zig.
 
 ### Cross-Compile (one command)
 
 ```bash
-# ARM Linux — Jetson Orin, Raspberry Pi 5
-zig build -Dtarget=aarch64-linux-gnu
-
-# x86_64 Linux — servers, CI, cloud VMs
-zig build -Dtarget=x86_64-linux-gnu
-
-# macOS Apple Silicon
-zig build -Dtarget=aarch64-macos-none
-
-# Windows x86_64 (requires MSYS2 UCRT64 dev libs on the build host)
-zig build -Dtarget=x86_64-windows-gnu
-
-# Same binary. Same features. Zero config.
+zig build -Dtarget=aarch64-linux-gnu   # Linux ARM — Jetson, Pi 5
+zig build -Dtarget=x86_64-linux-gnu    # Linux x86_64 — servers, VMs
+zig build -Dtarget=aarch64-macos-none  # macOS Apple Silicon
+zig build -Dtarget=x86_64-windows-gnu  # Windows (needs MSYS2 UCRT64 on the build host)
 ```
 
 ---
