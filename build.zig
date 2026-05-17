@@ -6,7 +6,7 @@
 //   zig build          → zig-out/bin/wintermolt (main binary)
 //   zig build run      → build and run wintermolt
 //
-// Wintermolt is the MIT lite version of Wintermute. No forKernels,
+// Wintermolt is the Apache-2.0 lite version of Wintermute. No forKernels,
 // no Fortran archives, no TPU/fleet/cortex — just the core agentic loop
 // with multi-backend AI, tool dispatch, MCP, and skills.
 //

@@ -14,7 +14,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/lang-Zig_0.15-f7a41d?style=flat-square&logo=zig&logoColor=white" alt="Zig">
-  <img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="License">
+  <img src="https://img.shields.io/badge/license-Apache_2.0-blue?style=flat-square" alt="License">
   <img src="https://img.shields.io/badge/binary-1%E2%80%9312_MB-brightgreen?style=flat-square" alt="Size">
   <img src="https://img.shields.io/badge/platforms-macOS_%7C_Linux_%7C_Windows-success?style=flat-square" alt="Platforms">
   <img src="https://img.shields.io/badge/deps-2_(libcurl%2C_sqlite3)-orange?style=flat-square" alt="Dependencies">
@@ -69,7 +69,7 @@ Most AI coding tools ship hundreds of megabytes of Electron or Node.js runtime j
 | **Cron scheduler** | **Built-in** | No | No | No |
 | **Mesh networking** | **Tailscale** | No | No | No |
 | **Menu bar app** | **macOS native** | No | No | No |
-| **License** | **MIT** | Proprietary | Proprietary | Apache-2.0 |
+| **License** | **Apache-2.0** | Proprietary | Proprietary | Apache-2.0 |
 
 ---
 
@@ -611,5 +611,5 @@ Config file: `~/.wintermolt/.env` (created by `wintermolt --setup`)
 <p align="center">
   <strong>Built with Zig. No garbage collector. No runtime. No excuses.</strong><br><br>
   Copyright The Fantastic Planet — By David Clabaugh<br>
-  AGPL-3.0 License
+  Apache License 2.0
 </p>
