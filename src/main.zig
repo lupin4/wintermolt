@@ -37,7 +37,7 @@ const protocol = @import("api/protocol.zig");
 const setup = @import("setup.zig");
 const export_mod = @import("agent/export.zig");
 
-const VERSION = "0.4.0";
+const VERSION = "0.4.1";
 
 pub fn main() !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);

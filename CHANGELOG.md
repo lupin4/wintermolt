@@ -4,6 +4,35 @@ All notable changes to Wintermolt are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] — 2026-05-17
+
+### Changed
+
+- **Relicensed from MIT to Apache 2.0.** Full Apache License 2.0 text in
+  `LICENSE`. README badge, comparison table, and footer updated to match
+  (the prior footer incorrectly read "AGPL-3.0 License" — now corrected
+  along with the relicense).
+- LICENSE copyright line now reads "Copyright 2026 The Fantastic Planet
+  — By David Clabaugh" to match the project-wide convention used in
+  source headers and README footer.
+- README footer tagline trimmed.
+
+### Added
+
+- **`docs/` folder** with 5 focused reference pages (~85 lines each,
+  423 lines total):
+  - `docs/BACKENDS.md` — 7 backends, default models, env vars, `--keys` flow.
+  - `docs/TOOLS.md` — 20 built-in tools (9 core + 11 extended) with
+    keyword triggers and safety notes.
+  - `docs/SKILLS.md` — skill manifest format, built-in catalog, custom
+    skill install path.
+  - `docs/MCP.md` — MCP client + server configuration, Claude Desktop
+    and Zed wiring examples.
+  - `docs/DEPLOYMENT.md` — run modes (`--chat`, `--web`, `--menubar`,
+    `--gateway`, `--mcp-server`), 18 chat platforms, scheduler,
+    Tailscale, persistent storage paths.
+- README gains a "Documentation" section linking each page.
+
 ## [0.4.0] — 2026-05-16
 
 ### Added
