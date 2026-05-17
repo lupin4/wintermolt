@@ -504,6 +504,18 @@ Wintermolt ships with [forLearn](https://github.com/forKernels/forLearn), which 
 
 ---
 
+## Documentation
+
+| Page | Covers |
+| :--- | :--- |
+| [docs/BACKENDS.md](docs/BACKENDS.md) | All 7 backends, default models, env vars, `--keys` flow. |
+| [docs/TOOLS.md](docs/TOOLS.md) | The 20 built-in tools (9 core + 11 extended), triggers, safety. |
+| [docs/SKILLS.md](docs/SKILLS.md) | Skill manifest format, built-in catalog, custom skills. |
+| [docs/MCP.md](docs/MCP.md) | MCP client + server, `~/.wintermolt/mcp.json`, Claude Desktop / Zed wiring. |
+| [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | Run modes (`--chat`, `--web`, `--menubar`, `--gateway`), 18 chat platforms, scheduler, Tailscale, persistent storage. |
+
+---
+
 ## Architecture
 
 ```
