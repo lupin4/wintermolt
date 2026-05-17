@@ -1,0 +1,120 @@
+name: Wintermolt linX86 CI
+
+# Build Wintermolt for x86_64 linux and publish the binary to GCS.
+#
+# "linX86" refers to the target (Linux x86_64), not a source branch —
+# Wintermolt is single-branch (main).
+#
+# Trigger: workflow_dispatch only at first. Flip to push once green.
+# Auth: Workload Identity Federation — no long-lived service-account keys.
+#
+# Cost discipline:
+#   - Single ubuntu-24.04 runner, no matrix.
+#   - timeout 15 minutes (Wintermolt builds in ~1-2 minutes).
+#   - sibling archives downloaded one at a time from GCS.
+
+on:
+  workflow_dispatch:
+  # push:
+  #   branches: [main]
+
+env:
+  # Shared GCP project with Wintermute / forKernels siblings.
+  GCP_PROJECT_ID: wintermute-fp-0325181472
+  GCP_PROJECT_NUMBER: "32465403048"
+  GCP_SA: wintermute-ci@wintermute-fp-0325181472.iam.gserviceaccount.com
+  WIF_PROVIDER: projects/32465403048/locations/global/workloadIdentityPools/github-actions/providers/github
+  # forKernels prebuilts bucket — same canonical path the Wintermute
+  # linX86 workflow reads from. Each sibling publishes to <sib>/lib*.a here.
+  GCS_PREBUILTS: gs://forkernels-prebuilts/linX86
+  # Where this workflow publishes the Wintermolt binary.
+  GCS_BIN_DEST: gs://forkernels-prebuilts/linX86/Wintermolt
+  ZIG_VERSION: "0.15.2"
+  # Wintermolt only needs forAgent + forLearn (pure-Zig static archives,
+  # no Fortran runtime). Adding more here only if the build.zig grows
+  # additional sibling imports.
+  SIBLINGS: forAgent forLearn
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout Wintermolt
+        uses: actions/checkout@v4
+        with:
+          path: Wintermolt
+          fetch-depth: 1
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.GCP_SA }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Download sibling prebuilts (one at a time)
+        run: |
+          set -euo pipefail
+          # Each sibling's libfoo.a is placed at the canonical path
+          # Wintermolt's build.zig addSiblingArchive() probes:
+          #   ../<sibling>/zig-out/linX86/lib/libfoo.a
+          for sib in $SIBLINGS; do
+            lower=$(echo "$sib" | tr '[:upper:]' '[:lower:]')
+            dest="${{ github.workspace }}/${sib}/zig-out/linX86/lib"
+            mkdir -p "$dest"
+            gcloud storage cp \
+              "${GCS_PREBUILTS}/${sib}/lib${lower}.a" \
+              "${dest}/lib${lower}.a"
+            ls -la "$dest"
+          done
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libcurl4-openssl-dev libsqlite3-dev
+
+      - name: Install Zig ${{ env.ZIG_VERSION }}
+        uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+
+      - name: Zig build (ReleaseSmall, x86_64-linux-gnu)
+        working-directory: Wintermolt
+        run: |
+          set -euo pipefail
+          zig build \
+            -Dtarget=x86_64-linux-gnu \
+            -Doptimize=ReleaseSmall \
+            --summary all
+          file zig-out/bin/wintermolt
+          ls -la zig-out/bin/wintermolt
+
+      - name: Smoke test (--help must exit 0)
+        working-directory: Wintermolt
+        run: |
+          ./zig-out/bin/wintermolt --help > /dev/null
+
+      - name: Upload binary to GCS
+        working-directory: Wintermolt
+        run: |
+          set -euo pipefail
+          gcloud storage cp zig-out/bin/wintermolt \
+            "${GCS_BIN_DEST}/wintermolt-linux-x86_64"
+          gcloud storage cp zig-out/bin/wintermolt \
+            "${GCS_BIN_DEST}/wintermolt-linux-x86_64-${GITHUB_SHA::7}"
+
+      - name: Upload binary as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wintermolt-linux-x86_64
+          path: Wintermolt/zig-out/bin/wintermolt
+          retention-days: 14
