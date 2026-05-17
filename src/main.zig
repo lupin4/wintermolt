@@ -1129,7 +1129,7 @@ fn printBanner(w: anytype) !void {
         \\  ╚╩╝┴┘└┘ ┴ └─┘┴└─┴ ┴└─┘┴─┘┴
         \\
     );
-    try w.print("  v{s} — Lite AI Agent CLI (MIT)\n", .{VERSION});
+    try w.print("  v{s} — Lite AI Agent CLI (Apache-2.0)\n", .{VERSION});
     try w.writeAll("  Type /help for commands, /quit to exit.\n\n");
 }
 
