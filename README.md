@@ -609,7 +609,7 @@ Config file: `~/.wintermolt/.env` (created by `wintermolt --setup`)
 ---
 
 <p align="center">
-  <strong>Built with Zig. No garbage collector. No runtime. No excuses.</strong><br><br>
+  <strong>Built with Zig.</strong><br><br>
   Copyright The Fantastic Planet — By David Clabaugh<br>
   Apache License 2.0
 </p>
