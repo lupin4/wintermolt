@@ -447,8 +447,15 @@ pub const AgentLoop = struct {
     }
 
     /// Switch backend at runtime (/model command).
-    pub fn switchBackend(self: *AgentLoop, backend_name: []const u8, model_name: ?[]const u8) void {
+    pub fn switchBackend(self: *AgentLoop, backend_name: []const u8, model_name_arg: ?[]const u8) void {
         const stderr = std.fs.File.stderr().deprecatedWriter();
+        // Own the model name — callers pass a slice into a reused input
+        // buffer (REPL line_buf), which the next read would overwrite,
+        // leaving the backend with a garbage model string.
+        const model_name: ?[]const u8 = if (model_name_arg) |m|
+            (self.alloc.dupe(u8, m) catch null)
+        else
+            null;
         if (std.mem.eql(u8, backend_name, "ollama")) {
             self.backend = .{ .ollama = ollama_mod.OllamaClient.initWithOptions(
                 self.alloc,
