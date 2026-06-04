@@ -518,7 +518,7 @@ fn handleModel(agent: *loop_mod.AgentLoop, w: anytype, arg: ?[]const u8) !void {
         const info = agent.getBackendInfo();
         try w.print("Current: {s} ({s})\n", .{ info.name, info.model });
         try w.writeAll("Usage: /model <backend> [model]\n");
-        try w.writeAll("Backends: ollama (default), forai, claude, openai, deepseek, qwen, gemini\n");
+        try w.writeAll("Backends: ollama (default), forai, kernel, claude, openai, deepseek, qwen, gemini\n");
     }
 }
 
@@ -1141,7 +1141,7 @@ fn printHelp(w: anytype) !void {
         \\  /help          — Show this help
         \\  /quit, /exit   — Exit
         \\  /clear, /new   — Clear conversation history
-        \\  /model [name]  — Switch AI backend (ollama, claude, openai, deepseek, qwen, gemini)
+        \\  /model [name]  — Switch AI backend (ollama, forai, kernel, claude, openai, deepseek, qwen, gemini)
         \\  /keys          — Add/update API keys (interactive menu)
         \\  /keys list     — Show all configured keys
         \\  /look [prompt] — Capture camera image and describe it

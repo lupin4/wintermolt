@@ -88,6 +88,30 @@ pub fn build(b: *std.Build) void {
         for (win_deps) |lib| exe_mod.linkSystemLibrary(lib, .{});
     }
 
+    // --- Kernel backend (llama.cpp + Metal): darwin-arm64 only ---
+    // libllama.a is built once via scripts/build-llama-cpp-macos.sh and
+    // checked into prebuilt/macos/lib/. ggml's Metal shaders are
+    // embedded into the archive via GGML_METAL_EMBED_LIBRARY=1 so we
+    // ship a single static archive, no separate .metallib at runtime.
+    if (t.os.tag == .macos and t.cpu.arch == .aarch64) {
+        const llama_path = "prebuilt/macos/lib/libllama.a";
+        if (b.build_root.handle.access(llama_path, .{})) |_| {
+            exe_mod.addObjectFile(b.path(llama_path));
+            exe_mod.addIncludePath(b.path("prebuilt/macos/include_kernel"));
+            exe_mod.linkFramework("Metal", .{});
+            exe_mod.linkFramework("MetalKit", .{});
+            exe_mod.linkFramework("Foundation", .{});
+            exe_mod.linkFramework("Accelerate", .{});
+            exe_mod.linkSystemLibrary("c++", .{});
+        } else |_| {
+            std.debug.print(
+                "[build] {s} not found — kernel backend will return KernelBackendUnavailable.\n" ++
+                    "        Run scripts/build-llama-cpp-macos.sh to build it.\n",
+                .{llama_path},
+            );
+        }
+    }
+
     const exe = b.addExecutable(.{
         .name = "wintermolt",
         .root_module = exe_mod,

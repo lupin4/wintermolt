@@ -11,3 +11,9 @@ CLAUDE.md
 .env
 *.key
 *.pem
+
+# vendor checkouts are script-managed (scripts/build-llama-cpp-macos.sh)
+vendor/
+
+# prebuilt kernel archives ARE checked in (exception to *.a above)
+!prebuilt/**/*.a

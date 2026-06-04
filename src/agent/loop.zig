@@ -20,6 +20,7 @@ const protocol = @import("../api/protocol.zig");
 const sse = @import("../api/sse.zig");
 const ollama_mod = @import("../api/ollama.zig");
 const deepseek_mod = @import("../api/deepseek.zig");
+const kernel_mod = @import("../api/kernel.zig");
 const history_mod = @import("history.zig");
 const tools = @import("tools.zig");
 const config_mod = @import("config.zig");
@@ -35,6 +36,7 @@ pub const Backend = union(enum) {
     claude: client_mod.Client,
     ollama: ollama_mod.OllamaClient,
     openai: deepseek_mod.DeepSeekClient,
+    kernel: kernel_mod.KernelClient,
 };
 
 pub const AgentLoop = struct {
@@ -165,6 +167,13 @@ pub const AgentLoop = struct {
     }
 
     pub fn deinit(self: *AgentLoop) void {
+        // Drain backend resources before any global destructors run.
+        // Critical for the kernel backend: llama.cpp asserts
+        // [rsets->data count] == 0 in ggml-metal's static destructor.
+        switch (self.backend) {
+            .kernel => |*k| k.deinit(),
+            else => {},
+        }
         if (self.scheduler) |*s| s.deinit();
         if (self.storage) |*s| s.deinit();
     }
@@ -390,6 +399,7 @@ pub const AgentLoop = struct {
             .claude => |*c| c.sendMessage(system_prompt, messages, tool_defs, text_cb),
             .ollama => |*o| o.sendMessage(system_prompt, messages, tool_defs, text_cb),
             .openai => |*o| o.sendMessage(system_prompt, messages, tool_defs, text_cb),
+            .kernel => |*k| k.sendMessage(system_prompt, messages, tool_defs, text_cb),
         };
 
         if (primary_result) |resp| {
@@ -401,6 +411,7 @@ pub const AgentLoop = struct {
                 .claude => "Claude",
                 .ollama => "Ollama",
                 .openai => "OpenAI",
+                .kernel => "Kernel",
             };
             stderr.print("\n[fallback] {s} failed ({s}), trying alternatives...\n", .{ backend_name, @errorName(primary_err) }) catch {};
 
@@ -456,6 +467,11 @@ pub const AgentLoop = struct {
             (self.alloc.dupe(u8, m) catch null)
         else
             null;
+        // Free previous backend if it owns heap state (kernel loads ~GBs of weights).
+        switch (self.backend) {
+            .kernel => |*k| k.deinit(),
+            else => {},
+        }
         if (std.mem.eql(u8, backend_name, "ollama")) {
             self.backend = .{ .ollama = ollama_mod.OllamaClient.initWithOptions(
                 self.alloc,
@@ -526,6 +542,23 @@ pub const AgentLoop = struct {
             client.api_url = std.fmt.allocPrint(self.alloc, "{s}/v1/chat/completions", .{forai_url}) catch "http://localhost:8000/v1/chat/completions";
             self.backend = .{ .openai = client };
             stderr.print("[backend] Switched to forAI ({s} at {s})\n", .{ forai_model, forai_url }) catch {};
+        } else if (std.mem.eql(u8, backend_name, "kernel")) {
+            if (!kernel_mod.is_supported) {
+                stderr.writeAll("[backend] kernel backend is darwin-arm64 only on this build\n") catch {};
+                return;
+            }
+            const default_alias = std.posix.getenv("WINTERMOLT_KERNEL_DEFAULT") orelse "qwen3:0.6b";
+            const alias = model_name orelse default_alias;
+            const model_dir = kernel_mod.defaultModelDir(self.alloc) catch {
+                stderr.writeAll("[backend] could not resolve WINTERMOLT_KERNEL_MODEL_DIR or $HOME\n") catch {};
+                return;
+            };
+            const gguf_path = kernel_mod.resolveModelPath(self.alloc, alias, model_dir) catch |err| {
+                stderr.print("[backend] kernel: could not resolve {s} ({s})\n", .{ alias, @errorName(err) }) catch {};
+                return;
+            };
+            self.backend = .{ .kernel = kernel_mod.KernelClient.init(self.alloc, gguf_path, alias) };
+            stderr.print("[backend] Switched to kernel ({s} via Metal — {s})\n", .{ alias, gguf_path }) catch {};
         } else if (std.mem.eql(u8, backend_name, "claude")) {
             if (self.config.api_key.len == 0) {
                 stderr.writeAll("[backend] ANTHROPIC_API_KEY not set. Use /keys to configure.\n") catch {};
@@ -538,7 +571,7 @@ pub const AgentLoop = struct {
             ) };
             stderr.print("[backend] Switched to Claude ({s})\n", .{model_name orelse "claude-sonnet-4-20250514"}) catch {};
         } else {
-            stderr.print("[backend] Unknown: {s}. Options: ollama, forai, claude, openai, deepseek, qwen, gemini\n", .{backend_name}) catch {};
+            stderr.print("[backend] Unknown: {s}. Options: ollama, forai, kernel, claude, openai, deepseek, qwen, gemini\n", .{backend_name}) catch {};
         }
     }
 
@@ -548,6 +581,7 @@ pub const AgentLoop = struct {
             .claude => |c| .{ .name = "claude", .model = c.model },
             .ollama => |o| .{ .name = "ollama", .model = o.model },
             .openai => |o| .{ .name = "openai", .model = o.model },
+            .kernel => |k| .{ .name = "kernel", .model = k.model_alias },
         };
     }
 
