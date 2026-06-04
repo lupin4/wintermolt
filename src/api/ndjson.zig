@@ -25,6 +25,9 @@ pub const NdjsonParser = struct {
     text_cb: ?sse.TextCallback = null,
     /// Whether we received a done:true message
     done: bool = false,
+    /// Whether the final object reported done_reason=="length" (prompt truncated
+    /// by num_ctx — the silent truncation trap that yields one-token replies)
+    done_length: bool = false,
     /// Accumulated tool calls (Ollama sends complete tool_calls in one NDJSON line)
     tool_calls: ArrayList(ToolCall) = .{},
 
@@ -76,6 +79,16 @@ pub const NdjsonParser = struct {
             std.mem.indexOf(u8, trimmed, "\"done\": true") != null)
         {
             self.done = true;
+        }
+
+        // Check for done_reason on the final object. Ollama emits e.g.
+        //   {"done":true,"done_reason":"length"} when the prompt was truncated
+        // by num_ctx. "length" is the silent-truncation trap: the model gets a
+        // chopped prompt and often returns a one-token reply.
+        if (sse.findJsonString(trimmed, "done_reason")) |dr| {
+            if (std.mem.eql(u8, dr, "length")) {
+                self.done_length = true;
+            }
         }
 
         // Extract message.content using the nested object approach:
@@ -236,9 +249,23 @@ pub const NdjsonParser = struct {
             }
         }
 
+        // Surface the silent-truncation trap: if Ollama reported
+        // done_reason=="length", the prompt was truncated by num_ctx. Warn in
+        // ALL cases so the user can raise WINTERMOLT_OLLAMA_CTX or trim load.
+        if (self.done_length) {
+            std.debug.print(
+                "[WARN] ollama: done_reason=length — prompt truncated by num_ctx; raise WINTERMOLT_OLLAMA_CTX or trim tools/history\n",
+                .{},
+            );
+        }
+
         // Set stop reason based on what we accumulated
         if (self.tool_calls.items.len > 0) {
             resp.stop_reason = .tool_use;
+        } else if (self.done_length) {
+            // Truncated by context window — map to the max-tokens-like variant
+            // (callers already handle .max_tokens alongside .end_turn).
+            resp.stop_reason = .max_tokens;
         } else if (self.done) {
             resp.stop_reason = .end_turn;
         } else {

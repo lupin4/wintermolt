@@ -229,8 +229,11 @@ pub const Config = struct {
         const ollama_model = compat.getenv("WINTERMOLT_OLLAMA_MODEL") orelse
             "qwen3:0.6b";
         const ollama_num_ctx: u32 = blk: {
-            const ctx_str = compat.getenv("WINTERMOLT_OLLAMA_CTX") orelse break :blk 4096;
-            break :blk std.fmt.parseInt(u32, ctx_str, 10) catch 4096;
+            // 8192: measured all-tools prompt ceiling is ~3.4k tokens; 4096 left
+            // qwen3:0.6b ~700 tokens for history+reply and silently truncated
+            // (one-token replies). WINTERMOLT_OLLAMA_CTX still overrides.
+            const ctx_str = compat.getenv("WINTERMOLT_OLLAMA_CTX") orelse break :blk 8192;
+            break :blk std.fmt.parseInt(u32, ctx_str, 10) catch 8192;
         };
         const ollama_keep_alive = compat.getenv("WINTERMOLT_OLLAMA_KEEP_ALIVE") orelse
             "5m";
