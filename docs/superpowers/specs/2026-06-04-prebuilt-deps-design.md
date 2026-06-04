@@ -63,7 +63,7 @@ prebuilt/macos/include_kernel/   # existing llama.cpp headers (unchanged)
 ### 1. `scripts/sync-prebuilts.sh`
 
 For each (dep, target) pair, copy delivery → `prebuilt/<short>/lib/`.
-Matrix: forAgent/forMCP/forAI/forNLP → all four targets; forMetal → macos only
+Matrix: forAgent/forLearn/forMCP/forAI/forNLP → all four targets; forMetal → macos only
 (including `fm_kernels.metallib`); forCUDA → thor, linX86, winX86.
 Missing source delivery ⇒ `[skip] <dep>/<target> not delivered yet` (warning,
 not error). Print a summary table. Idempotent.
