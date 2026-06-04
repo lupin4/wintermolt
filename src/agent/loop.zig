@@ -122,21 +122,17 @@ pub const AgentLoop = struct {
         var skill_registry: ?skill_loader.SkillRegistry = null;
         skill_registry = skill_loader.SkillRegistry.init(alloc);
 
-        if (skill_registry) |*reg| {
-            tools.setSkillRegistry(reg);
-        }
-
         // Initialize scheduler (SQLite-persisted cron jobs)
         var scheduler: ?scheduler_mod.Scheduler = null;
         scheduler = scheduler_mod.Scheduler.init(alloc) catch |e| blk: {
             stderr.print("[scheduler] Init failed: {s}\n", .{@errorName(e)}) catch {};
             break :blk null;
         };
-        if (scheduler) |*s| tools.setScheduler(s);
 
-        // Share storage and RAG with tools module for memory_search tool
-        if (storage) |*s| tools.setStorage(s);
-        if (rag) |*r| tools.setRag(r);
+        // NOTE: do NOT pass pointers to the locals above into tools.set*()
+        // here — init returns by value, so those pointers would dangle.
+        // Callers must invoke bindTools() once the AgentLoop has its final
+        // address; processInput() also re-binds on every call.
 
         // Set tool policies from config
         tools.setPolicy(config.tool_allowlist, config.tool_blocklist);
@@ -173,6 +169,18 @@ pub const AgentLoop = struct {
         if (self.storage) |*s| s.deinit();
     }
 
+    /// Re-bind the tools module's global pointers to this agent's state.
+    /// Must be called after init() once the AgentLoop has its final address
+    /// (init returns by value, so pointers taken during init would dangle).
+    /// processInput() calls this on every turn, which also keeps the globals
+    /// correct when multiple AgentLoops (pool/subagents) share the process.
+    pub fn bindTools(self: *AgentLoop) void {
+        tools.setSkillRegistry(if (self.skill_registry) |*reg| reg else null);
+        tools.setScheduler(if (self.scheduler) |*s| s else null);
+        tools.setStorage(if (self.storage) |*s| s else null);
+        tools.setRag(if (self.rag) |*r| r else null);
+    }
+
     /// Start a new conversation (creates ID for SQLite persistence).
     pub fn startConversation(self: *AgentLoop) void {
         if (self.storage) |*s| {
@@ -201,6 +209,9 @@ pub const AgentLoop = struct {
     pub fn processInput(self: *AgentLoop, user_text: []const u8) !void {
         const stdout = std.fs.File.stdout().deprecatedWriter();
         const stderr = std.fs.File.stderr().deprecatedWriter();
+
+        // Re-bind tools-module globals to THIS agent (pool/subagents share them)
+        self.bindTools();
 
         // Add user message to history
         try self.history.addUserMessage(user_text);

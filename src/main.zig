@@ -207,9 +207,9 @@ pub fn main() !void {
     var agent = try loop_mod.AgentLoop.init(alloc, &config);
     defer agent.deinit();
 
-    // Re-register scheduler pointer — init() stored a pointer to a stack local that's now dead.
-    // This points to agent's struct field which lives for the entire program.
-    if (agent.scheduler) |*s| tools_mod.setScheduler(s);
+    // Re-bind tools-module globals (scheduler, skill registry, storage, RAG) —
+    // init() returns by value, so they must point at agent's final address.
+    agent.bindTools();
 
     // Initialize subagent manager for spawn_agent tool
     var subagent_mgr = subagent_mod.SubagentManager.init(alloc);
