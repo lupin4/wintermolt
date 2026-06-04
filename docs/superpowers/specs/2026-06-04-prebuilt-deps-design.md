@@ -7,7 +7,7 @@ lives at `wintermute/docs/developer/PREBUILT-DEPS-HANDOFF.md`.
 
 ## Goal
 
-Wintermolt links forAgent, forMCP, and forAI as **prebuilt binary kernels**
+Wintermolt links forAgent, forMCP, forAI, and forNLP as **prebuilt binary kernels**
 (`.a`/`.so`/`.dll`/`.metallib` — no source). The binaries are copied out of
 the sibling dep repos into wintermolt's local `prebuilt/` tree, **committed to
 this public repo** (binary redistribution is permitted; source stays closed in
@@ -45,6 +45,7 @@ Sibling deliveries (org convention, 2026-05-30):
 ../forAgent/prebuilt/lib/macos/libforagent.a
 ../forMCP/prebuilt/lib/macos/libformcp.a
 ../forAI/prebuilt/lib/macos/libforai.a            # being rebuilt right now
+../forNLP/prebuilt/lib/macos/libfornlp.a          # NEW dep: BPE/SentencePiece tokenizer, top-p/top-k sampling, chat templates (Gemma4/Llama3/ChatML) — companion to the forai engine
 ../forMetal/prebuilt/lib/macos/{libformetal.a, fm_kernels.metallib, *.air}
 ../forMetal/prebuilt/lib/linX86/libformetal.a     # present but UNUSED — forMetal is macOS-only by decision
 ../forCUDA/prebuilt/linux-arm64/lib/libforcuda.a  # older layout; winX86/linX86 deliveries pending
@@ -62,7 +63,7 @@ prebuilt/macos/include_kernel/   # existing llama.cpp headers (unchanged)
 ### 1. `scripts/sync-prebuilts.sh`
 
 For each (dep, target) pair, copy delivery → `prebuilt/<short>/lib/`.
-Matrix: forAgent/forMCP/forAI → all four targets; forMetal → macos only
+Matrix: forAgent/forMCP/forAI/forNLP → all four targets; forMetal → macos only
 (including `fm_kernels.metallib`); forCUDA → thor, linX86, winX86.
 Missing source delivery ⇒ `[skip] <dep>/<target> not delivered yet` (warning,
 not error). Print a summary table. Idempotent.
