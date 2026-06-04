@@ -4,6 +4,39 @@ All notable changes to Wintermolt are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] — 2026-06-04
+
+### Added
+
+- **Kernel backend — local Metal inference** (`/model kernel <alias>`,
+  darwin-arm64). In-process GGUF inference through a prebuilt llama.cpp
+  static archive with embedded Metal shaders
+  (`prebuilt/macos/lib/libllama.a`, built via
+  `scripts/build-llama-cpp-macos.sh`). No external model server required.
+  Heavy weights are drained on `/model` switch and before exit.
+- `running-wintermolt` project skill (`.claude/skills/`) and agent-harness
+  SOP docs.
+- Design spec for the upcoming prebuilt-deps feature (forAgent / forMCP /
+  forAI / forNLP archives with a forMetal↔forCUDA per-OS target switch):
+  `docs/superpowers/specs/2026-06-04-prebuilt-deps-design.md`.
+
+### Fixed
+
+- **Segfault on first prompt.** `AgentLoop.init` stored pointers to its own
+  stack locals (skill registry, scheduler, storage, RAG) in tools-module
+  globals, then returned by value — all four globals dangled into a dead
+  stack frame. New `bindTools()` re-binds them from the agent's final
+  address (after init and on every `processInput`); also fixes the REPL
+  `/schedule` command, which read the same dangling scheduler pointer.
+- **`/model` corrupted the model name.** `switchBackend` kept the caller's
+  slice of the reused REPL `line_buf`; the next keystroke overwrote it into
+  garbage (provider HTTP 400). The model name is now duped on entry.
+  (Ported to Wintermute as d70159f.)
+- **Ollama context window too small.** Default `num_ctx` raised 4096 → 8192
+  — the all-tools prompt alone is ~3.4k tokens, which silently truncated
+  small-model replies. `WINTERMOLT_OLLAMA_CTX` still overrides.
+  `done_reason=length` is now surfaced. (Ported from Wintermute 21ccc69.)
+
 ## [0.4.1] — 2026-05-17
 
 ### Changed
