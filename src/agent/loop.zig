@@ -28,10 +28,16 @@ const config_mod = @import("config.zig");
 const storage_mod = @import("storage.zig");
 const rag_mod = @import("rag.zig");
 const skill_loader = @import("skill_loader.zig");
+const redact = @import("redact.zig");
 const scheduler_mod = @import("scheduler.zig");
 const camera_tool = @import("../tools/camera.zig");
 
 const MAX_ITERATIONS = 25;
+
+// Output leak guard (redact.zig): per-reply redactor + inner callback at module
+// scope (TextCallback carries no userdata). Replies are sequential per process.
+var g_redactor: ?redact.Redactor = null;
+var g_inner_cb: ?sse.TextCallback = null;
 
 pub const Backend = union(enum) {
     claude: client_mod.Client,
@@ -397,16 +403,50 @@ pub const AgentLoop = struct {
     ) !protocol.Response {
         const stderr = std.fs.File.stderr().deprecatedWriter();
 
+        // --- Output leak guard: arm a per-reply redactor over text_cb -------
+        // Secret set is rebuilt per reply from self.config, so /model and any
+        // future key updates take effect on the next reply. Layer 2 (prompt
+        // overlap) is passed null: wintermolt is local-first by design (no
+        // cloud/exposed mode concept in Config), so only Layer 1 (exact secret
+        // values + key-shape patterns) is armed. (port of Wintermute leak-guard)
+        var secret_buf: [8]redact.NamedSecret = undefined;
+        const secrets = buildSecretSet(self.config, &secret_buf);
+
+        const effective_cb: ?sse.TextCallback = blk: {
+            if (text_cb == null) break :blk null;
+            g_redactor = redact.Redactor.init(self.alloc, secrets, null) catch null;
+            if (g_redactor == null) break :blk text_cb; // init failed: pass through unwrapped
+            g_inner_cb = text_cb;
+            break :blk &redactingText;
+        };
+        // Flush exactly once on success, abort on every error path. `succeeded`
+        // is flipped true only when a backend returns a Response.
+        var succeeded = false;
+        defer {
+            if (g_redactor) |*r| {
+                if (succeeded) {
+                    const tail = r.flush() catch "";
+                    if (tail.len > 0) if (g_inner_cb) |cb| cb(tail);
+                } else {
+                    r.abort();
+                }
+                r.deinit();
+                g_redactor = null;
+                g_inner_cb = null;
+            }
+        }
+
         // Try primary backend first
         const primary_result = switch (self.backend) {
-            .claude => |*c| c.sendMessage(system_prompt, messages, tool_defs, text_cb),
-            .ollama => |*o| o.sendMessage(system_prompt, messages, tool_defs, text_cb),
-            .openai => |*o| o.sendMessage(system_prompt, messages, tool_defs, text_cb),
-            .kernel => |*k| k.sendMessage(system_prompt, messages, tool_defs, text_cb),
-            .forai => |*f| f.sendMessage(system_prompt, messages, tool_defs, text_cb),
+            .claude => |*c| c.sendMessage(system_prompt, messages, tool_defs, effective_cb),
+            .ollama => |*o| o.sendMessage(system_prompt, messages, tool_defs, effective_cb),
+            .openai => |*o| o.sendMessage(system_prompt, messages, tool_defs, effective_cb),
+            .kernel => |*k| k.sendMessage(system_prompt, messages, tool_defs, effective_cb),
+            .forai => |*f| f.sendMessage(system_prompt, messages, tool_defs, effective_cb),
         };
 
         if (primary_result) |resp| {
+            succeeded = true;
             return resp;
         } else |primary_err| {
             if (primary_err == error.ContextOverflow) return primary_err;
@@ -430,8 +470,9 @@ pub const AgentLoop = struct {
                     self.config.ollama_num_ctx,
                     self.config.ollama_keep_alive,
                 );
-                if (ollama_client.sendMessage(system_prompt, messages, tool_defs, text_cb)) |resp| {
+                if (ollama_client.sendMessage(system_prompt, messages, tool_defs, effective_cb)) |resp| {
                     stderr.writeAll("[fallback] Ollama succeeded\n") catch {};
+                    succeeded = true;
                     return resp;
                 } else |_| {
                     stderr.writeAll("[fallback] Ollama failed\n") catch {};
@@ -448,8 +489,9 @@ pub const AgentLoop = struct {
                         self.config.openai_model,
                     );
                     openai_client.api_url = "https://api.openai.com/v1/chat/completions";
-                    if (openai_client.sendMessage(system_prompt, messages, tool_defs, text_cb)) |resp| {
+                    if (openai_client.sendMessage(system_prompt, messages, tool_defs, effective_cb)) |resp| {
                         stderr.writeAll("[fallback] OpenAI succeeded\n") catch {};
+                        succeeded = true;
                         return resp;
                     } else |_| {
                         stderr.writeAll("[fallback] OpenAI failed\n") catch {};
@@ -709,6 +751,58 @@ pub const AgentLoop = struct {
     fn printText(text: []const u8) void {
         const stdout = std.fs.File.stdout().deprecatedWriter();
         stdout.writeAll(text) catch {};
+    }
+
+    // --- Output leak guard (redact.zig) ------------------------------------
+    // TextCallback carries no userdata, so the per-reply redactor and inner
+    // callback live at module scope (same pattern as captureText's buffer).
+    // Replies are sequential per process; one in-flight redactor suffices.
+    fn redactingText(text: []const u8) void {
+        if (g_redactor) |*r| {
+            const safe = r.feed(text) catch return; // OOM: hold (never emit unscanned)
+            if (g_inner_cb) |cb| if (safe.len > 0) cb(safe);
+        } else if (g_inner_cb) |cb| cb(text);
+    }
+
+    /// Build the armed secret set from config into `buf`, returning the filled
+    /// slice. Shared by the streaming choke (sendToBackend) and the one-shot
+    /// helper below so the key fields stay in one place. Layer 2 (prompt
+    /// overlap) is never armed: wintermolt is local-first (no cloud mode).
+    fn buildSecretSet(cfg: *const config_mod.Config, buf: *[8]redact.NamedSecret) []const redact.NamedSecret {
+        var n: usize = 0;
+        if (cfg.api_key.len >= redact.MIN_SECRET_LEN) {
+            buf[n] = .{ .name = "ANTHROPIC_API_KEY", .value = cfg.api_key };
+            n += 1;
+        }
+        if (cfg.openai_api_key) |v| if (v.len >= redact.MIN_SECRET_LEN) {
+            buf[n] = .{ .name = "OPENAI_API_KEY", .value = v };
+            n += 1;
+        };
+        if (cfg.deepseek_cloud_key) |v| if (v.len >= redact.MIN_SECRET_LEN) {
+            buf[n] = .{ .name = "DEEPSEEK_API_KEY", .value = v };
+            n += 1;
+        };
+        if (cfg.qwen_api_key) |v| if (v.len >= redact.MIN_SECRET_LEN) {
+            buf[n] = .{ .name = "QWEN_API_KEY", .value = v };
+            n += 1;
+        };
+        if (cfg.gemini_api_key) |v| if (v.len >= redact.MIN_SECRET_LEN) {
+            buf[n] = .{ .name = "GOOGLE_GEMINI_API_KEY", .value = v };
+            n += 1;
+        };
+        if (cfg.pinecone_api_key) |v| if (v.len >= redact.MIN_SECRET_LEN) {
+            buf[n] = .{ .name = "PINECONE_API_KEY", .value = v };
+            n += 1;
+        };
+        if (cfg.tailscale_api_key) |v| if (v.len >= redact.MIN_SECRET_LEN) {
+            buf[n] = .{ .name = "TAILSCALE_API_KEY", .value = v };
+            n += 1;
+        };
+        if (cfg.elevenlabs_api_key) |v| if (v.len >= redact.MIN_SECRET_LEN) {
+            buf[n] = .{ .name = "ELEVENLABS_API_KEY", .value = v };
+            n += 1;
+        };
+        return buf[0..n];
     }
 
     fn captureText(text: []const u8) void {
