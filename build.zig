@@ -45,14 +45,15 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
 
-    // --- forAgent + forLearn: built from sibling repos.
-    // The 2026-05-16 decree made winX86/linX86/thor/macos the canonical
-    // delivery dirs, but older builds still publish at the Zig triple-style
-    // {arch-os-abi}. Try canonical first, then fall back. Names are
-    // probed in both Unix (libfoo.a) and Zig-native Windows (foo.lib) form.
-    const target_name = getTargetName(target.result);
-    addSiblingArchive(exe_mod, b, "forAgent", "libforagent.a", target_name);
-    addSiblingArchive(exe_mod, b, "forLearn", "libforlearn.a", target_name);
+    // --- Dep kernels: linked from the COMMITTED local prebuilt tree only.
+    // scripts/sync-prebuilts.sh copies sibling deliveries into
+    // prebuilt/<short>/lib/ (short = macos | thor | linX86 | winX86).
+    // The build never reads sibling paths. Unreferenced archive members
+    // are not pulled in, so linking deps ahead of their wiring is free.
+    const short_target = getShortTargetName(target.result);
+    for ([_][]const u8{ "foragent", "forlearn", "formcp", "forai", "fornlp" }) |dep| {
+        addPrebuiltArchive(exe_mod, b, dep, short_target);
+    }
 
     // System libraries — dynamic linking
     const t = target.result;
@@ -86,6 +87,18 @@ pub fn build(b: *std.Build) void {
             "normaliz",      "iphlpapi",  "advapi32",           "secur32",
         };
         for (win_deps) |lib| exe_mod.linkSystemLibrary(lib, .{});
+    }
+
+    // --- GPU kernels: forMetal on macOS, forCUDA everywhere else ---
+    // forMetal is the macOS-only exception (decision 2026-06-04); its
+    // fm_kernels.metallib is a runtime resource shipped beside the binary.
+    if (t.os.tag == .macos) {
+        addPrebuiltArchive(exe_mod, b, "formetal", short_target);
+        if (b.build_root.handle.access("prebuilt/macos/lib/fm_kernels.metallib", .{})) |_| {
+            b.installBinFile("prebuilt/macos/lib/fm_kernels.metallib", "fm_kernels.metallib");
+        } else |_| {}
+    } else {
+        addPrebuiltArchive(exe_mod, b, "forcuda", short_target);
     }
 
     // --- Kernel backend (llama.cpp + Metal): darwin-arm64 only ---
@@ -152,50 +165,32 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_unit_tests.step);
 }
 
-/// Try sibling delivery paths in canonical-first order. Probes both Unix
-/// (libfoo.a) and Zig-native Windows (foo.lib) naming.
-fn addSiblingArchive(mod: *std.Build.Module, b: *std.Build, sibling: []const u8, name: []const u8, target_name: []const u8) void {
-    const delivery_dirs = [_][]const u8{ target_name, "winX86", "linX86", "thor", "macos", "windows-x86_64", "linux-x86_64" };
-    const win_name: ?[]const u8 = blk: {
-        if (!std.mem.startsWith(u8, name, "lib")) break :blk null;
-        if (!std.mem.endsWith(u8, name, ".a")) break :blk null;
-        const base = name[3 .. name.len - 2];
-        break :blk b.fmt("{s}.lib", .{base});
-    };
-    for (delivery_dirs) |od| {
-        const p = b.fmt("../{s}/zig-out/{s}/lib/{s}", .{ sibling, od, name });
-        if (std.fs.cwd().access(p, .{})) |_| {
-            mod.addObjectFile(.{ .cwd_relative = p });
-            return;
-        } else |_| {}
-        if (win_name) |wn| {
-            const pw = b.fmt("../{s}/zig-out/{s}/lib/{s}", .{ sibling, od, wn });
-            if (std.fs.cwd().access(pw, .{})) |_| {
-                mod.addObjectFile(.{ .cwd_relative = pw });
-                return;
-            } else |_| {}
-        }
-    }
-    std.log.warn("archive not found: {s}/{s} (build the source repo first)", .{ sibling, name });
-}
-
-fn getTargetName(t: std.Target) []const u8 {
+fn getShortTargetName(t: std.Target) []const u8 {
     return switch (t.os.tag) {
-        .macos => switch (t.cpu.arch) {
-            .aarch64 => "macos-arm64",
-            else => "macos-unknown",
-        },
+        .macos => "macos",
         .linux => switch (t.cpu.arch) {
-            .x86_64 => "linux-x86_64",
-            .aarch64 => "linux-arm64",
-            else => "linux-unknown",
+            .aarch64 => "thor",
+            else => "linX86",
         },
-        .windows => switch (t.cpu.arch) {
-            // Per 2026-05-16 delivery-dir decree: canonical Windows delivery
-            // is "winX86" (matches sibling repos' zig-out/{delivery}/lib/).
-            .x86_64 => "winX86",
-            else => "windows-unknown",
-        },
+        .windows => "winX86",
         else => "unknown",
     };
+}
+
+/// Link a committed prebuilt archive from prebuilt/<short>/lib/.
+/// Probes Unix (libfoo.a) then Zig-native Windows (foo.lib) naming.
+/// Missing archive ⇒ notice + the feature stubs out — public clones and
+/// not-yet-delivered targets must never hard-fail.
+fn addPrebuiltArchive(mod: *std.Build.Module, b: *std.Build, name: []const u8, short: []const u8) void {
+    const candidates = [_][]const u8{
+        b.fmt("prebuilt/{s}/lib/lib{s}.a", .{ short, name }),
+        b.fmt("prebuilt/{s}/lib/{s}.lib", .{ short, name }),
+    };
+    for (candidates) |p| {
+        if (b.build_root.handle.access(p, .{})) |_| {
+            mod.addObjectFile(b.path(p));
+            return;
+        } else |_| {}
+    }
+    std.debug.print("[build] {s} not found — run scripts/sync-prebuilts.sh (feature stubs out)\n", .{candidates[0]});
 }
