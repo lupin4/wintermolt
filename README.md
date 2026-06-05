@@ -216,6 +216,10 @@ All backends support **streaming**. Ollama runs 100% local, air-gapped, no API k
 
 > **Note on Claude:** Claude was previously removed when Anthropic restricted non-API usage. It has been re-added as an optional backend for users who want Claude via the API. The default remains local (Ollama) — no API key is required to use Wintermolt. Use `/keys` or `--keys` to configure your `ANTHROPIC_API_KEY` if you want Claude.
 
+### No external model loader
+
+- **Local GGUF inference in-process** (`/model kernel` today on Apple Silicon; `/model forai` on forMetal/forCUDA across macOS/Linux/Windows as engine deliveries land). Unsloth-trained GGUF exports run as-is.
+
 ### 79 Model-Agnostic Skills
 
 Wintermolt ships with 79 skill definitions across 11 domains. Each skill defines a specialized agent role with a preferred model — but any skill can run on any backend.

@@ -44,7 +44,7 @@ Sibling deliveries (org convention, 2026-05-30):
 ```
 ../forAgent/prebuilt/lib/macos/libforagent.a
 ../forMCP/prebuilt/lib/macos/libformcp.a
-../forAI/prebuilt/lib/macos/libforai.a            # being rebuilt right now
+../forAI/prebuilt/lib/macos/libforai.a            # MID-REBUILD: delivery currently only has libforai.dylib; the vendored libforai.a in prebuilt/macos/lib/ is the PRE-rebuild archive (harmless — no symbols referenced while is_supported=false). Re-run sync-prebuilts.sh when the forAI session delivers the new .a.
 ../forNLP/prebuilt/lib/macos/libfornlp.a          # NEW dep: BPE/SentencePiece tokenizer, top-p/top-k sampling, chat templates (Gemma4/Llama3/ChatML) — companion to the forai engine
 ../forMetal/prebuilt/lib/macos/{libformetal.a, fm_kernels.metallib, *.air}
 ../forMetal/prebuilt/lib/linX86/libformetal.a     # present but UNUSED — forMetal is macOS-only by decision

@@ -79,3 +79,17 @@ To inspect what's configured:
 ```bash
 ./wintermolt --keys list
 ```
+
+## Running Unsloth-trained models
+
+Wintermolt runs models fine-tuned with [Unsloth](https://unsloth.ai) — no
+Python needed at inference time:
+
+1. Export from your training run as GGUF:
+   `model.save_pretrained_gguf("out", tokenizer, quantization_method="q4_k_m")`
+   (adapter-only safetensors exports must be merged at export time — use the
+   GGUF path, which merges LoRA into the base weights).
+2. Drop the `.gguf` into `~/.wintermolt/models/`.
+3. `/model kernel <file-stem>` runs it today (llama.cpp + Metal, macOS).
+   `/model forai <file-stem>` runs it in-process on forMetal/forCUDA once the
+   forAI engine delivery lands.
