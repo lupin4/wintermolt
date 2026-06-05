@@ -94,7 +94,7 @@ pub fn migrateConfig() void {
     const stderr = std.fs.File.stderr().deprecatedWriter();
 
     if (version < 1) {
-        stderr.writeAll("[config] Run 'wintermolt --setup' to configure, or set WINTERMOLT_CONFIG_VERSION=1 in .env\n") catch {};
+        stderr.writeAll("[config] No keys needed — the default backend is free local Ollama. Optional: 'wintermolt --setup' for cloud API keys. Set WINTERMOLT_CONFIG_VERSION=1 in .env to hide this.\n") catch {};
     }
 }
 

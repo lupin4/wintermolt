@@ -489,7 +489,7 @@ pub const AgentLoop = struct {
             stderr.writeAll("[backend] Switched to Ollama\n") catch {};
         } else if (std.mem.eql(u8, backend_name, "openai")) {
             const api_key = self.config.openai_api_key orelse {
-                stderr.writeAll("[backend] OPENAI_API_KEY not set\n") catch {};
+                stderr.writeAll("[backend] OPENAI_API_KEY not set. Free local instead: /model ollama (default, no key)\n") catch {};
                 return;
             };
             var client = deepseek_mod.DeepSeekClient.init(
@@ -502,7 +502,7 @@ pub const AgentLoop = struct {
             stderr.print("[backend] Switched to OpenAI ({s})\n", .{model_name orelse self.config.openai_model}) catch {};
         } else if (std.mem.eql(u8, backend_name, "deepseek")) {
             const api_key = self.config.deepseek_cloud_key orelse {
-                stderr.writeAll("[backend] DEEPSEEK_API_KEY not set\n") catch {};
+                stderr.writeAll("[backend] DEEPSEEK_API_KEY not set. Free local instead: /model ollama (default, no key)\n") catch {};
                 return;
             };
             self.backend = .{ .openai = deepseek_mod.DeepSeekClient.init(
@@ -513,7 +513,9 @@ pub const AgentLoop = struct {
             stderr.print("[backend] Switched to DeepSeek Cloud ({s})\n", .{model_name orelse "deepseek-chat"}) catch {};
         } else if (std.mem.eql(u8, backend_name, "qwen")) {
             const api_key = self.config.qwen_api_key orelse {
-                stderr.writeAll("[backend] QWEN_API_KEY not set\n") catch {};
+                // Common trap: "qwen" here is the Qwen Cloud API. The free
+                // local qwen3 models run via Ollama/kernel with no key.
+                stderr.writeAll("[backend] QWEN_API_KEY not set (qwen = Qwen Cloud API). The FREE local qwen3 needs no key: /model ollama qwen3:0.6b (default) or /model kernel qwen3:0.6b\n") catch {};
                 return;
             };
             var client = deepseek_mod.DeepSeekClient.init(
@@ -526,7 +528,7 @@ pub const AgentLoop = struct {
             stderr.print("[backend] Switched to Qwen Cloud ({s})\n", .{model_name orelse self.config.qwen_model}) catch {};
         } else if (std.mem.eql(u8, backend_name, "gemini")) {
             const api_key = self.config.gemini_api_key orelse {
-                stderr.writeAll("[backend] GOOGLE_GEMINI_API_KEY not set\n") catch {};
+                stderr.writeAll("[backend] GOOGLE_GEMINI_API_KEY not set. Free local instead: /model ollama (default, no key)\n") catch {};
                 return;
             };
             var client = deepseek_mod.DeepSeekClient.init(
@@ -577,7 +579,7 @@ pub const AgentLoop = struct {
             stderr.print("[backend] Switched to kernel ({s} via Metal — {s})\n", .{ alias, gguf_path }) catch {};
         } else if (std.mem.eql(u8, backend_name, "claude")) {
             if (self.config.api_key.len == 0) {
-                stderr.writeAll("[backend] ANTHROPIC_API_KEY not set. Use /keys to configure.\n") catch {};
+                stderr.writeAll("[backend] ANTHROPIC_API_KEY not set. Use /keys to configure, or stay free/local: /model ollama (default, no key)\n") catch {};
                 return;
             }
             self.backend = .{ .claude = client_mod.Client.init(
@@ -587,7 +589,7 @@ pub const AgentLoop = struct {
             ) };
             stderr.print("[backend] Switched to Claude ({s})\n", .{model_name orelse "claude-sonnet-4-20250514"}) catch {};
         } else {
-            stderr.print("[backend] Unknown: {s}. Options: ollama, forai, kernel, claude, openai, deepseek, qwen, gemini\n", .{backend_name}) catch {};
+            stderr.print("[backend] Unknown: {s}. Free local (no key): ollama (default), kernel, forai · Cloud (API key): claude, openai, deepseek, qwen, gemini\n", .{backend_name}) catch {};
         }
     }
 
