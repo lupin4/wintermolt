@@ -91,11 +91,11 @@ pub fn build(b: *std.Build) void {
 
     // --- GPU kernels: forMetal on macOS, forCUDA everywhere else ---
     // forMetal is the macOS-only exception (decision 2026-06-04); its
-    // fm_kernels.metallib is a runtime resource shipped beside the binary.
+    // fmet_kernels.metallib is a runtime resource (renamed from fm_kernels.metallib in forMetal v1.2) shipped beside the binary.
     if (t.os.tag == .macos) {
         addPrebuiltArchive(exe_mod, b, "formetal", short_target);
-        if (b.build_root.handle.access("prebuilt/macos/lib/fm_kernels.metallib", .{})) |_| {
-            b.installBinFile("prebuilt/macos/lib/fm_kernels.metallib", "fm_kernels.metallib");
+        if (b.build_root.handle.access("prebuilt/macos/lib/fmet_kernels.metallib", .{})) |_| {
+            b.installBinFile("prebuilt/macos/lib/fmet_kernels.metallib", "fm_kernels.metallib");
         } else |_| {}
     } else {
         addPrebuiltArchive(exe_mod, b, "forcuda", short_target);

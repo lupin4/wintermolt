@@ -44,7 +44,9 @@ done
 
 # forMetal: macOS only. Archive + runtime .metallib (installed beside the binary).
 copy_one "$SIBLINGS/forMetal/prebuilt/lib/macos/libformetal.a" "$ROOT/prebuilt/macos/lib/libformetal.a"
-copy_one "$SIBLINGS/forMetal/prebuilt/lib/macos/fm_kernels.metallib" "$ROOT/prebuilt/macos/lib/fm_kernels.metallib"
+# v1.2 rename (2026-06-04): fm_kernels.metallib → fmet_kernels.metallib; the
+# loader in libformetal.a now searches for the fmet_ name.
+copy_one "$SIBLINGS/forMetal/prebuilt/lib/macos/fmet_kernels.metallib" "$ROOT/prebuilt/macos/lib/fmet_kernels.metallib"
 
 # forCUDA: GPU kernels for everything that isn't macOS. thor falls back to
 # forCUDA's legacy linux-arm64 delivery layout until it adopts short names.
