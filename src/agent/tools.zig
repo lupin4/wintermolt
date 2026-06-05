@@ -245,11 +245,35 @@ pub fn getDefinitions() []const protocol.ToolDefinition {
     return &tool_definitions;
 }
 
+/// Backing buffer for getCoreDefinitions (separate from filtered_buf so the
+/// short-text safety net never clobbers an in-flight relevance filter).
+var core_filtered_buf: [tool_definitions.len]protocol.ToolDefinition = undefined;
+
+/// Get only the core tool definitions (subject to policy). Used as the
+/// short-message safety net so small-model tiers don't receive the full
+/// catalog and overflow their context. (port of Wintermute 717a96e)
+pub fn getCoreDefinitions() []const protocol.ToolDefinition {
+    var count: usize = 0;
+    for (&tool_definitions) |*td| {
+        if (isCoreTool(td.name) and isToolPermitted(td.name)) {
+            core_filtered_buf[count] = td.*;
+            count += 1;
+        }
+    }
+    return core_filtered_buf[0..count];
+}
+
 /// Get tool definitions relevant to the user's message.
 /// Always includes core tools. Extended tools load by keyword match.
 pub fn getRelevantDefinitions(user_text: []const u8) []const protocol.ToolDefinition {
-    // Empty or very short text = send all (safety net for /commands etc.)
-    if (user_text.len < 3) return &tool_definitions;
+    // Empty or very short text = core tools only (NOT the full catalog).
+    // The only callers of this function are the small-model tiers
+    // (haiku/local), so returning the full catalog here overflows their
+    // context (the full tool set ≈ 140KB ≈ 35k tokens vs num_ctx 8192 →
+    // done_reason=length, eval_count=1, empty reply — "hi" in web chat hung
+    // forever). Core definitions keep the essential tools visible without
+    // the catalog. (port of Wintermute 717a96e)
+    if (user_text.len < 3) return getCoreDefinitions();
 
     var included: [tool_definitions.len]bool = [_]bool{false} ** tool_definitions.len;
     var count: usize = 0;
