@@ -497,6 +497,7 @@ pub const WebBridge = struct {
             .ollama => "ollama",
             .openai => "openai",
             .kernel => "kernel",
+            .forai => "forai",
         };
         const json = std.fmt.bufPrint(&buf,
             "{{\"type\":\"status\",\"model\":\"{s}\",\"backend\":\"{s}\"}}\n",

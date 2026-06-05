@@ -21,6 +21,7 @@ const sse = @import("../api/sse.zig");
 const ollama_mod = @import("../api/ollama.zig");
 const deepseek_mod = @import("../api/deepseek.zig");
 const kernel_mod = @import("../api/kernel.zig");
+const forai_mod = @import("../api/forai.zig");
 const history_mod = @import("history.zig");
 const tools = @import("tools.zig");
 const config_mod = @import("config.zig");
@@ -37,6 +38,7 @@ pub const Backend = union(enum) {
     ollama: ollama_mod.OllamaClient,
     openai: deepseek_mod.DeepSeekClient,
     kernel: kernel_mod.KernelClient,
+    forai: forai_mod.ForAIClient,
 };
 
 pub const AgentLoop = struct {
@@ -172,6 +174,7 @@ pub const AgentLoop = struct {
         // [rsets->data count] == 0 in ggml-metal's static destructor.
         switch (self.backend) {
             .kernel => |*k| k.deinit(),
+            .forai => |*f| f.deinit(),
             else => {},
         }
         if (self.scheduler) |*s| s.deinit();
@@ -400,6 +403,7 @@ pub const AgentLoop = struct {
             .ollama => |*o| o.sendMessage(system_prompt, messages, tool_defs, text_cb),
             .openai => |*o| o.sendMessage(system_prompt, messages, tool_defs, text_cb),
             .kernel => |*k| k.sendMessage(system_prompt, messages, tool_defs, text_cb),
+            .forai => |*f| f.sendMessage(system_prompt, messages, tool_defs, text_cb),
         };
 
         if (primary_result) |resp| {
@@ -412,6 +416,7 @@ pub const AgentLoop = struct {
                 .ollama => "Ollama",
                 .openai => "OpenAI",
                 .kernel => "Kernel",
+                .forai => "forAI",
             };
             stderr.print("\n[fallback] {s} failed ({s}), trying alternatives...\n", .{ backend_name, @errorName(primary_err) }) catch {};
 
@@ -470,6 +475,7 @@ pub const AgentLoop = struct {
         // Free previous backend if it owns heap state (kernel loads ~GBs of weights).
         switch (self.backend) {
             .kernel => |*k| k.deinit(),
+            .forai => |*f| f.deinit(),
             else => {},
         }
         if (std.mem.eql(u8, backend_name, "ollama")) {
@@ -532,16 +538,26 @@ pub const AgentLoop = struct {
             self.backend = .{ .openai = client };
             stderr.print("[backend] Switched to Gemini ({s})\n", .{model_name orelse self.config.gemini_model}) catch {};
         } else if (std.mem.eql(u8, backend_name, "forai")) {
-            const forai_url = compat.getenv("WINTERMOLT_FORAI_URL") orelse "http://localhost:8000";
-            const forai_model = model_name orelse compat.getenv("WINTERMOLT_FORAI_MODEL") orelse "qwen3:8b";
-            var client = deepseek_mod.DeepSeekClient.init(
-                self.alloc,
-                "",
-                forai_model,
-            );
-            client.api_url = std.fmt.allocPrint(self.alloc, "{s}/v1/chat/completions", .{forai_url}) catch "http://localhost:8000/v1/chat/completions";
-            self.backend = .{ .openai = client };
-            stderr.print("[backend] Switched to forAI ({s} at {s})\n", .{ forai_model, forai_url }) catch {};
+            // In-process forAI engine (forMetal on macOS, forCUDA on
+            // Linux/Windows) — no external model loader. The old
+            // OpenAI-compatible HTTP mode lives on via /model openai with
+            // a custom URL.
+            if (!forai_mod.is_supported) {
+                stderr.writeAll("[backend] forAI engine not delivered yet (forAI rebuild in flight) — use /model kernel for local inference meanwhile\n") catch {};
+                return;
+            }
+            const default_alias = compat.getenv("WINTERMOLT_FORAI_DEFAULT") orelse "qwen3:0.6b";
+            const alias = model_name orelse default_alias;
+            const model_dir = forai_mod.defaultModelDir(self.alloc) catch {
+                stderr.writeAll("[backend] could not resolve WINTERMOLT_KERNEL_MODEL_DIR or $HOME\n") catch {};
+                return;
+            };
+            const path = forai_mod.resolveModelPath(self.alloc, alias, model_dir) catch |err| {
+                stderr.print("[backend] forai: could not resolve {s} ({s})\n", .{ alias, @errorName(err) }) catch {};
+                return;
+            };
+            self.backend = .{ .forai = forai_mod.ForAIClient.init(self.alloc, path, alias) };
+            stderr.print("[backend] Switched to forAI in-process ({s})\n", .{alias}) catch {};
         } else if (std.mem.eql(u8, backend_name, "kernel")) {
             if (!kernel_mod.is_supported) {
                 stderr.writeAll("[backend] kernel backend is darwin-arm64 only on this build\n") catch {};
@@ -582,6 +598,7 @@ pub const AgentLoop = struct {
             .ollama => |o| .{ .name = "ollama", .model = o.model },
             .openai => |o| .{ .name = "openai", .model = o.model },
             .kernel => |k| .{ .name = "kernel", .model = k.model_alias },
+            .forai => |f| .{ .name = "forai", .model = f.model_alias },
         };
     }
 
