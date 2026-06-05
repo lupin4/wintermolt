@@ -35,8 +35,8 @@ pub fn build(b: *std.Build) void {
     //   - libcurl (system — HTTPS)
     //   - sqlite3 (system — persistent history)
     //
-    // NO Fortran archives. NO forKernels compute libs.
-    // forAgent and forLearn are linked as prebuilt .a archives (pure Zig, no Fortran).
+    // Dep kernels (forAgent/forLearn/forMCP/forAI/forNLP + forMetal/forCUDA)
+    // are linked as COMMITTED prebuilt archives — no dep source in this repo.
 
     const exe_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
