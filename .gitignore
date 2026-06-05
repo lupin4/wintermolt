@@ -15,5 +15,11 @@ CLAUDE.md
 # vendor checkouts are script-managed (scripts/build-llama-cpp-macos.sh)
 vendor/
 
-# prebuilt kernel archives ARE checked in (exception to *.a above)
+# prebuilt kernel binaries ARE checked in (exceptions to the rules above).
+# Binary redistribution is permitted; dep source stays closed in the
+# private sibling repos. Synced by scripts/sync-prebuilts.sh.
 !prebuilt/**/*.a
+!prebuilt/**/*.so
+!prebuilt/**/*.dll
+!prebuilt/**/*.dylib
+!prebuilt/**/*.metallib
