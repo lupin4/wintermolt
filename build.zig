@@ -95,7 +95,7 @@ pub fn build(b: *std.Build) void {
     if (t.os.tag == .macos) {
         addPrebuiltArchive(exe_mod, b, "formetal", short_target);
         if (b.build_root.handle.access("prebuilt/macos/lib/fmet_kernels.metallib", .{})) |_| {
-            b.installBinFile("prebuilt/macos/lib/fmet_kernels.metallib", "fm_kernels.metallib");
+            b.installBinFile("prebuilt/macos/lib/fmet_kernels.metallib", "fmet_kernels.metallib");
         } else |_| {}
     } else {
         addPrebuiltArchive(exe_mod, b, "forcuda", short_target);
