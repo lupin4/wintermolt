@@ -353,12 +353,20 @@ pub const AgentLoop = struct {
             // Check stop reason
             switch (response.stop_reason) {
                 .end_turn, .max_tokens, .stop_sequence => {
-                    // Done — notify voice callback
+                    // Done — notify voice callback. TTS is a secondary egress
+                    // that re-reads response.content directly (not text_cb), so
+                    // it must be redacted independently: speaking a key leaks it
+                    // just as printing it does. (port of Wintermute leak-guard)
                     if (self.voice_callback) |cb| {
                         for (response.content.items) |block| {
                             switch (block) {
                                 .text => |text| {
-                                    if (text.len > 0) cb(text);
+                                    if (text.len > 0) {
+                                        if (redactOneShot(self.alloc, self.config, text)) |red| {
+                                            defer self.alloc.free(red);
+                                            if (red.len > 0) cb(red);
+                                        } // null (OOM) = drop, never speak raw
+                                    }
                                 },
                                 else => {},
                             }
@@ -803,6 +811,24 @@ pub const AgentLoop = struct {
             n += 1;
         };
         return buf[0..n];
+    }
+
+    /// One-shot redaction of a complete text block (non-streaming secondary
+    /// egress: voice/TTS). Returns redacted bytes owned by `alloc` (caller
+    /// frees), or null on OOM — callers must treat null as "drop/skip", never
+    /// as "emit raw". Same Layer-1 discipline as the streaming choke.
+    fn redactOneShot(alloc: Allocator, cfg: *const config_mod.Config, text: []const u8) ?[]u8 {
+        var secret_buf: [8]redact.NamedSecret = undefined;
+        const secrets = buildSecretSet(cfg, &secret_buf);
+        var r = redact.Redactor.init(alloc, secrets, null) catch return null;
+        defer r.deinit();
+        var out: std.ArrayListUnmanaged(u8) = .{};
+        errdefer out.deinit(alloc);
+        const safe = r.feed(text) catch return null;
+        out.appendSlice(alloc, safe) catch return null;
+        const tail = r.flush() catch return null;
+        out.appendSlice(alloc, tail) catch return null;
+        return out.toOwnedSlice(alloc) catch null;
     }
 
     fn captureText(text: []const u8) void {
