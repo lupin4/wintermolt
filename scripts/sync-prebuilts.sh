@@ -21,14 +21,16 @@ copied=0
 skipped=0
 
 copy_one() { # $1=src $2=dst
-    local src="$1" dst="$2"
+    local src="$1" dst="$2" rel_dst rel_src rel
     if [[ -f "$src" ]]; then
         mkdir -p "$(dirname "$dst")"
         cp -f "$src" "$dst"
-        echo "[sync] ${dst#"$ROOT"/} ← ${src#"$SIBLINGS"/}"
+        rel_dst="${dst#$ROOT/}" rel_src="${src#$SIBLINGS/}"
+        echo "[sync] $rel_dst ← $rel_src"
         copied=$((copied + 1))
     else
-        echo "[skip] ${src#"$SIBLINGS"/} not delivered yet"
+        rel="${src#$SIBLINGS/}"
+        echo "[skip] $rel not delivered yet"
         skipped=$((skipped + 1))
     fi
 }
@@ -49,6 +51,7 @@ copy_one "$SIBLINGS/forMetal/prebuilt/lib/macos/fm_kernels.metallib" "$ROOT/preb
 for t in thor linX86 winX86; do
     src="$SIBLINGS/forCUDA/prebuilt/lib/$t/libforcuda.a"
     if [[ "$t" == "thor" && ! -f "$src" ]]; then
+        echo "[info] thor: forCUDA short-name delivery absent, trying legacy linux-arm64 layout"
         src="$SIBLINGS/forCUDA/prebuilt/linux-arm64/lib/libforcuda.a"
     fi
     copy_one "$src" "$ROOT/prebuilt/$t/lib/libforcuda.a"
