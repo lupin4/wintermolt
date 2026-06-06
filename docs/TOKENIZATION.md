@@ -58,12 +58,22 @@ no-dep-source rule, so it needs an explicit decision. Two sub-options:
 
 ## Model files (runtime assets — not shipped by forNLP)
 
+**Update 2026-06-06 — GGUF lane (preferred):** `fornlp.loadGguf` reads the
+tokenizer straight out of any llama.cpp GGUF (vocab-only or the full model
+file wintermolt already ships for llama.cpp — tensor data never read).
+Specials from metadata, merge-rank BPE + SP meta-space handled. Conformance
+46/46 vs llama.cpp ground truth on Gemma 4
+(`vendor/llama.cpp/models/ggml-vocab-gemma-4.gguf`). Lane B (Zig modules)
+only — not yet in the C ABI. This supersedes the per-model export
+workarounds below for any model you have as GGUF.
+
 | Model | File | Notes |
 |---|---|---|
-| Gemma | SentencePiece `tokenizer.model` | Lane B only (SP parser is Zig API, not in the C ABI) |
-| Qwen 2/3 | llama2.c-format export | `metalQwen3/scripts/export.py` emits `qwen3-4B.bin.tokenizer` (vocab 151936) |
+| **Gemma 4** (launch) | any Gemma 4 `.gguf` | `loadGguf`; BOS=2/EOS=1/`[multimodal]`=5 from metadata; softcap 30.0 → `fnlp_apply_softcap` |
+| Gemma 2/3 | SentencePiece `tokenizer.model` | Lane B only (SP parser is Zig API, not in the C ABI) |
+| Qwen 2/3 | llama2.c-format export | legacy lane; `metalQwen3/scripts/export.py` emits `qwen3-4B.bin.tokenizer` (vocab 151936) — or just use its GGUF via `loadGguf` |
 | Llama 2 | stock `tokenizer.bin` (vocab 32000) | works as-is in both lanes |
-| Nemo | llama2.c-format export of the Tekken vocab | no [INST] chat template in forNLP yet |
+| Nemo | GGUF via `loadGguf` | no [INST] chat template in forNLP yet |
 
 HF `tokenizer.json` is NOT supported by forNLP. For bit-exact HF/tiktoken
 parity, forAI has a full engine (`forAI/src/zig/tokenizer.zig`,
