@@ -80,6 +80,7 @@
 
 const std = @import("std");
 const compat = @import("../compat.zig");
+const wm_config = @import("wm_config.zig");
 
 /// Current config version.
 pub const CONFIG_VERSION: u32 = 1;
@@ -205,13 +206,30 @@ pub const Config = struct {
     elevenlabs_api_key: ?[]const u8,
     elevenlabs_voice_id: ?[]const u8,
     constitution_alloc: ?[]u8 = null,
+    // wintermolt.json — unified runtime config (models/personas/sampling/agents).
+    wm: ?wm_config.Loaded = null,
+    profile: wm_config.Profile = .{},
+    // True when models.chat.prefer routed the primary to the cloud API — startup
+    // must then switchBackend("claude", model).
+    api_override: bool = false,
 
     pub fn load(alloc: ?std.mem.Allocator) !Config {
         // Anthropic API key — optional cloud backend (default: local/Ollama)
         const api_key = compat.getenv("ANTHROPIC_API_KEY") orelse "";
 
-        const model = compat.getenv("WINTERMOLT_MODEL") orelse
-            "qwen3:0.6b";
+        // wintermolt.json — parse once, flatten to a Profile (json > .env > default).
+        const wm = if (alloc) |a| wm_config.load(a) else null;
+        const profile: wm_config.Profile = if (wm) |w| wm_config.resolve(w.schema()) else .{};
+
+        // api-override: a cloud key + a named models.chat.cloud (and not prefer:"local")
+        // routes the PRIMARY to the API — reliable native tool-calling. Local stays fallback.
+        const not_prefer_local = if (profile.chat_prefer) |p| !std.mem.eql(u8, p, "local") else true;
+        const prefer_cloud = not_prefer_local and profile.chat_cloud != null and api_key.len > 0;
+
+        const model = if (prefer_cloud)
+            profile.chat_cloud.?
+        else
+            (profile.chat_local orelse compat.getenv("WINTERMOLT_MODEL") orelse "qwen3:0.6b");
 
         const max_tokens: u32 = blk: {
             const tokens_str = compat.getenv("WINTERMOLT_TOKENS") orelse break :blk 8192;
@@ -226,7 +244,8 @@ pub const Config = struct {
         const ollama_url = compat.getenv("WINTERMOLT_OLLAMA_URL") orelse
             compat.getenv("OLLAMA_HOST") orelse
             "http://localhost:11434";
-        const ollama_model = compat.getenv("WINTERMOLT_OLLAMA_MODEL") orelse
+        const ollama_model = profile.chat_local orelse
+            compat.getenv("WINTERMOLT_OLLAMA_MODEL") orelse
             "qwen3:0.6b";
         const ollama_num_ctx: u32 = blk: {
             // 8192: measured all-tools prompt ceiling is ~3.4k tokens; 4096 left
@@ -237,7 +256,8 @@ pub const Config = struct {
         };
         const ollama_keep_alive = compat.getenv("WINTERMOLT_OLLAMA_KEEP_ALIVE") orelse
             "5m";
-        const vision_model = compat.getenv("WINTERMOLT_VISION_MODEL") orelse
+        const vision_model = profile.vision_model orelse
+            compat.getenv("WINTERMOLT_VISION_MODEL") orelse
             "llava";
         const vision_backend = compat.getenv("WINTERMOLT_VISION_BACKEND") orelse
             "ollama";
@@ -284,10 +304,11 @@ pub const Config = struct {
         const elevenlabs_api_key = compat.getenv("ELEVENLABS_API_KEY");
         const elevenlabs_voice_id = compat.getenv("ELEVENLABS_VOICE_ID");
 
-        // Load constitution from file or use built-in default
+        // Load constitution from file or use built-in default; wintermolt.json's
+        // persona (if set) overrides it.
         const constitution_result = if (alloc) |a| loadConstitution(a) else .{ null, default_constitution };
         const constitution_heap = constitution_result[0];
-        const constitution_text = constitution_result[1];
+        const constitution_text = profile.persona orelse constitution_result[1];
 
         return .{
             .api_key = api_key,
@@ -324,6 +345,9 @@ pub const Config = struct {
             .elevenlabs_api_key = elevenlabs_api_key,
             .elevenlabs_voice_id = elevenlabs_voice_id,
             .constitution_alloc = constitution_heap,
+            .wm = wm,
+            .profile = profile,
+            .api_override = prefer_cloud,
         };
     }
 
@@ -332,6 +356,11 @@ pub const Config = struct {
             alloc.free(buf);
             self.constitution_alloc = null;
             self.system_prompt = default_constitution;
+        }
+        if (self.wm) |*w| {
+            w.deinit();
+            self.wm = null;
+            self.profile = .{};
         }
     }
 

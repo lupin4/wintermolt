@@ -207,6 +207,13 @@ pub fn main() !void {
     var agent = try loop_mod.AgentLoop.init(alloc, &config);
     defer agent.deinit();
 
+    // api-override (wintermolt.json models.chat.prefer + a cloud key present):
+    // switch the primary off ollama onto the API for reliable native tool-calling.
+    if (config.api_override) {
+        std.fs.File.stderr().deprecatedWriter().print("[config] api-override → claude ({s})\n", .{config.model}) catch {};
+        agent.switchBackend("claude", config.model);
+    }
+
     // Re-bind tools-module globals (scheduler, skill registry, storage, RAG) —
     // init() returns by value, so they must point at agent's final address.
     agent.bindTools();
