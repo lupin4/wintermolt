@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>wintermolt — Changelog</title>
+<style>
+body{background:#0d1117;color:#c9d1d9;font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:0;padding:2rem 1.2rem 5rem}
+.wrap{max-width:920px;margin:0 auto}
+h1{font-size:1.6rem;margin:.2em 0}.sub{color:#8b949e}
+h2{font-size:1.15rem;margin:2.2rem 0 .2rem;border-bottom:1px solid #21262d;padding-bottom:.35rem}
+h3{font-size:.95rem;margin:1.4rem 0 .3rem;color:#e6edf3}
+code{background:#161b22;padding:.05em .35em;border-radius:4px;color:#79c0ff;font-family:ui-monospace,"SF Mono",Menlo,monospace;font-size:.88em}
+ul{padding-left:1.15rem}li{margin:.22rem 0;color:#adbac7}
+.tag{display:inline-block;font-family:ui-monospace,Menlo,monospace;font-size:.7rem;text-transform:uppercase;letter-spacing:.08em;padding:.13em .5em;border-radius:3px;margin-right:.5em}
+.fix{background:#12261a;color:#3fb950;border:1px solid #238636}
+.open{background:#2b2417;color:#d29922;border:1px solid #9e6a03}
+.note{background:#161b22;border-left:3px solid #30363d;padding:.7rem 1rem;margin:.9rem 0;color:#adbac7;font-size:.92rem}
+footer{color:#6e7681;font-size:.8rem;margin-top:3rem;border-top:1px solid #21262d;padding-top:1rem}
+</style></head><body><div class="wrap">
+
+<h1>wintermolt — Changelog</h1>
+<div class="sub">Running log of code changes. Newest first.</div>
+
+<h2>2026-08-05 — Delivery optimize default baked to ReleaseFast</h2>
+
+<h3><span class="tag fix">fix</span>Bare <code>standardOptimizeOption(.{})</code> shipped Debug</h3>
+<p>A bare <code>standardOptimizeOption(.{})</code> returns Debug on a plain <code>zig build</code>. Debug materializes <code>undefined</code> as real bytes and once shipped a 68&nbsp;MB archive.</p>
+<p>Replaced with an explicit <code>b.option(std.builtin.OptimizeMode, "optimize", ...) orelse
+.ReleaseFast</code>, which keeps <code>-Doptimize</code> registered <em>and</em> bakes the correct default.</p>
+
+<h3>Classification: Pure-Zig</h3>
+<p>No Fortran under this layer, so the compute <em>is</em> the Zig and safety checks sit on the hot path rather than off it. ReleaseFast is therefore the right delivery default here, where ReleaseSafe is right for the Zortran libraries. wintermolt links ZERO forKernels archives at build time, so there is no Fortran anywhere under it.</p>
+
+<div class="note">
+Verified with <code>zig build --help</code>: <code>-Doptimize=[enum]</code> is registered and reports the
+ReleaseFast delivery default.
+</div>
+
+<footer>wintermolt — The Fantastic Planet</footer>
+</div></body></html>
