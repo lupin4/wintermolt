@@ -26,6 +26,7 @@ const ArrayList = std.ArrayList;
 const Child = std.process.Child;
 const sse = @import("../api/sse.zig");
 const loop_mod = @import("../agent/loop.zig");
+const pairing = @import("pairing.zig");
 
 pub const GatewayBridge = struct {
     alloc: Allocator,
@@ -35,6 +36,8 @@ pub const GatewayBridge = struct {
     agent: *loop_mod.AgentLoop,
     gateway_argv: []const []const u8,
     line_buf: [65536]u8 = undefined, // 64KB for large API requests
+    /// Paired companion devices (iOS, watchOS, tvOS, Android). See pairing.zig.
+    registry: pairing.Registry,
 
     pub fn init(alloc: Allocator, agent: *loop_mod.AgentLoop) !GatewayBridge {
         const stderr = std.fs.File.stderr().deprecatedWriter();
@@ -56,6 +59,7 @@ pub const GatewayBridge = struct {
             .stdin_file = child.stdin.?,
             .agent = agent,
             .gateway_argv = argv,
+            .registry = pairing.Registry.init(alloc),
         };
     }
 
@@ -63,6 +67,7 @@ pub const GatewayBridge = struct {
         self.stdin_file.close();
         _ = self.child.wait() catch {};
         self.alloc.free(self.gateway_argv);
+        self.registry.deinit();
     }
 
     /// Main event loop — reads requests from gateway sidecar, processes them, sends responses.
@@ -84,10 +89,30 @@ pub const GatewayBridge = struct {
             const msg_id = sse.findJsonString(trimmed, "id") orelse "unknown";
 
             if (std.mem.eql(u8, msg_type, "api_request")) {
+                // AUTH GATE. Requests arriving here came off the sidecar's
+                // network surface, not the local CLI (that path never touches
+                // this bridge), so an unauthenticated api_request is a remote
+                // caller driving the agent. Enforcement switches on as soon as
+                // ONE device is paired: pairing is the operator opting in, and
+                // turning it on unconditionally would break every existing
+                // deployment using the OpenAI-compatible endpoint on upgrade.
+                // Zero paired devices keeps the legacy open behaviour, with the
+                // warning printed at startup.
+                if (!self.isRequestAuthorized(trimmed)) {
+                    stderr.print("[gateway] REJECTED unauthenticated api_request\n", .{}) catch {};
+                    self.sendErrorResponse(msg_id, "unauthorized: pair this device first") catch {};
+                    continue;
+                }
                 self.handleApiRequest(msg_id, trimmed) catch |e| {
                     stderr.print("[gateway] API error: {s}\n", .{@errorName(e)}) catch {};
                     self.sendErrorResponse(msg_id, @errorName(e)) catch {};
                 };
+            } else if (std.mem.eql(u8, msg_type, "pair_request")) {
+                self.handlePairRequest(msg_id, trimmed) catch |e| {
+                    self.sendPairResponse(msg_id, "error", @errorName(e), null) catch {};
+                };
+            } else if (std.mem.eql(u8, msg_type, "beacon")) {
+                self.handleBeacon(msg_id, trimmed) catch {};
             } else if (std.mem.eql(u8, msg_type, "command")) {
                 self.handleCommand(trimmed) catch {};
             } else if (std.mem.eql(u8, msg_type, "status_request")) {
@@ -123,6 +148,95 @@ pub const GatewayBridge = struct {
         try writer.writeAll("\"},\"index\":0,\"finish_reason\":\"stop\"}]}\n");
     }
 
+    /// True when the caller may drive the agent. See the note at the call site
+    /// for why zero paired devices means "legacy open".
+    fn isRequestAuthorized(self: *GatewayBridge, json: []const u8) bool {
+        if (self.registry.devices.items.len == 0) return true;
+        const token_hex = sse.findJsonString(json, "device_token") orelse return false;
+        const token = decodeToken(token_hex) orelse return false;
+        return self.registry.touch(&token, std.time.timestamp());
+    }
+
+    /// `{"type":"pair_request","id":"p1","code":"ACDE4679","name":"Living Room
+    ///   TV","platform":"tvos","caps":{"microphone":true,"screen":true}}`
+    fn handlePairRequest(self: *GatewayBridge, request_id: []const u8, json: []const u8) !void {
+        const code = sse.findJsonString(json, "code") orelse
+            return self.sendPairResponse(request_id, "rejected", "missing code", null);
+        const name = sse.findJsonString(json, "name") orelse "unnamed device";
+        const platform = pairing.Platform.parse(sse.findJsonString(json, "platform") orelse "unknown");
+
+        // Capabilities are declared, then clamped to what the platform can
+        // actually offer, so a client cannot claim a camera the device has not
+        // got. tvOS keeps microphone: the Siri Remote has one.
+        var caps = pairing.Capabilities{
+            .camera = jsonFlag(json, "camera"),
+            .screen = jsonFlag(json, "screen"),
+            .microphone = jsonFlag(json, "microphone"),
+            .location = jsonFlag(json, "location"),
+            .notifications = jsonFlag(json, "notifications"),
+            .file_share = jsonFlag(json, "file_share"),
+        };
+        switch (platform) {
+            .tvos => {
+                caps.camera = false; // no camera on Apple TV
+                caps.location = false;
+            },
+            .watchos => {
+                caps.camera = false;
+                caps.file_share = false;
+            },
+            else => {},
+        }
+
+        const token = self.registry.completePairing(code, name, platform, caps, std.time.timestamp()) catch |e| {
+            // Deliberately coarse to the client: a caller must not learn WHICH
+            // way it was wrong (expired vs mismatch vs burned), only that it
+            // failed. The operator still sees the specific reason on stderr.
+            const stderr = std.fs.File.stderr().deprecatedWriter();
+            stderr.print("[gateway] pairing refused: {s}\n", .{@errorName(e)}) catch {};
+            return self.sendPairResponse(request_id, "rejected", "pairing refused", null);
+        };
+
+        var hex: [pairing.TOKEN_BYTES * 2]u8 = undefined;
+        const token_hex = try std.fmt.bufPrint(&hex, "{x}", .{token});
+        try self.sendPairResponse(request_id, "accepted", "paired", token_hex);
+    }
+
+    /// Presence beacon: keeps last_seen fresh so the operator can see which
+    /// nodes are alive. Advisory — a missed beacon is a quiet device, not a
+    /// deauthorized one.
+    fn handleBeacon(self: *GatewayBridge, request_id: []const u8, json: []const u8) !void {
+        const token_hex = sse.findJsonString(json, "device_token") orelse return;
+        const token = decodeToken(token_hex) orelse return;
+        const ok = self.registry.touch(&token, std.time.timestamp());
+        const writer = self.stdin_file.deprecatedWriter();
+        try writer.writeAll("{\"type\":\"beacon_ack\",\"id\":\"");
+        try writeJsonEscaped(writer, request_id);
+        try writer.print("\",\"alive\":{s}}}\n", .{if (ok) "true" else "false"});
+    }
+
+    fn sendPairResponse(
+        self: *GatewayBridge,
+        request_id: []const u8,
+        status: []const u8,
+        detail: []const u8,
+        token_hex: ?[]const u8,
+    ) !void {
+        const writer = self.stdin_file.deprecatedWriter();
+        try writer.writeAll("{\"type\":\"pair_response\",\"id\":\"");
+        try writeJsonEscaped(writer, request_id);
+        try writer.writeAll("\",\"status\":\"");
+        try writeJsonEscaped(writer, status);
+        try writer.writeAll("\",\"detail\":\"");
+        try writeJsonEscaped(writer, detail);
+        if (token_hex) |t| {
+            // The one and only time this value exists outside the device.
+            try writer.writeAll("\",\"device_token\":\"");
+            try writeJsonEscaped(writer, t);
+        }
+        try writer.writeAll("\"}\n");
+    }
+
     fn handleCommand(_: *GatewayBridge, json: []const u8) !void {
         const cmd = sse.findJsonString(json, "command") orelse return;
         const stderr = std.fs.File.stderr().deprecatedWriter();
@@ -150,6 +264,33 @@ pub const GatewayBridge = struct {
         try writer.writeAll("\",\"type\":\"server_error\"}}\n");
     }
 };
+
+/// Decode a wire token, or nothing.
+///
+/// std.fmt.hexToBytes does NOT error on input shorter than the output buffer:
+/// given "abcd" it decodes ONE byte and returns a 1-byte slice, leaving the
+/// other 31 bytes of the destination UNINITIALIZED. Discarding that slice and
+/// hashing the whole array meant a short token hashed uninitialized stack --
+/// non-deterministic authentication, and a caller-controlled way to reach it.
+/// The length check is the fix; a unit test pins the decoder's real behaviour.
+fn decodeToken(hex: []const u8) ?[pairing.TOKEN_BYTES]u8 {
+    if (hex.len != pairing.TOKEN_BYTES * 2) return null;
+    var token: [pairing.TOKEN_BYTES]u8 = undefined;
+    const decoded = std.fmt.hexToBytes(&token, hex) catch return null;
+    if (decoded.len != pairing.TOKEN_BYTES) return null;
+    return token;
+}
+
+/// Crude boolean probe for `"key":true` inside the caps object. The bridge
+/// parses JSON with substring helpers throughout (sse.findJsonString); this
+/// matches that idiom rather than pulling a parser in for six flags.
+fn jsonFlag(json: []const u8, key: []const u8) bool {
+    var buf: [64]u8 = undefined;
+    const needle = std.fmt.bufPrint(&buf, "\"{s}\":true", .{key}) catch return false;
+    if (std.mem.indexOf(u8, json, needle) != null) return true;
+    const spaced = std.fmt.bufPrint(&buf, "\"{s}\": true", .{key}) catch return false;
+    return std.mem.indexOf(u8, json, spaced) != null;
+}
 
 fn writeJsonEscaped(w: anytype, s: []const u8) !void {
     for (s) |c| {
