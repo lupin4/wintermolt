@@ -35,28 +35,47 @@ copy_one() { # $1=src $2=dst
     fi
 }
 
+# resolve_src — find a delivered archive across the delivery layouts that have
+# been canon at different times. The path canon is `prebuilt/<target>/<lib>`
+# (no `/lib/` segment); repos that predate it deliver to `prebuilt/lib/<target>/`.
+# Callers may append extra per-repo fallbacks as trailing arguments.
+#
+# Returns the first path that EXISTS, or the canonical path when none do, so
+# the caller's own missing-file branch reports against the path we actually want.
+resolve_src() { # $1=repo_root $2=target $3=libname [extra fallback paths...]
+    local repo="$1" t="$2" lib="$3"; shift 3
+    local canon="$repo/prebuilt/$t/$lib"
+    local cand
+    for cand in "$canon" "$repo/prebuilt/lib/$t/$lib" "$@"; do
+        if [[ -f "$cand" ]]; then
+            printf '%s\n' "$cand"
+            return 0
+        fi
+    done
+    printf '%s\n' "$canon"
+}
+
 for dep in "${ALL_DEPS[@]}"; do
     lib="lib$(echo "$dep" | tr '[:upper:]' '[:lower:]').a"
     for t in "${TARGETS[@]}"; do
-        copy_one "$SIBLINGS/$dep/prebuilt/lib/$t/$lib" "$ROOT/prebuilt/$t/lib/$lib"
+        copy_one "$(resolve_src "$SIBLINGS/$dep" "$t" "$lib")" "$ROOT/prebuilt/$t/lib/$lib"
     done
 done
 
 # forMetal: macOS only. Archive + runtime .metallib (installed beside the binary).
-copy_one "$SIBLINGS/forMetal/prebuilt/lib/macos/libformetal.a" "$ROOT/prebuilt/macos/lib/libformetal.a"
+copy_one "$(resolve_src "$SIBLINGS/forMetal" macos libformetal.a)" "$ROOT/prebuilt/macos/lib/libformetal.a"
 # v1.2 rename (2026-06-04): fm_kernels.metallib → fmet_kernels.metallib; the
 # loader in libformetal.a now searches for the fmet_ name.
-copy_one "$SIBLINGS/forMetal/prebuilt/lib/macos/fmet_kernels.metallib" "$ROOT/prebuilt/macos/lib/fmet_kernels.metallib"
+copy_one "$(resolve_src "$SIBLINGS/forMetal" macos fmet_kernels.metallib)" "$ROOT/prebuilt/macos/lib/fmet_kernels.metallib"
 
 # forCUDA: GPU kernels for everything that isn't macOS. thor falls back to
 # forCUDA's legacy linux-arm64 delivery layout until it adopts short names.
 for t in thor linX86 winX86; do
-    src="$SIBLINGS/forCUDA/prebuilt/lib/$t/libforcuda.a"
-    if [[ "$t" == "thor" && ! -f "$src" ]]; then
-        echo "[info] thor: forCUDA short-name delivery absent, trying legacy linux-arm64 layout"
-        src="$SIBLINGS/forCUDA/prebuilt/linux-arm64/lib/libforcuda.a"
-    fi
-    copy_one "$src" "$ROOT/prebuilt/$t/lib/libforcuda.a"
+    # thor additionally keeps a legacy linux-arm64 delivery layout.
+    extra=()
+    [[ "$t" == "thor" ]] && extra=("$SIBLINGS/forCUDA/prebuilt/linux-arm64/lib/libforcuda.a")
+    copy_one "$(resolve_src "$SIBLINGS/forCUDA" "$t" libforcuda.a "${extra[@]+"${extra[@]}"}")" \
+             "$ROOT/prebuilt/$t/lib/libforcuda.a"
 done
 
 echo "----"
