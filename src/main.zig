@@ -1208,3 +1208,19 @@ fn printHelp(w: anytype) !void {
         \\
     );
 }
+
+// ---------------------------------------------------------------------------
+// Test aggregation. build.zig roots the `test` step at THIS file, and Zig
+// collects test blocks only from the root's own source -- NOT from its imports.
+// This file has no test blocks of its own, so before this block existed
+// `zig build test` compiled, ran ZERO tests, and reported success. The 17 tests
+// in agent/redact.zig had never executed.
+//
+// Every file that contains `test "..."` must be referenced here or its tests do
+// not run, and nothing will say so. Verify a change to this list the only way
+// that works: `zig build test --summary all` and read the test COUNT, then break
+// one test on purpose and confirm it is reported.
+// ---------------------------------------------------------------------------
+test {
+    _ = @import("agent/redact.zig");
+}
