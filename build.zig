@@ -23,6 +23,21 @@
 
 const std = @import("std");
 
+/// Does `sub_path` exist under the build root? Error union, not bool, so call
+/// sites keep their `if (...) |_| ... else |_|` shape.
+///
+/// `b.build_root.handle` is an `std.fs.Dir` on 0.15.2 and an `std.Io.Dir` on
+/// 0.16, and the 0.16 form threads an `Io` through every operation -- so the same
+/// `access` call needs two arguments on one toolchain and three on the other.
+/// Branch is on `@hasDecl` -- a feature test, not a version number.
+fn buildRootHas(b: *std.Build, sub_path: []const u8) !void {
+    if (comptime @hasDecl(std.fs, "cwd")) {
+        return b.build_root.handle.access(sub_path, .{});
+    } else {
+        return b.build_root.handle.access(b.graph.io, sub_path, .{});
+    }
+}
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     // ReleaseFast (org optimize policy): wintermolt links ZERO forKernels archives at
@@ -104,7 +119,7 @@ pub fn build(b: *std.Build) void {
     // fmet_kernels.metallib is a runtime resource (renamed from fm_kernels.metallib in forMetal v1.2) shipped beside the binary.
     if (t.os.tag == .macos) {
         addPrebuiltArchive(exe_mod, b, "formetal", short_target);
-        if (b.build_root.handle.access("prebuilt/macos/lib/fmet_kernels.metallib", .{})) |_| {
+        if (buildRootHas(b, "prebuilt/macos/lib/fmet_kernels.metallib")) |_| {
             b.installBinFile("prebuilt/macos/lib/fmet_kernels.metallib", "fmet_kernels.metallib");
         } else |_| {}
     } else {
@@ -118,7 +133,7 @@ pub fn build(b: *std.Build) void {
     // ship a single static archive, no separate .metallib at runtime.
     if (t.os.tag == .macos and t.cpu.arch == .aarch64) {
         const llama_path = "prebuilt/macos/lib/libllama.a";
-        if (b.build_root.handle.access(llama_path, .{})) |_| {
+        if (buildRootHas(b, llama_path)) |_| {
             exe_mod.addObjectFile(b.path(llama_path));
             exe_mod.addIncludePath(b.path("prebuilt/macos/include_kernel"));
             exe_mod.linkFramework("Metal", .{});
@@ -197,7 +212,7 @@ fn addPrebuiltArchive(mod: *std.Build.Module, b: *std.Build, name: []const u8, s
         b.fmt("prebuilt/{s}/lib/{s}.lib", .{ short, name }),
     };
     for (candidates) |p| {
-        if (b.build_root.handle.access(p, .{})) |_| {
+        if (buildRootHas(b, p)) |_| {
             mod.addObjectFile(b.path(p));
             return;
         } else |_| {}
