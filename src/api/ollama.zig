@@ -210,8 +210,20 @@ pub const OllamaClient = struct {
             // Model likely doesn't support tools — retry without them
             // Also strip tool_use/tool_result messages from history since
             // models reject tool-related messages when tools aren't declared.
+            // SAY WHAT OLLAMA SAID. A 400 is not evidence about the model.
+            //
+            // This previously reported "Model doesn't support tools" for ANY
+            // 400 and silently dropped the tools. The actual cause was a
+            // malformed request of ours — arguments serialized as a string —
+            // and Ollama's body named it outright: "Value looks like object,
+            // but can't find closing '}' symbol". Blaming the model sent
+            // everyone looking at model capability, which was never the issue.
             const stderr = stdio.stderr();
-            stderr.print("[ollama] Model doesn't support tools, retrying without\n", .{}) catch {};
+            stderr.print("[ollama] HTTP 400 with tools declared — retrying without them.\n", .{}) catch {};
+            stderr.print("[ollama] This is NOT proof the model lacks tool support. A 400 is\n", .{}) catch {};
+            stderr.print("[ollama] usually a malformed request on our side; Ollama's response\n", .{}) catch {};
+            stderr.print("[ollama] body says which. To read it:\n", .{}) catch {};
+            stderr.print("[ollama]   curl -s http://localhost:11434/api/chat -d @request.json\n", .{}) catch {};
             return self.sendMessageNoTools(system_prompt, messages, text_cb);
         }
         if (http_code != 200) {
@@ -351,10 +363,37 @@ pub const OllamaClient = struct {
                             try w.writeAll("\",\"type\":\"function\",\"function\":{\"name\":\"");
                             try writeJsonStr(w, tu.name);
                             try w.writeAll("\",\"arguments\":");
-                            // arguments must be a string in OpenAI format
-                            try w.writeByte('"');
-                            try writeJsonStr(w, tu.input_json);
-                            try w.writeAll("\"}}");
+                            // OLLAMA TAKES AN OBJECT HERE, NOT A STRING.
+                            //
+                            // This used to write input_json as a JSON *string*
+                            // with the note "arguments must be a string in
+                            // OpenAI format". True of OpenAI, false of Ollama,
+                            // which both EMITS and ACCEPTS an object:
+                            //
+                            //   "arguments": {"pattern":"*"}
+                            //
+                            // Sending the string form got a 400 whose body says
+                            // exactly what is wrong, and which nothing read:
+                            //
+                            //   Value looks like object, but can't find
+                            //   closing '}' symbol
+                            //
+                            // The cost was not a failed request. The 400 handler
+                            // below assumed any 400 meant the model lacked tool
+                            // support, dropped the tools and retried, so every
+                            // tool-using conversation degraded into the model
+                            // DESCRIBING what it would do. The first call
+                            // succeeded and the tool even ran; the follow-up
+                            // carrying the call is what failed. Reproduced on
+                            // qwen3:0.6b and qwen3:8b alike — never a model
+                            // capability problem.
+                            //
+                            // input_json is already a JSON object literal, so it
+                            // is written verbatim.
+                            // An empty input would be `"arguments":}` -- invalid
+                            // JSON and another 400. {} is what "no arguments" means.
+                            try w.writeAll(if (tu.input_json.len == 0) "{}" else tu.input_json);
+                            try w.writeAll("}}");
                         },
                         else => {},
                     }

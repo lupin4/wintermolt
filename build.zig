@@ -6,7 +6,7 @@
 //   zig build          → zig-out/bin/wintermolt (main binary)
 //   zig build run      → build and run wintermolt
 //
-// Wintermolt is the Apache-2.0 lite version of Wintermute. No forKernels,
+// Wintermolt is the MIT lite version of Wintermute. No forKernels,
 // no Fortran archives, no TPU/fleet/cortex — just the core agentic loop
 // with multi-backend AI, tool dispatch, MCP, and skills.
 //
@@ -88,7 +88,9 @@ pub fn build(b: *std.Build) void {
     // The build never reads sibling paths. Unreferenced archive members
     // are not pulled in, so linking deps ahead of their wiring is free.
     const short_target = getShortTargetName(target.result);
-    for ([_][]const u8{ "foragent", "forlearn", "formcp", "forai", "fornlp" }) |dep| {
+    // fortime: the clocks (fsio.zig declares ftim_now_unix_ns / ftim_mono_ns).
+    // fornet / forio_core: basic kernels, linked ahead of their wiring.
+    for ([_][]const u8{ "foragent", "forlearn", "formcp", "forai", "fornlp", "fortime", "fornet", "forio_core" }) |dep| {
         addPrebuiltArchive(exe_mod, b, dep, short_target);
     }
 
@@ -124,6 +126,13 @@ pub fn build(b: *std.Build) void {
             "normaliz",      "iphlpapi",  "advapi32",           "secur32",
         };
         for (win_deps) |lib| exe_mod.linkSystemLibrary(lib, .{});
+        // MSYS2's static OpenSSL was compiled against mingw headers that declare
+        // _vsnwprintf as a DLL import. Zig 0.16's bundled mingw CRT has no import
+        // for it -- only a static copy in libmingw32 that lld refuses for a
+        // __declspec(dllimport) reference -- so the link failed on
+        // OPENSSL_showfatal. MSYS2's own ucrtbase import library supplies it.
+        // Archive members load lazily: only still-unresolved imports come from here.
+        exe_mod.addObjectFile(.{ .cwd_relative = "C:/msys64/ucrt64/lib/libucrtbase.a" });
     }
 
     // --- GPU kernels: forMetal on macOS, forCUDA everywhere else ---

@@ -5,20 +5,33 @@
 # redistribution is permitted; dep source stays closed). The build never
 # reads sibling paths — only what this script has placed locally.
 #
+# The sibling checkouts must be on the branch that HAS the delivery (the
+# target branch, e.g. winX86) — this copies whatever the checkout holds.
+#
 # Targets (org short names, no hyphenated triples): macos | thor | linX86 | winX86
+# Each machine syncs only its OWN target:  SYNC_TARGETS=winX86 scripts/sync-prebuilts.sh
 # Matrix:
 #   forAgent forLearn forMCP forAI forNLP  → every target
+#   forTime forNet                         → every target (forTime owns the clocks)
+#   forIO (core pack)                      → every target
 #   forMetal                               → macos ONLY (decision 2026-06-04)
 #   forCUDA                                → thor linX86 winX86
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SIBLINGS="$(cd "$ROOT/.." && pwd)"
-TARGETS=(macos thor linX86 winX86)
-ALL_DEPS=(forAgent forLearn forMCP forAI forNLP)
+# shellcheck disable=SC2206
+TARGETS=(${SYNC_TARGETS:-macos thor linX86 winX86})
+ALL_DEPS=(forAgent forLearn forMCP forAI forNLP forTime forNet)
 
 copied=0
 skipped=0
+
+want() { # $1=target — is it one we are syncing?
+    local t
+    for t in "${TARGETS[@]}"; do [[ "$t" == "$1" ]] && return 0; done
+    return 1
+}
 
 copy_one() { # $1=src $2=dst
     local src="$1" dst="$2" rel_dst rel_src rel
@@ -62,15 +75,23 @@ for dep in "${ALL_DEPS[@]}"; do
     done
 done
 
+# forIO ships per-pack archives, not one libforio.a. core is the generic I/O pack.
+for t in "${TARGETS[@]}"; do
+    copy_one "$(resolve_src "$SIBLINGS/forIO" "$t" libforio_core.a)" "$ROOT/prebuilt/$t/lib/libforio_core.a"
+done
+
 # forMetal: macOS only. Archive + runtime .metallib (installed beside the binary).
-copy_one "$(resolve_src "$SIBLINGS/forMetal" macos libformetal.a)" "$ROOT/prebuilt/macos/lib/libformetal.a"
-# v1.2 rename (2026-06-04): fm_kernels.metallib → fmet_kernels.metallib; the
-# loader in libformetal.a now searches for the fmet_ name.
-copy_one "$(resolve_src "$SIBLINGS/forMetal" macos fmet_kernels.metallib)" "$ROOT/prebuilt/macos/lib/fmet_kernels.metallib"
+if want macos; then
+    copy_one "$(resolve_src "$SIBLINGS/forMetal" macos libformetal.a)" "$ROOT/prebuilt/macos/lib/libformetal.a"
+    # v1.2 rename (2026-06-04): fm_kernels.metallib → fmet_kernels.metallib; the
+    # loader in libformetal.a now searches for the fmet_ name.
+    copy_one "$(resolve_src "$SIBLINGS/forMetal" macos fmet_kernels.metallib)" "$ROOT/prebuilt/macos/lib/fmet_kernels.metallib"
+fi
 
 # forCUDA: GPU kernels for everything that isn't macOS. thor falls back to
 # forCUDA's legacy linux-arm64 delivery layout until it adopts short names.
 for t in thor linX86 winX86; do
+    want "$t" || continue
     # thor additionally keeps a legacy linux-arm64 delivery layout.
     extra=()
     [[ "$t" == "thor" ]] && extra=("$SIBLINGS/forCUDA/prebuilt/linux-arm64/lib/libforcuda.a")

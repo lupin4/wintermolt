@@ -509,7 +509,27 @@ pub const AgentLoop = struct {
                 }
             }
 
+            // TELL THEM WHAT TO DO, not just that it failed.
+            //
+            // The default backend is local Ollama, so the overwhelmingly common
+            // reason to reach this point on a fresh install is that Ollama is
+            // not running or the default model was never pulled. "All backends
+            // failed" is true and useless; a first-time user has no way to know
+            // that two commands fix it.
             stderr.writeAll("[fallback] All backends failed\n") catch {};
+            stderr.writeAll("\n") catch {};
+            stderr.writeAll("  Nothing could answer. The default backend is local Ollama.\n") catch {};
+            stderr.writeAll("  On a fresh machine that usually means one of:\n") catch {};
+            stderr.writeAll("\n") catch {};
+            stderr.writeAll("    1. Ollama is not running       ->  ollama serve\n") catch {};
+            stderr.writeAll("    2. The model is not pulled     ->  ollama pull qwen3:8b\n") catch {};
+            stderr.writeAll("    3. Ollama is not installed     ->  https://ollama.com/download\n") catch {};
+            stderr.writeAll("\n") catch {};
+            stderr.writeAll("  Or use a cloud backend you already have a key for:\n") catch {};
+            stderr.writeAll("    /model claude      (ANTHROPIC_API_KEY)\n") catch {};
+            stderr.writeAll("    /model openai      (OPENAI_API_KEY)\n") catch {};
+            stderr.writeAll("    /keys              to add one interactively\n") catch {};
+            stderr.writeAll("\n") catch {};
             return primary_err;
         }
     }

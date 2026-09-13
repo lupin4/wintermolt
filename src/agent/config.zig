@@ -3,11 +3,11 @@
 // config.zig — Wintermolt configuration loading
 //
 // Reads configuration from environment variables:
-//   WINTERMOLT_MODEL         — Optional. Model ID (default: qwen3:0.6b via Ollama)
+//   WINTERMOLT_MODEL         — Optional. Model ID (default: qwen3:8b via Ollama)
 //   WINTERMOLT_TOKENS        — Optional. Max response tokens (default: 8192)
 //   WINTERMOLT_NO_HISTORY    — Optional. Set to "1" to disable SQLite history
 //   WINTERMOLT_OLLAMA_URL    — Optional. Ollama base URL (default: http://localhost:11434)
-//   WINTERMOLT_OLLAMA_MODEL  — Optional. Ollama model (default: qwen3:0.6b)
+//   WINTERMOLT_OLLAMA_MODEL  — Optional. Ollama model (default: qwen3:8b)
 //   WINTERMOLT_OLLAMA_CTX    — Optional. Context window cap (default: 4096). Prevents OOM.
 //   WINTERMOLT_OLLAMA_KEEP_ALIVE — Optional. Model unload timer (default: "5m"). "0" unloads immediately.
 //   WINTERMOLT_VISION_MODEL  — Optional. Vision model for /look (default: llava)
@@ -86,6 +86,19 @@ const wm_config = @import("wm_config.zig");
 
 /// Current config version.
 pub const CONFIG_VERSION: u32 = 1;
+
+/// Default local model, used when nothing is configured and no env var is set.
+///
+/// Was qwen3:0.6b. At 0.6B parameters that model narrates instead of acting —
+/// handed a glob result it describes what `ls` would do rather than reporting
+/// the files — so the out-of-the-box experience read as broken even once tool
+/// calling worked. qwen3:8b uses the same API and tool surface and actually
+/// acts on a tool result.
+///
+/// It is bigger (5.2 GB vs 522 MB) and slower to first token. Anyone who wants
+/// the small one back sets WINTERMOLT_MODEL / WINTERMOLT_OLLAMA_MODEL, which
+/// still win over this.
+pub const default_local_model = "qwen3:8b";
 
 /// Check config version from .env and print migration notices if needed.
 pub fn migrateConfig() void {
@@ -228,7 +241,7 @@ pub const Config = struct {
         const model = if (prefer_cloud)
             profile.chat_cloud.?
         else
-            (profile.chat_local orelse compat.getenv("WINTERMOLT_MODEL") orelse "qwen3:0.6b");
+            (profile.chat_local orelse compat.getenv("WINTERMOLT_MODEL") orelse default_local_model);
 
         const max_tokens: u32 = blk: {
             const tokens_str = compat.getenv("WINTERMOLT_TOKENS") orelse break :blk 8192;
@@ -245,7 +258,7 @@ pub const Config = struct {
             "http://localhost:11434";
         const ollama_model = profile.chat_local orelse
             compat.getenv("WINTERMOLT_OLLAMA_MODEL") orelse
-            "qwen3:0.6b";
+            default_local_model;
         const ollama_num_ctx: u32 = blk: {
             // 8192: measured all-tools prompt ceiling is ~3.4k tokens; 4096 left
             // qwen3:0.6b ~700 tokens for history+reply and silently truncated
