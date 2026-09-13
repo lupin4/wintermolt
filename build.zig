@@ -172,7 +172,15 @@ pub fn build(b: *std.Build) void {
     // AstGen, before comptime folding, so the name has to exist even where
     // llama.cpp does not. Off darwin-arm64 it resolves to an empty stub, which
     // is what kernel.zig's `is_supported == false` branches already assume.
-    const llama_c_mod = if (t.os.tag == .macos and t.cpu.arch == .aarch64) blk: {
+    // The header is checked for PRESENCE, not just for the right target. As of
+    // ae15b2f the prebuilt artifacts are untracked from main, so a fresh clone
+    // has neither libllama.a nor these headers -- and addTranslateC on a missing
+    // file fails at CONFIGURE time, before the archive check below ever runs.
+    // Degrade to the stub instead, matching how the missing archive already
+    // degrades to KernelBackendUnavailable.
+    const have_llama_header = t.os.tag == .macos and t.cpu.arch == .aarch64 and
+        if (buildRootHas(b, "prebuilt/macos/include_kernel/llama.h")) |_| true else |_| false;
+    const llama_c_mod = if (have_llama_header) blk: {
         const tc = b.addTranslateC(.{
             .root_source_file = b.path("prebuilt/macos/include_kernel/llama.h"),
             .target = target,
