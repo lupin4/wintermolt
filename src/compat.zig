@@ -32,7 +32,18 @@ fn ensureEnvCache() void {
 
 pub fn getenv(name: []const u8) ?[]const u8 {
     if (comptime builtin.os.tag != .windows) {
-        return std.posix.getenv(name);
+        // 0.16 removed std.posix.getenv along with the rest of the positionless
+        // posix surface; its replacement reads a std.process.Environ threaded
+        // from main, which a helper called from arbitrary depth does not have.
+        // std.c.getenv is present and identically typed on every toolchain and
+        // needs no Io -- the same reasoning that puts clocks on clock_gettime.
+        if (comptime @hasDecl(std.posix, "getenv")) return std.posix.getenv(name);
+        var buf: [256]u8 = undefined;
+        if (name.len >= buf.len) return null;
+        @memcpy(buf[0..name.len], name);
+        buf[name.len] = 0;
+        const v = std.c.getenv(@ptrCast(&buf)) orelse return null;
+        return std.mem.span(v);
     }
 
     env_mutex.lock();

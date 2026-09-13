@@ -18,6 +18,7 @@
 
 const std = @import("std");
 const compat = @import("../compat.zig");
+const stdio = @import("../stdio.zig");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 
@@ -66,10 +67,16 @@ pub const ExtensionManager = struct {
         const home = compat.getenv("HOME") orelse "/tmp";
         const plugins_dir = std.fmt.allocPrint(alloc, "{s}/.wintermolt/plugins", .{home}) catch "/tmp/wintermolt-plugins";
 
-        // Ensure plugins directory exists
-        std.fs.makeDirAbsolute(plugins_dir) catch |e| {
+        // Ensure plugins directory exists.
+        //
+        // std.fs.makeDirAbsolute is gone; Io.Dir.createDirAbsolute replaces it on
+        // both 0.16 and 0.17. .default_dir is 0o777-before-umask, matching what
+        // makeDirAbsolute used. mkdir does not allocate, so the single-threaded
+        // Io is sufficient here and needs nothing threaded in from main.
+        const mkdir_io = std.Io.Threaded.global_single_threaded.io();
+        std.Io.Dir.createDirAbsolute(mkdir_io, plugins_dir, .default_dir) catch |e| {
             if (e != error.PathAlreadyExists) {
-                const stderr = std.fs.File.stderr().deprecatedWriter();
+                const stderr = stdio.stderr();
                 stderr.print("[extensions] Warning: Could not create {s}\n", .{plugins_dir}) catch {};
             }
         };
@@ -88,8 +95,12 @@ pub const ExtensionManager = struct {
         };
         defer alloc.free(registry_json);
 
-        var buf: ArrayList(u8) = .{};
-        const w = buf.writer(alloc);
+        // ArrayList.writer(gpa) is gone on 0.16 AND 0.17. Writer.Allocating owns
+        // the buffer and hands out a real Writer, so the writeAll/print call
+        // sites below are unchanged. Present on both toolchains.
+        var aw: std.Io.Writer.Allocating = .init(alloc);
+        defer aw.deinit();
+        const w = &aw.writer;
 
         try w.writeAll("=== Available Extensions ===\n\n");
 
@@ -131,13 +142,17 @@ pub const ExtensionManager = struct {
 
         try w.writeAll("\nUsage: wintermolt --extension install <name>\n");
 
-        return buf.toOwnedSlice(alloc);
+        return aw.toOwnedSlice();
     }
 
     /// List installed extensions.
     pub fn listInstalled(self: *ExtensionManager, alloc: Allocator) ![]u8 {
-        var buf: ArrayList(u8) = .{};
-        const w = buf.writer(alloc);
+        // ArrayList.writer(gpa) is gone on 0.16 AND 0.17. Writer.Allocating owns
+        // the buffer and hands out a real Writer, so the writeAll/print call
+        // sites below are unchanged. Present on both toolchains.
+        var aw: std.Io.Writer.Allocating = .init(alloc);
+        defer aw.deinit();
+        const w = &aw.writer;
 
         try w.writeAll("=== Installed Extensions ===\n\n");
 
@@ -146,7 +161,7 @@ pub const ExtensionManager = struct {
 
         var dir = std.fs.openDirAbsolute(plugins_z, .{ .iterate = true }) catch {
             try w.writeAll("  No extensions installed.\n");
-            return buf.toOwnedSlice(alloc);
+            return aw.toOwnedSlice();
         };
         defer dir.close();
 
@@ -167,7 +182,7 @@ pub const ExtensionManager = struct {
 
         try std.fmt.format(w, "Location: {s}\n", .{self.plugins_dir});
 
-        return buf.toOwnedSlice(alloc);
+        return aw.toOwnedSlice();
     }
 
     /// Install an extension by name from the registry.
