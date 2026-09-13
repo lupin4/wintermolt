@@ -19,6 +19,16 @@
 const std = @import("std");
 const compat = @import("../compat.zig");
 const stdio = @import("../stdio.zig");
+
+/// The blocking Io this file's filesystem calls need.
+///
+/// 0.16 moved the filesystem into std.Io and every operation now takes an Io.
+/// None of the calls here allocate -- mkdir, create, access, deleteTree, close --
+/// so the single-threaded instance is sufficient and nothing has to be threaded
+/// in from main. Named once here rather than repeated at each call site.
+fn fsIo() std.Io {
+    return std.Io.Threaded.global_single_threaded.io();
+}
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 
@@ -73,8 +83,7 @@ pub const ExtensionManager = struct {
         // both 0.16 and 0.17. .default_dir is 0o777-before-umask, matching what
         // makeDirAbsolute used. mkdir does not allocate, so the single-threaded
         // Io is sufficient here and needs nothing threaded in from main.
-        const mkdir_io = std.Io.Threaded.global_single_threaded.io();
-        std.Io.Dir.createDirAbsolute(mkdir_io, plugins_dir, .default_dir) catch |e| {
+        std.Io.Dir.createDirAbsolute(fsIo(), plugins_dir, .default_dir) catch |e| {
             if (e != error.PathAlreadyExists) {
                 const stderr = stdio.stderr();
                 stderr.print("[extensions] Warning: Could not create {s}\n", .{plugins_dir}) catch {};
@@ -128,16 +137,16 @@ pub const ExtensionManager = struct {
             const is_installed = self.isInstalled(name);
             const status = if (is_installed) " [installed]" else "";
 
-            try std.fmt.format(w, "  {s} v{s}{s}\n    {s}\n\n", .{ name, version, status, desc });
+            try w.print("  {s} v{s}{s}\n    {s}\n\n", .{ name, version, status, desc });
             count += 1;
             if (count >= 50) break;
         }
 
         if (count == 0) {
             try w.writeAll("  No extensions found in registry.\n");
-            try std.fmt.format(w, "  Registry URL: {s}\n", .{self.registry_url});
+            try w.print("  Registry URL: {s}\n", .{self.registry_url});
         } else {
-            try std.fmt.format(w, "Total: {d} extension(s)\n", .{count});
+            try w.print("Total: {d} extension(s)\n", .{count});
         }
 
         try w.writeAll("\nUsage: wintermolt --extension install <name>\n");
@@ -156,20 +165,21 @@ pub const ExtensionManager = struct {
 
         try w.writeAll("=== Installed Extensions ===\n\n");
 
-        const plugins_z = try alloc.dupeZ(u8, self.plugins_dir);
-        defer alloc.free(plugins_z);
-
-        var dir = std.fs.openDirAbsolute(plugins_z, .{ .iterate = true }) catch {
+        // std.fs.openDirAbsolute is gone; Io.Dir.openDirAbsolute replaces it and
+        // takes a SLICE, so the NUL-terminated dupeZ it used to need is gone too.
+        // close/next take the Io as well. Directory iteration does not allocate,
+        // so the single-threaded Io suffices and nothing threads in from main.
+        var dir = std.Io.Dir.openDirAbsolute(fsIo(), self.plugins_dir, .{ .iterate = true }) catch {
             try w.writeAll("  No extensions installed.\n");
             return aw.toOwnedSlice();
         };
-        defer dir.close();
+        defer dir.close(fsIo());
 
         var count: usize = 0;
         var iter = dir.iterate();
-        while (iter.next() catch null) |entry| {
+        while (iter.next(fsIo()) catch null) |entry| {
             if (entry.kind == .directory) {
-                try std.fmt.format(w, "  {s}\n", .{entry.name});
+                try w.print("  {s}\n", .{entry.name});
                 count += 1;
             }
         }
@@ -177,10 +187,10 @@ pub const ExtensionManager = struct {
         if (count == 0) {
             try w.writeAll("  No extensions installed.\n");
         } else {
-            try std.fmt.format(w, "\nTotal: {d} extension(s)\n", .{count});
+            try w.print("\nTotal: {d} extension(s)\n", .{count});
         }
 
-        try std.fmt.format(w, "Location: {s}\n", .{self.plugins_dir});
+        try w.print("Location: {s}\n", .{self.plugins_dir});
 
         return aw.toOwnedSlice();
     }
@@ -195,7 +205,7 @@ pub const ExtensionManager = struct {
         const plugin_path = try std.fmt.allocPrint(alloc, "{s}/{s}", .{ self.plugins_dir, name });
         defer alloc.free(plugin_path);
 
-        std.fs.makeDirAbsolute(plugin_path) catch |e| {
+        std.Io.Dir.createDirAbsolute(fsIo(), plugin_path, .default_dir) catch |e| {
             if (e != error.PathAlreadyExists) {
                 return std.fmt.allocPrint(alloc, "[extensions] Failed to create directory: {s}", .{@errorName(e)});
             }
@@ -205,19 +215,16 @@ pub const ExtensionManager = struct {
         const manifest_path = try std.fmt.allocPrint(alloc, "{s}/skill.json", .{plugin_path});
         defer alloc.free(manifest_path);
 
-        const manifest_z = try alloc.dupeZ(u8, manifest_path);
-        defer alloc.free(manifest_z);
-
         const manifest = try std.fmt.allocPrint(alloc,
             \\{{"name":"{s}","description":"Extension: {s}","version":"0.1.0","handler":"bash","keywords":[]}}
         , .{ name, name });
         defer alloc.free(manifest);
 
-        const file = std.fs.createFileAbsolute(manifest_z, .{}) catch {
+        const file = std.Io.Dir.createFileAbsolute(fsIo(), manifest_path, .{}) catch {
             return std.fmt.allocPrint(alloc, "[extensions] Failed to create manifest.", .{});
         };
-        defer file.close();
-        file.writeAll(manifest) catch {};
+        defer file.close(fsIo());
+        file.writeStreamingAll(fsIo(), manifest) catch {};
 
         return std.fmt.allocPrint(alloc,
             \\[extensions] Installed '{s}'.
@@ -235,11 +242,9 @@ pub const ExtensionManager = struct {
         const plugin_path = try std.fmt.allocPrint(alloc, "{s}/{s}", .{ self.plugins_dir, name });
         defer alloc.free(plugin_path);
 
-        // Delete the directory recursively
-        const plugin_z = try alloc.dupeZ(u8, plugin_path);
-        defer alloc.free(plugin_z);
-
-        std.fs.deleteTreeAbsolute(plugin_z) catch |e| {
+        // Delete the directory recursively. deleteTree is a Dir METHOD in 0.16 and
+        // takes a slice, so the NUL-terminated copy is no longer needed.
+        std.Io.Dir.cwd().deleteTree(fsIo(), plugin_path) catch |e| {
             return std.fmt.allocPrint(alloc, "[extensions] Failed to remove: {s}", .{@errorName(e)});
         };
 
@@ -249,7 +254,7 @@ pub const ExtensionManager = struct {
     fn isInstalled(self: *ExtensionManager, name: []const u8) bool {
         var path_buf: [512]u8 = undefined;
         const path = std.fmt.bufPrint(&path_buf, "{s}/{s}/skill.json", .{ self.plugins_dir, name }) catch return false;
-        std.fs.cwd().access(path, .{}) catch return false;
+        std.Io.Dir.cwd().access(fsIo(), path, .{}) catch return false;
         return true;
     }
 
@@ -257,7 +262,8 @@ pub const ExtensionManager = struct {
         const handle = curl_easy_init() orelse return error.CurlInitFailed;
         defer curl_easy_cleanup(handle);
 
-        var response = ResponseBuffer{ .data = .{}, .alloc = alloc };
+        // ArrayList lost its `.{}` zero value; `.empty` is the named one.
+        var response = ResponseBuffer{ .data = .empty, .alloc = alloc };
 
         const url_z = try alloc.dupeZ(u8, self.registry_url);
         defer alloc.free(url_z);
