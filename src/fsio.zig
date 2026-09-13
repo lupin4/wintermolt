@@ -37,13 +37,43 @@ pub const zig16 = @import("builtin").zig_version.order(.{ .major = 0, .minor = 1
 pub const File = if (zig16) std.Io.File else std.fs.File;
 pub const Dir = if (zig16) std.Io.Dir else std.fs.Dir;
 
-/// The process-wide Io backing every helper below. 0.16 ships a ready-made
-/// global single-threaded instance, which is the right shape here: these are
-/// blocking file operations, and none of them use the async vtable entries
-/// that would require a real allocator.
+/// The process-wide Io backing every helper below.
+///
+/// NOT std.Io.Threaded.global_single_threaded, and the reason is measured
+/// rather than argued: that instance is built with `.allocator = .failing`,
+/// and while its docs say the allocator is only needed for the async vtable
+/// entries, std.process.spawn allocates through it on POSIX too --
+/// Threaded.spawnPosix builds its argv vector with
+/// `arena.allocSentinel(?[*:0]const u8, ...)`. Spawning on the global returns
+/// error.OutOfMemory on Linux/aarch64; there is a test at the bottom of this
+/// file that spawns /bin/sh and fails against the global.
+///
+/// That mattered here because every piped child goes through spawnPiped:
+/// the MCP servers, the chat sidecar, the gateway, and the web and menubar
+/// bridges -- five callers, none of which could start a subprocess.
+///
+/// So this owns a Threaded on the C allocator instead. Lazily initialized
+/// because fsio is reached from unit tests as well as from main, and lock-free
+/// because 0.16's replacement for std.Thread.Mutex is std.Io.Mutex, which needs
+/// an Io to lock -- and this function is how you get one.
+var io_instance: if (zig16) std.Io.Threaded else void = undefined;
+var io_state: std.atomic.Value(u8) = .init(0); // 0 empty, 1 constructing, 2 ready
+
 pub inline fn io() if (zig16) std.Io else void {
-    if (zig16) return std.Io.Threaded.global_single_threaded.io();
-    return {};
+    if (comptime !zig16) return {};
+    // Acquire pairs with the release below: a thread that sees 2 also sees
+    // every write Threaded.init made. Without it this is a data race that
+    // happens to work on x86 and misbehaves on aarch64, which is what thor is.
+    if (io_state.load(.acquire) == 2) return io_instance.io();
+    while (true) {
+        if (io_state.cmpxchgStrong(0, 1, .acquire, .monotonic) == null) {
+            io_instance = std.Io.Threaded.init(std.heap.c_allocator, .{});
+            io_state.store(2, .release);
+            return io_instance.io();
+        }
+        if (io_state.load(.acquire) == 2) return io_instance.io();
+        std.atomic.spinLoopHint();
+    }
 }
 
 pub inline fn cwd() Dir {
@@ -847,12 +877,13 @@ pub fn runCapture(gpa: std.mem.Allocator, argv: []const []const u8, max: usize, 
 /// finished output. This returns the LIVE Child, whose .stdin and .stdout are
 /// open pipes.
 ///
-/// The Io here is the process-wide single-threaded instance, deliberately: the
-/// caller stores the Child in a struct, so an Io on the spawning function's stack
-/// would be gone by the time anyone called kill or wait. Its documented limit is
-/// that it works with a FAILING allocator -- POSIX spawn does not allocate (the
-/// argv conversion that does is Windows-only), so this is sound on POSIX and is
-/// the spot winX86 will need a longer-lived Threaded instead.
+/// The Io here is the process-wide instance, deliberately: the caller stores the
+/// Child in a struct, so an Io on the spawning function's stack would be gone by
+/// the time anyone called kill or wait.
+///
+/// It is NOT the std global. POSIX spawn *does* allocate -- see io() above --
+/// so the global's failing allocator made every one of these return
+/// error.OutOfMemory.
 pub fn spawnPiped(gpa: std.mem.Allocator, argv: []const []const u8) !std.process.Child {
     if (comptime zig16) {
         return std.process.spawn(io(), .{
@@ -877,8 +908,21 @@ pub fn killChild(child: *std.process.Child) void {
 }
 
 /// Reap a child. 0.16 threads the Io through wait.
+///
+/// Guards against the kill-then-wait pair, which call sites do -- mcp/client.zig's
+/// deinit is `killChild(&c); _ = waitChild(&c) catch {};`. 0.16's kill is
+/// documented to "block until it terminates, then clean up all resources" and
+/// it clears `id`; wait then trips `assert(child.id != null)` and ABORTS the
+/// process. 0.15.2's kill returned a Term and left nothing to reap, so the
+/// pattern was correct before the port and silently became a crash.
+///
+/// `catch {}` at the call sites does NOT protect against this: an assert is a
+/// panic, not an error.
 pub fn waitChild(child: *std.process.Child) !std.process.Child.Term {
-    if (comptime zig16) return child.wait(io());
+    if (comptime zig16) {
+        if (child.id == null) return .{ .signal = .KILL }; // already reaped by kill
+        return child.wait(io());
+    }
     return child.wait();
 }
 
@@ -996,4 +1040,25 @@ pub fn kevent(
             else => unreachable,
         }
     }
+}
+
+
+// ── regression tests for the two runtime bugs above ────────────────────────
+// Both compiled cleanly and failed only when run, which is why they survived a
+// port that built and ran the binary successfully.
+
+test "spawnPiped actually spawns (the failing-allocator regression)" {
+    if (comptime !zig16) return;
+    const gpa = std.testing.allocator;
+    var child = try spawnPiped(gpa, &.{ "/bin/sh", "-c", "exit 0" });
+    _ = try waitChild(&child);
+}
+
+test "killChild then waitChild does not abort (the double-reap regression)" {
+    if (comptime !zig16) return;
+    const gpa = std.testing.allocator;
+    var child = try spawnPiped(gpa, &.{ "/bin/sh", "-c", "sleep 30" });
+    killChild(&child);
+    const term = try waitChild(&child);
+    try std.testing.expectEqual(std.posix.SIG.KILL, term.signal);
 }

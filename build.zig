@@ -243,6 +243,33 @@ pub fn build(b: *std.Build) void {
     const run_unit_tests = b.addRunArtifact(unit_tests);
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_unit_tests.step);
+
+    // The 0.16 compatibility layer is tested per FILE.
+    //
+    // addTest rooted at main.zig does not collect the tests in every
+    // transitively imported file: with fsio.zig carrying four tests, this step
+    // still reported "18/18 passed" and ran none of them. The two regressions
+    // at the bottom of fsio.zig -- spawn against a failing allocator, and
+    // kill-then-wait aborting -- are exactly the kind that compile clean and
+    // only fail when run, so a summary that skips them is worse than no
+    // summary.
+    //
+    // libc because these call getrandom, lseek, read and clock_gettime.
+    for ([_][]const u8{
+        "src/fsio.zig",
+        "src/stdio.zig",
+        "src/compat.zig",
+    }) |compat_path| {
+        const compat_test = b.addTest(.{
+            .root_module = b.createModule(.{
+                .root_source_file = b.path(compat_path),
+                .target = target,
+                .optimize = optimize,
+                .link_libc = true,
+            }),
+        });
+        test_step.dependOn(&b.addRunArtifact(compat_test).step);
+    }
 }
 
 fn getShortTargetName(t: std.Target) []const u8 {

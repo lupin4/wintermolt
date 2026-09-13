@@ -293,6 +293,9 @@ pub const File = if (@hasDecl(std.fs, "File")) std.fs.File else std.Io.File;
 fn repeated(comptime s: []const u8, comptime n: usize) []const u8 {
     const Holder = struct {
         const value = blk: {
+            // One branch per iteration plus loop overhead; 900 repetitions
+            // blows the default 1000, and this file's tests never compiled.
+            @setEvalBranchQuota(8 * n + 1000);
             var out: [s.len * n]u8 = undefined;
             for (0..n) |i| @memcpy(out[i * s.len ..][0..s.len], s);
             break :blk out;
@@ -345,15 +348,19 @@ test "splat repeats the pattern exactly once per count" {
 }
 
 test "a write larger than any internal buffer is not truncated" {
-    const big = repeated("0123456789", 900); // 9000 bytes, over a typical pipe buffer
-    const out = try pipeRoundTrip(struct {
+    // `big` lives INSIDE the struct: Zig's nested functions do not capture
+    // enclosing locals, so the previous form failed with "'big' not accessible
+    // from inner function" and this test never compiled, let alone ran.
+    const Case = struct {
+        const big = repeated("0123456789", 900); // 9000 bytes, over a pipe buffer
         fn f(w: FileWriter) anyerror!void {
             try w.writeAll(big);
         }
-    }.f);
+    };
+    const out = try pipeRoundTrip(Case.f);
     defer std.testing.allocator.free(out);
     try std.testing.expectEqual(@as(usize, 8192), out.len); // capped by the test reader
-    try std.testing.expectEqualStrings(big[0..8192], out);
+    try std.testing.expectEqualStrings(Case.big[0..8192], out);
 }
 
 test "readUntilDelimiter splits lines and consumes the delimiter" {
