@@ -130,13 +130,13 @@ pub fn serializeRequest(
     tools: []const ToolDefinition,
     max_tokens: u32,
 ) ![]u8 {
-    var buf: ArrayList(u8) = .empty;
-    const w = buf.writer(alloc);
+    var buf: std.Io.Writer.Allocating = .init(alloc);
+    const w = &buf.writer;
 
     try w.writeAll("{\"model\":\"");
     try writeJsonString(w, model);
     try w.writeAll("\",\"max_tokens\":");
-    try std.fmt.format(w, "{d}", .{max_tokens});
+    try w.print("{d}", .{max_tokens});
 
     // System prompt
     if (system_prompt.len > 0) {
@@ -174,7 +174,7 @@ pub fn serializeRequest(
 
     try w.writeByte('}');
 
-    return buf.toOwnedSlice(alloc);
+    return buf.toOwnedSlice();
 }
 
 fn serializeMessage(w: anytype, msg: Message) !void {
@@ -272,7 +272,7 @@ fn writeJsonString(w: anytype, s: []const u8) !void {
             0x0C => try w.writeAll("\\f"),
             else => {
                 if (c < 0x20) {
-                    try std.fmt.format(w, "\\u{x:0>4}", .{c});
+                    try w.print("\\u{x:0>4}", .{c});
                 } else {
                     try w.writeByte(c);
                 }

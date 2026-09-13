@@ -18,6 +18,7 @@
 //   - Subagents do NOT inherit parent's conversation context
 
 const std = @import("std");
+const fsio = @import("../fsio.zig");
 const stdio = @import("../stdio.zig");
 const compat = @import("../compat.zig");
 const Allocator = std.mem.Allocator;
@@ -74,7 +75,7 @@ pub const SubagentManager = struct {
 
         return .{
             .alloc = alloc,
-            .handles = .{},
+            .handles = .empty,
             .max_depth = max_depth,
             .max_concurrent = max_concurrent,
             .active_count = 0,
@@ -128,7 +129,7 @@ pub const SubagentManager = struct {
             .depth = child_depth,
             .status = .running,
             .result = null,
-            .created_at = std.time.timestamp(),
+            .created_at = fsio.timestamp(),
         });
         self.active_count += 1;
 
@@ -154,10 +155,10 @@ pub const SubagentManager = struct {
 
     /// Get info about active and completed subagents.
     pub fn getStats(self: *const SubagentManager, alloc: Allocator) ![]u8 {
-        var buf: ArrayList(u8) = .empty;
-        const w = buf.writer(alloc);
+        var buf: std.Io.Writer.Allocating = .init(alloc);
+        const w = &buf.writer;
 
-        try std.fmt.format(w, "Subagents: {d} active, {d} total (max depth: {d}, max concurrent: {d})\n", .{
+        try w.print("Subagents: {d} active, {d} total (max depth: {d}, max concurrent: {d})\n", .{
             self.active_count,
             self.handles.items.len,
             self.max_depth,
@@ -171,7 +172,7 @@ pub const SubagentManager = struct {
                 .failed => "FAILED",
                 .orphaned => "ORPHAN",
             };
-            try std.fmt.format(w, "  [{s}] depth={d} status={s}: {s}\n", .{
+            try w.print("  [{s}] depth={d} status={s}: {s}\n", .{
                 h.id[0..8],
                 h.depth,
                 status_str,
@@ -179,7 +180,7 @@ pub const SubagentManager = struct {
             });
         }
 
-        return buf.toOwnedSlice(alloc);
+        return buf.toOwnedSlice();
     }
 };
 
@@ -189,7 +190,7 @@ fn truncateStr(s: []const u8, max: usize) []const u8 {
 
 fn generateUuid() [36]u8 {
     var bytes: [16]u8 = undefined;
-    std.crypto.random.bytes(&bytes);
+    _ = fsio.randomBytes(&bytes);
     bytes[6] = (bytes[6] & 0x0f) | 0x40;
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
 

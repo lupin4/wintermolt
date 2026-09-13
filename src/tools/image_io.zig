@@ -85,7 +85,9 @@ fn readBmp(alloc: Allocator, path: []const u8) !Image {
 
     // DIB header (BITMAPINFOHEADER, 40 bytes minimum)
     var dib: [40]u8 = undefined;
-    const dib_n = try fsio.readAllAt(file, &dib, 0);
+    // Offset 14: the DIB header follows the 14-byte file header. This was a
+    // sequential read before; a positional read has to say where.
+    const dib_n = try fsio.readAllAt(file, &dib, 14);
     if (dib_n < 40) return error.InvalidBmp;
 
     const width: u32 = @bitCast(std.mem.readInt(i32, dib[4..8], .little));
@@ -105,14 +107,12 @@ fn readBmp(alloc: Allocator, path: []const u8) !Image {
     const row_bytes = width * src_channels;
     const padded_row = (row_bytes + 3) & ~@as(u32, 3);
 
-    // Seek to pixel data
-    try file.seekTo(pixel_offset);
-
-    // Read raw pixel data
+    // Read raw pixel data straight from pixel_offset -- the positional read
+    // replaces the seek entirely, so there is no file position to get wrong.
     const pixel_data_size: usize = padded_row * height;
     const raw = try alloc.alloc(u8, pixel_data_size);
     defer alloc.free(raw);
-    const n = try fsio.readAllAt(file, raw, 0);
+    const n = try fsio.readAllAt(file, raw, pixel_offset);
     if (n < pixel_data_size) return error.TruncatedBmp;
 
     // Convert BGR(A) → RGB, handle bottom-up orientation
@@ -167,7 +167,7 @@ fn writeBmp(image: *const Image, path: []const u8) !void {
     std.mem.writeInt(u16, fh[6..8], 0, .little);
     std.mem.writeInt(u16, fh[8..10], 0, .little);
     std.mem.writeInt(u32, fh[10..14], 54, .little);
-    try file.writeAll(&fh);
+    try fsio.writeAll(file, &fh);
 
     // DIB header (40 bytes — BITMAPINFOHEADER)
     // 0.17 removed `**` array-repeat; @splat is the replacement (same on 0.16).
@@ -178,7 +178,7 @@ fn writeBmp(image: *const Image, path: []const u8) !void {
     std.mem.writeInt(u16, dib[12..14], 1, .little); // planes
     std.mem.writeInt(u16, dib[14..16], 24, .little); // bpp
     std.mem.writeInt(u32, dib[20..24], pixel_data_size, .little);
-    try file.writeAll(&dib);
+    try fsio.writeAll(file, &dib);
 
     // Pixel data (RGB → BGR, bottom-up, padded rows)
     const padding: usize = padded_row - w * 3;
@@ -201,9 +201,9 @@ fn writeBmp(image: *const Image, path: []const u8) !void {
                     image.pixels[si + 1], // G
                     image.pixels[si + 0], // R
                 };
-            try file.writeAll(&bgr);
+            try fsio.writeAll(file, &bgr);
         }
-        if (padding > 0) try file.writeAll(pad_bytes[0..padding]);
+        if (padding > 0) try fsio.writeAll(file, pad_bytes[0..padding]);
     }
 }
 
@@ -256,26 +256,9 @@ fn convertFromBmp(alloc: Allocator, input: []const u8, output: []const u8) !void
 
 /// Run a command and return success/error. Discards output.
 fn runCommand(alloc: Allocator, argv: []const []const u8) !void {
-    var child = Child.init(argv, alloc);
-    child.stdout_behavior = .Pipe;
-    child.stderr_behavior = .Pipe;
-
-    try child.spawn();
-
-    var stdout_list: ArrayList(u8) = .empty;
-    defer stdout_list.deinit(alloc);
-    var stderr_list: ArrayList(u8) = .empty;
-    defer stderr_list.deinit(alloc);
-
-    child.collectOutput(alloc, &stdout_list, &stderr_list, 64 * 1024) catch {};
-
-    const term = try child.wait();
-    switch (term) {
-        .Exited => |code| {
-            if (code != 0) return error.CommandFailed;
-        },
-        else => return error.CommandFailed,
-    }
+    const run = try fsio.runCapture(alloc, argv, 64 * 1024, null);
+    defer run.deinit(alloc);
+    if (!run.exited or run.exit_code != 0) return error.CommandFailed;
 }
 
 /// Extract file extension (lowercase-ish, after last dot).

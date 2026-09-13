@@ -441,8 +441,8 @@ pub fn getConstitutionPath() ?[]const u8 {
 
 /// Build dynamic capabilities section from runtime config.
 pub fn buildCapabilities(config: *const Config, alloc: std.mem.Allocator, tool_count: usize) ![]u8 {
-    var buf: std.ArrayListAligned(u8, null) = .empty;
-    const w = buf.writer(alloc);
+    var buf: std.Io.Writer.Allocating = .init(alloc);
+    const w = &buf.writer;
 
     try w.writeAll("\n\n## Active System Status (auto-generated)\n\n");
 
@@ -475,7 +475,7 @@ pub fn buildCapabilities(config: *const Config, alloc: std.mem.Allocator, tool_c
     else
         try w.writeAll("\nChat history: OFF\n");
 
-    return try alloc.dupe(u8, buf.items);
+    return try alloc.dupe(u8, buf.written());
 }
 
 pub const default_constitution =

@@ -14,6 +14,7 @@
 //   - Lifecycle events: on_create, on_message, on_end
 
 const std = @import("std");
+const fsio = @import("../fsio.zig");
 const compat = @import("../compat.zig");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
@@ -158,7 +159,7 @@ pub const SessionManager = struct {
 
         // Create new session
         const uuid = generateUuid();
-        const now = std.time.timestamp();
+        const now = fsio.timestamp();
 
         const insert_sql =
             "INSERT INTO sessions (id, agent_id, platform, channel, user_id, state, message_count, created_at, last_active) " ++
@@ -187,7 +188,7 @@ pub const SessionManager = struct {
         const sql = "UPDATE sessions SET message_count = message_count + 1, last_active = ?1 WHERE id = ?2;";
         const stmt = self.prepare(db, sql) catch return;
         defer _ = sqlite3_finalize(stmt);
-        _ = sqlite3_bind_int64(stmt, 1, std.time.timestamp());
+        _ = sqlite3_bind_int64(stmt, 1, fsio.timestamp());
         self.bindText(db, stmt, 2, session_id) catch return;
         _ = sqlite3_step(stmt);
     }
@@ -198,7 +199,7 @@ pub const SessionManager = struct {
         const sql = "UPDATE sessions SET state = 'ended', last_active = ?1 WHERE id = ?2;";
         const stmt = try self.prepare(db, sql);
         defer _ = sqlite3_finalize(stmt);
-        _ = sqlite3_bind_int64(stmt, 1, std.time.timestamp());
+        _ = sqlite3_bind_int64(stmt, 1, fsio.timestamp());
         try self.bindText(db, stmt, 2, session_id);
         _ = sqlite3_step(stmt);
     }
@@ -235,12 +236,12 @@ pub const SessionManager = struct {
         defer _ = sqlite3_finalize(stmt);
         _ = sqlite3_bind_int64(stmt, 1, @intCast(limit));
 
-        var buf: ArrayList(u8) = .empty;
-        const w = buf.writer(alloc);
+        var buf: std.Io.Writer.Allocating = .init(alloc);
+        const w = &buf.writer;
 
         try w.writeAll("=== Active Sessions ===\n\n");
         var count: usize = 0;
-        const now = std.time.timestamp();
+        const now = fsio.timestamp();
 
         while (sqlite3_step(stmt) == SQLITE_ROW) {
             count += 1;
@@ -254,24 +255,24 @@ pub const SessionManager = struct {
             const last_active = sqlite3_column_int64(stmt, 8);
             const idle_secs = now - last_active;
 
-            try std.fmt.format(w, "  [{s}] agent:{s} ({s})\n", .{ id_str[0..@min(8, id_str.len)], agent_str, state_str });
-            try std.fmt.format(w, "    {s}/{s} user:{s}\n", .{ platform_str, channel_str, user_str });
-            try std.fmt.format(w, "    {d} msgs, idle {d}s\n\n", .{ msg_count, idle_secs });
+            try w.print("  [{s}] agent:{s} ({s})\n", .{ id_str[0..@min(8, id_str.len)], agent_str, state_str });
+            try w.print("    {s}/{s} user:{s}\n", .{ platform_str, channel_str, user_str });
+            try w.print("    {d} msgs, idle {d}s\n\n", .{ msg_count, idle_secs });
         }
 
         if (count == 0) {
             try w.writeAll("  No active sessions.\n");
         } else {
-            try std.fmt.format(w, "Total: {d} session(s)\n", .{count});
+            try w.print("Total: {d} session(s)\n", .{count});
         }
 
-        return buf.toOwnedSlice(alloc);
+        return buf.toOwnedSlice();
     }
 
     /// Clean up stale sessions (idle for more than timeout seconds).
     pub fn cleanupStale(self: *SessionManager, timeout_secs: i64) void {
         const db = self.db orelse return;
-        const cutoff = std.time.timestamp() - timeout_secs;
+        const cutoff = fsio.timestamp() - timeout_secs;
         const sql = "UPDATE sessions SET state = 'ended' WHERE state = 'active' AND last_active < ?1;";
         const stmt = self.prepare(db, sql) catch return;
         defer _ = sqlite3_finalize(stmt);
@@ -287,7 +288,7 @@ pub const SessionManager = struct {
         const sql = "UPDATE sessions SET last_active = ?1 WHERE id = ?2;";
         const stmt = try self.prepare(db, sql);
         defer _ = sqlite3_finalize(stmt);
-        _ = sqlite3_bind_int64(stmt, 1, std.time.timestamp());
+        _ = sqlite3_bind_int64(stmt, 1, fsio.timestamp());
         try self.bindText(db, stmt, 2, session_id);
         _ = sqlite3_step(stmt);
     }
@@ -347,7 +348,7 @@ fn spanCol(stmt: *sqlite3_stmt, col: c_int) []const u8 {
 
 fn generateUuid() [36]u8 {
     var bytes: [16]u8 = undefined;
-    std.crypto.random.bytes(&bytes);
+    _ = fsio.randomBytes(&bytes);
     bytes[6] = (bytes[6] & 0x0f) | 0x40;
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
     var uuid: [36]u8 = undefined;
@@ -369,8 +370,9 @@ fn getDbPath(alloc: Allocator) ![]u8 {
     const home = compat.getenv("HOME") orelse return error.NoHomeDir;
     const dir_path = try std.fmt.allocPrint(alloc, "{s}/.wintermolt", .{home});
     defer alloc.free(dir_path);
-    std.fs.makeDirAbsolute(dir_path) catch |e| {
-        if (e != error.PathAlreadyExists) return e;
-    };
+    // std.fs.makeDirAbsolute is gone. fsio.makePath creates missing parents and
+    // does NOT error when the directory exists, so the PathAlreadyExists special
+    // case it replaced is no longer needed.
+    try fsio.makePath(dir_path);
     return std.fmt.allocPrint(alloc, "{s}/.wintermolt/sessions.db", .{home});
 }

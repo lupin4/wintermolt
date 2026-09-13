@@ -14,6 +14,7 @@
 //   - Each agent gets its own History, Storage conversation, and session state
 
 const std = @import("std");
+const fsio = @import("../fsio.zig");
 const stdio = @import("../stdio.zig");
 const compat = @import("../compat.zig");
 const Allocator = std.mem.Allocator;
@@ -48,7 +49,7 @@ pub const AgentPool = struct {
         return .{
             .alloc = alloc,
             .config = config,
-            .agents = .{},
+            .agents = .empty,
             .max_agents = max_agents,
             .idle_timeout = idle_timeout,
         };
@@ -65,7 +66,7 @@ pub const AgentPool = struct {
     /// Get or create an agent for the given agent_id.
     /// Returns a pointer to the AgentLoop. The pointer is stable until eviction.
     pub fn getOrCreate(self: *AgentPool, agent_id: []const u8) !*loop_mod.AgentLoop {
-        const now = std.time.timestamp();
+        const now = fsio.timestamp();
 
         // Look for existing agent
         for (self.agents.items) |*pa| {
@@ -153,22 +154,22 @@ pub const AgentPool = struct {
 
     /// Get pool stats as a formatted string. Caller owns the result.
     pub fn getStats(self: *const AgentPool, alloc: Allocator) ![]u8 {
-        var buf: ArrayList(u8) = .empty;
-        const w = buf.writer(alloc);
+        var buf: std.Io.Writer.Allocating = .init(alloc);
+        const w = &buf.writer;
 
-        try std.fmt.format(w, "Agent Pool: {d}/{d} agents\n", .{ self.agents.items.len, self.max_agents });
+        try w.print("Agent Pool: {d}/{d} agents\n", .{ self.agents.items.len, self.max_agents });
         try w.writeAll("════════════════════════\n");
 
-        const now = std.time.timestamp();
+        const now = fsio.timestamp();
         for (self.agents.items) |pa| {
             const idle_secs = now - pa.last_active;
-            try std.fmt.format(w, "  {s}: {d} msgs, idle {d}s\n", .{
+            try w.print("  {s}: {d} msgs, idle {d}s\n", .{
                 pa.agent_id,
                 pa.message_count,
                 idle_secs,
             });
         }
 
-        return buf.toOwnedSlice(alloc);
+        return buf.toOwnedSlice();
     }
 };

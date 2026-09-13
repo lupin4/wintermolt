@@ -127,8 +127,8 @@ fn handleToolsList(alloc: Allocator, id: mcp.JsonRpcId) ![]u8 {
     const defs = tools.getDefinitions();
 
     // Build JSON array of MCP tool definitions
-    var buf: std.ArrayList(u8) = .empty;
-    const w = buf.writer(alloc);
+    var buf: std.Io.Writer.Allocating = .init(alloc);
+    const w = &buf.writer;
     try w.writeAll("{\"tools\":[");
 
     for (defs, 0..) |def, i| {
@@ -146,7 +146,7 @@ fn handleToolsList(alloc: Allocator, id: mcp.JsonRpcId) ![]u8 {
     }
 
     try w.writeAll("]}");
-    const result_json = try buf.toOwnedSlice(alloc);
+    const result_json = try buf.toOwnedSlice();
     defer alloc.free(result_json);
 
     return json_rpc.formatResponse(alloc, id, result_json);

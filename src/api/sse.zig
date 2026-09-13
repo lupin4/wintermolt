@@ -176,7 +176,7 @@ pub const StreamParser = struct {
                     const name_copy = try self.alloc.dupe(u8, name);
                     try self.tool_ids.append(self.alloc, id_copy);
                     try self.tool_names.append(self.alloc, name_copy);
-                    try self.tool_inputs.append(self.alloc, .{});
+                    try self.tool_inputs.append(self.alloc, .empty);
                 }
             }
         }

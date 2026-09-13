@@ -46,8 +46,11 @@ pub fn search(alloc: Allocator, pattern: []const u8, base_path: ?[]const u8) ![]
     }
 
     // Build output
-    var output: std.ArrayList(u8) = .empty;
-    const w = output.writer(alloc);
+    // ArrayList.writer(gpa) exists on neither 0.16 nor 0.17. Writer.Allocating
+    // owns the buffer and exposes a real Writer, so every writeAll/print below is
+    // unchanged; ownership transfer moves from the list to the Allocating.
+    var output: std.Io.Writer.Allocating = .init(alloc);
+    const w = &output.writer;
 
     if (results.items.len == 0) {
         try w.writeAll("[no matches]");
@@ -57,11 +60,11 @@ pub fn search(alloc: Allocator, pattern: []const u8, base_path: ?[]const u8) ![]
             try w.writeAll(path);
         }
         if (results.items.len >= MAX_RESULTS) {
-            try std.fmt.format(w, "\n[truncated at {d} results]", .{MAX_RESULTS});
+            try w.print("\n[truncated at {d} results]", .{MAX_RESULTS});
         }
     }
 
-    return output.toOwnedSlice(alloc);
+    return output.toOwnedSlice();
 }
 
 /// Simple glob pattern matching.

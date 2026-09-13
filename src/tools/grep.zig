@@ -21,8 +21,8 @@ pub fn search(
 ) ![]u8 {
     const root = path orelse ".";
 
-    var results: std.ArrayList(u8) = .empty;
-    const w = results.writer(alloc);
+    var results: std.Io.Writer.Allocating = .init(alloc);
+    const w = &results.writer;
     var match_count: usize = 0;
 
     // Check if root is a file or directory
@@ -68,10 +68,10 @@ pub fn search(
     if (match_count == 0) {
         try w.writeAll("[no matches]");
     } else if (match_count >= MAX_RESULTS) {
-        try std.fmt.format(w, "\n[truncated at {d} matches]", .{MAX_RESULTS});
+        try w.print("\n[truncated at {d} matches]", .{MAX_RESULTS});
     }
 
-    return results.toOwnedSlice(alloc);
+    return results.toOwnedSlice();
 }
 
 fn searchFile(
@@ -85,7 +85,7 @@ fn searchFile(
     const file = fsio.openFile(file_path, .{}) catch return;
     defer fsio.close(file);
 
-    const contents = file.readToEndAlloc(alloc, MAX_FILE_SIZE) catch return;
+    const contents = fsio.readToEndAlloc(file, alloc, MAX_FILE_SIZE) catch return;
     defer alloc.free(contents);
 
     // Prepare case-insensitive pattern if needed
@@ -108,7 +108,7 @@ fn searchFile(
         defer alloc.free(search_line);
 
         if (std.mem.indexOf(u8, search_line, search_pattern) != null) {
-            try std.fmt.format(w, "{s}:{d}:{s}\n", .{
+            try w.print("{s}:{d}:{s}\n", .{
                 file_path,
                 line_num,
                 if (line.len > 200) line[0..200] else line,

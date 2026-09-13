@@ -10,6 +10,7 @@
 // no RL, no council/debate, no compressor, no dreamer, no forKernels.
 
 const std = @import("std");
+const fsio = @import("../fsio.zig");
 const stdio = @import("../stdio.zig");
 const compat = @import("../compat.zig");
 const ArrayList = std.ArrayList;
@@ -246,12 +247,12 @@ pub const AgentLoop = struct {
         // RAG: index user message (fire-and-forget, never blocks)
         if (self.rag) |*rag| {
             if (self.conversation_id) |conv_id| {
-                const ts = std.time.timestamp();
+                const ts = fsio.timestamp();
                 rag.indexMessage(conv_id, "user", self.message_sequence -| 1, user_text, "repl", ts) catch {};
             }
         }
 
-        self.last_message_ts = std.time.milliTimestamp();
+        self.last_message_ts = fsio.milliTimestamp();
         self.tool_errors_this_turn = 0;
 
         // Wire subagent manager into tools module for spawn_agent tool
@@ -341,7 +342,7 @@ pub const AgentLoop = struct {
                         switch (rblock) {
                             .text => |text| {
                                 if (text.len > 0) {
-                                    const ts = std.time.timestamp();
+                                    const ts = fsio.timestamp();
                                     rag.indexMessage(conv_id, "assistant", self.message_sequence -| 1, text, "repl", ts) catch {};
                                 }
                             },
@@ -616,7 +617,7 @@ pub const AgentLoop = struct {
                 stderr.writeAll("[backend] kernel backend is darwin-arm64 only on this build\n") catch {};
                 return;
             }
-            const default_alias = std.posix.getenv("WINTERMOLT_KERNEL_DEFAULT") orelse "qwen3:0.6b";
+            const default_alias = compat.getenv("WINTERMOLT_KERNEL_DEFAULT") orelse "qwen3:0.6b";
             const alias = model_name orelse default_alias;
             const model_dir = kernel_mod.defaultModelDir(self.alloc) catch {
                 stderr.writeAll("[backend] could not resolve WINTERMOLT_KERNEL_MODEL_DIR or $HOME\n") catch {};

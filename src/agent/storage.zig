@@ -154,7 +154,7 @@ pub const Storage = struct {
         model: []const u8,
     ) ![]u8 {
         const uuid = generateUuid();
-        const now = std.time.timestamp();
+        const now = fsio.timestamp();
 
         const sql =
             "INSERT INTO conversations (id, mode, platform, user_id, model, created_at, updated_at) " ++
@@ -196,7 +196,7 @@ pub const Storage = struct {
         const content_json = try serializeContentBlocks(self.alloc, content_blocks);
         defer self.alloc.free(content_json);
 
-        const now = std.time.timestamp();
+        const now = fsio.timestamp();
 
         const sql =
             "INSERT INTO messages (conversation_id, role, sequence_num, created_at, content_json) " ++
@@ -534,22 +534,22 @@ pub const Storage = struct {
         defer self.freeMessages(messages);
 
         // Build markdown
-        var buf: ArrayList(u8) = .empty;
-        const w = buf.writer(alloc);
+        var buf: std.Io.Writer.Allocating = .init(alloc);
+        const w = &buf.writer;
 
-        try std.fmt.format(w, "# {s}\n\n", .{title});
-        try std.fmt.format(w, "- **Mode:** {s}\n", .{mode});
-        try std.fmt.format(w, "- **Model:** {s}\n", .{model});
-        try std.fmt.format(w, "- **Messages:** {d}\n", .{messages.len});
-        try std.fmt.format(w, "- **ID:** `{s}`\n", .{conv_id});
+        try w.print("# {s}\n\n", .{title});
+        try w.print("- **Mode:** {s}\n", .{mode});
+        try w.print("- **Model:** {s}\n", .{model});
+        try w.print("- **Messages:** {d}\n", .{messages.len});
+        try w.print("- **ID:** `{s}`\n", .{conv_id});
         if (created_at > 0) {
-            try std.fmt.format(w, "- **Created:** timestamp {d}\n", .{created_at});
+            try w.print("- **Created:** timestamp {d}\n", .{created_at});
         }
         try w.writeAll("\n---\n\n");
 
         for (messages) |msg| {
             const role_label: []const u8 = if (std.mem.eql(u8, msg.role, "user")) "**User**" else "**Assistant**";
-            try std.fmt.format(w, "### {s}\n\n", .{role_label});
+            try w.print("### {s}\n\n", .{role_label});
 
             // Extract text from content_json
             if (extractText(msg.content_json)) |text| {
@@ -560,7 +560,7 @@ pub const Storage = struct {
             }
         }
 
-        return buf.toOwnedSlice(alloc);
+        return buf.toOwnedSlice();
     }
 
     // -----------------------------------------------------------------------
@@ -654,9 +654,10 @@ fn getDbPath(alloc: Allocator) ![]u8 {
     defer alloc.free(dir_path);
 
     // Create directory if needed
-    std.fs.makeDirAbsolute(dir_path) catch |e| {
-        if (e != error.PathAlreadyExists) return e;
-    };
+    // std.fs.makeDirAbsolute is gone. fsio.makePath creates missing parents and
+    // does NOT error when the directory exists, so the PathAlreadyExists special
+    // case it replaced is no longer needed.
+    try fsio.makePath(dir_path);
 
     return std.fmt.allocPrint(alloc, "{s}/.wintermolt/history.db", .{home});
 }
@@ -664,7 +665,7 @@ fn getDbPath(alloc: Allocator) ![]u8 {
 /// Generate a UUID v4 string (32 hex chars + 4 hyphens = 36 chars).
 fn generateUuid() [36]u8 {
     var bytes: [16]u8 = undefined;
-    std.crypto.random.bytes(&bytes);
+    _ = fsio.randomBytes(&bytes);
 
     // Set version (4) and variant (2) bits per RFC 4122
     bytes[6] = (bytes[6] & 0x0f) | 0x40; // version 4
@@ -690,8 +691,8 @@ fn generateUuid() [36]u8 {
 /// Serialize content blocks to a JSON array string for storage.
 /// Caller owns returned slice.
 fn serializeContentBlocks(alloc: Allocator, blocks: []const protocol.ContentBlock) ![]u8 {
-    var buf: ArrayList(u8) = .empty;
-    const w = buf.writer(alloc);
+    var buf: std.Io.Writer.Allocating = .init(alloc);
+    const w = &buf.writer;
 
     try w.writeByte('[');
     for (blocks, 0..) |block, i| {
@@ -730,7 +731,7 @@ fn serializeContentBlocks(alloc: Allocator, blocks: []const protocol.ContentBloc
     }
     try w.writeByte(']');
 
-    return buf.toOwnedSlice(alloc);
+    return buf.toOwnedSlice();
 }
 
 /// Extract first text value from content_json for export.
@@ -785,7 +786,7 @@ fn writeJsonStringQuoted(w: anytype, s: []const u8) !void {
             0x0C => try w.writeAll("\\f"),
             else => {
                 if (c < 0x20) {
-                    try std.fmt.format(w, "\\u{x:0>4}", .{c});
+                    try w.print("\\u{x:0>4}", .{c});
                 } else {
                     try w.writeByte(c);
                 }

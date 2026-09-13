@@ -19,6 +19,7 @@
 // managed at runtime via the /route REPL command or the route_manage tool.
 
 const std = @import("std");
+const fsio = @import("../fsio.zig");
 const compat = @import("../compat.zig");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
@@ -131,7 +132,7 @@ pub const Router = struct {
         var self = Router{
             .alloc = alloc,
             .db = db,
-            .bindings = .{},
+            .bindings = .empty,
             .default_agent_id = "main",
         };
 
@@ -243,7 +244,7 @@ pub const Router = struct {
 
         // Reload bindings from DB to stay in sync
         self.freeBindings();
-        self.bindings = .{};
+        self.bindings = .empty;
         self.loadBindings() catch {};
 
         return self.alloc.dupe(u8, &uuid);
@@ -265,7 +266,7 @@ pub const Router = struct {
 
         // Reload
         self.freeBindings();
-        self.bindings = .{};
+        self.bindings = .empty;
         self.loadBindings() catch {};
         return true;
     }
@@ -276,8 +277,8 @@ pub const Router = struct {
             return alloc.dupe(u8, "No routing bindings configured. All messages route to default agent.\nUse /route add <agent> <tier> [platform] [channel] [peer] to add bindings.");
         }
 
-        var buf: ArrayList(u8) = .empty;
-        const w = buf.writer(alloc);
+        var buf: std.Io.Writer.Allocating = .init(alloc);
+        const w = &buf.writer;
 
         try w.writeAll("Routing Bindings\n");
         try w.writeAll("════════════════\n");
@@ -293,21 +294,21 @@ pub const Router = struct {
                 .channel => "channel",
             };
             const status = if (b.enabled) "ON" else "OFF";
-            try std.fmt.format(w, "  [{s}] → agent:{s}  tier:{s}  [{s}]", .{ b.id[0..8], b.agent_id, tier_name, status });
+            try w.print("  [{s}] → agent:{s}  tier:{s}  [{s}]", .{ b.id[0..8], b.agent_id, tier_name, status });
 
-            if (b.platform) |p| try std.fmt.format(w, "  platform:{s}", .{p});
-            if (b.channel_id) |c| try std.fmt.format(w, "  channel:{s}", .{c});
-            if (b.peer_id) |p| try std.fmt.format(w, "  peer:{s}", .{p});
-            if (b.guild_id) |g| try std.fmt.format(w, "  guild:{s}", .{g});
-            if (b.team_id) |t| try std.fmt.format(w, "  team:{s}", .{t});
-            if (b.roles) |r| try std.fmt.format(w, "  roles:{s}", .{r});
+            if (b.platform) |p| try w.print("  platform:{s}", .{p});
+            if (b.channel_id) |c| try w.print("  channel:{s}", .{c});
+            if (b.peer_id) |p| try w.print("  peer:{s}", .{p});
+            if (b.guild_id) |g| try w.print("  guild:{s}", .{g});
+            if (b.team_id) |t| try w.print("  team:{s}", .{t});
+            if (b.roles) |r| try w.print("  roles:{s}", .{r});
 
             try w.writeByte('\n');
         }
 
-        try std.fmt.format(w, "\nDefault agent: {s}\n", .{self.default_agent_id});
+        try w.print("\nDefault agent: {s}\n", .{self.default_agent_id});
 
-        return buf.toOwnedSlice(alloc);
+        return buf.toOwnedSlice();
     }
 
     // -----------------------------------------------------------------------
@@ -422,7 +423,7 @@ pub const Router = struct {
 
         while (sqlite3_step(s) == SQLITE_ROW) {
             const tier_int = sqlite3_column_int(s, 2);
-            const tier: BindingTier = std.meta.intToEnum(BindingTier, @as(u8, @intCast(tier_int))) catch continue;
+            const tier: BindingTier = fsio.intToEnum(BindingTier, @as(u8, @intCast(tier_int))) catch continue;
 
             try self.bindings.append(self.alloc, .{
                 .id = try dupeCol(self.alloc, s, 0),
@@ -558,15 +559,16 @@ fn getRoutingDbPath(alloc: Allocator) ![]u8 {
     const home = compat.getenv("HOME") orelse return error.NoHomeDir;
     const dir_path = try std.fmt.allocPrint(alloc, "{s}/.wintermolt", .{home});
     defer alloc.free(dir_path);
-    std.fs.makeDirAbsolute(dir_path) catch |e| {
-        if (e != error.PathAlreadyExists) return e;
-    };
+    // std.fs.makeDirAbsolute is gone. fsio.makePath creates missing parents and
+    // does NOT error when the directory exists, so the PathAlreadyExists special
+    // case it replaced is no longer needed.
+    try fsio.makePath(dir_path);
     return std.fmt.allocPrint(alloc, "{s}/.wintermolt/routing.db", .{home});
 }
 
 fn generateUuid() [36]u8 {
     var bytes: [16]u8 = undefined;
-    std.crypto.random.bytes(&bytes);
+    _ = fsio.randomBytes(&bytes);
     bytes[6] = (bytes[6] & 0x0f) | 0x40;
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
 

@@ -74,8 +74,8 @@ pub const SkillRegistry = struct {
     pub fn init(alloc: Allocator) SkillRegistry {
         return .{
             .alloc = alloc,
-            .skills = .{},
-            .tool_defs = .{},
+            .skills = .empty,
+            .tool_defs = .empty,
         };
     }
 
@@ -127,7 +127,7 @@ pub const SkillRegistry = struct {
                 defer fsio.close(file);
                 const stat = fsio.stat(file) catch continue;
                 if (stat.size > 64 * 1024) continue; // Skip manifests > 64KB
-                break :blk file.readToEndAlloc(self.alloc, 64 * 1024) catch continue;
+                break :blk fsio.readToEndAlloc(file, self.alloc, 64 * 1024) catch continue;
             };
 
             self.parseManifest(manifest_data, dir_path, entry.name) catch continue;
@@ -307,19 +307,19 @@ pub const SkillRegistry = struct {
 
     /// Get prompt addenda from prompt-type skills (injected into system prompt).
     pub fn getPromptAddenda(self: *SkillRegistry, alloc: Allocator) !?[]u8 {
-        var buf: ArrayList(u8) = .empty;
-        defer buf.deinit(alloc);
+        var buf: std.Io.Writer.Allocating = .init(alloc);
+        defer buf.deinit();
 
         var count: usize = 0;
         for (self.skills.items) |skill| {
             if (skill.handler_type != .prompt) continue;
-            const w = buf.writer(alloc);
+            const w = &buf.writer;
             try w.print("\n## Skill: {s}\n{s}\n", .{ skill.name, skill.description });
             count += 1;
         }
 
         if (count == 0) return null;
-        return try alloc.dupe(u8, buf.items);
+        return try alloc.dupe(u8, buf.written());
     }
 
     /// Check if any runtime skill keyword matches user text.

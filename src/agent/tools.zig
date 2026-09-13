@@ -459,9 +459,9 @@ fn executeSkills(alloc: Allocator, input_json: []const u8) ![]u8 {
         return skills_mod.getSkillDetail(alloc, name);
     }
     // Default: list all skills (comptime catalog + runtime plugins)
-    var buf: ArrayList(u8) = .empty;
-    defer buf.deinit(alloc);
-    const w = buf.writer(alloc);
+    var buf: std.Io.Writer.Allocating = .init(alloc);
+    defer buf.deinit();
+    const w = &buf.writer;
 
     const comptime_list = try skills_mod.listSkills(alloc);
     defer alloc.free(comptime_list);
@@ -477,7 +477,7 @@ fn executeSkills(alloc: Allocator, input_json: []const u8) ![]u8 {
         }
     }
 
-    return try alloc.dupe(u8, buf.items);
+    return try alloc.dupe(u8, buf.written());
 }
 
 fn executeMemorySearch(alloc: Allocator, input_json: []const u8) ![]u8 {
@@ -488,8 +488,8 @@ fn executeMemorySearch(alloc: Allocator, input_json: []const u8) ![]u8 {
     const top_k: u32 = if (top_k_str) |s| std.fmt.parseInt(u32, s, 10) catch 5 else 5;
     const k = @min(top_k, 20);
 
-    var buf: std.ArrayList(u8) = .empty;
-    const w = buf.writer(alloc);
+    var buf: std.Io.Writer.Allocating = .init(alloc);
+    const w = &buf.writer;
 
     // 1. SQLite conversation history: LIKE-based text search on messages
     if (storage_ptr) |s| {
@@ -524,11 +524,11 @@ fn executeMemorySearch(alloc: Allocator, input_json: []const u8) ![]u8 {
         }
     }
 
-    if (buf.items.len == 0) {
+    if (buf.written().len == 0) {
         return std.fmt.allocPrint(alloc, "No memories found for query: \"{s}\"", .{query});
     }
 
-    return buf.toOwnedSlice(alloc);
+    return buf.toOwnedSlice();
 }
 
 fn executeSpawnAgent(alloc: Allocator, input_json: []const u8) ![]u8 {

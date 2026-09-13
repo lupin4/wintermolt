@@ -25,8 +25,8 @@ const sse = @import("../api/sse.zig");
 /// The input_json contains the full canvas_update tool input with "components"
 /// and optional "data" fields.
 pub fn renderSurface(alloc: Allocator, input_json: []const u8) ![]u8 {
-    var buf: ArrayList(u8) = .empty;
-    const w = buf.writer(alloc);
+    var buf: std.Io.Writer.Allocating = .init(alloc);
+    const w = &buf.writer;
 
     // Extract title if present
     const title = sse.findJsonString(input_json, "title");
@@ -60,7 +60,7 @@ pub fn renderSurface(alloc: Allocator, input_json: []const u8) ![]u8 {
     for (0..width) |_| try w.writeAll("─");
     try w.writeAll("┘\x1b[0m\n");
 
-    return buf.toOwnedSlice(alloc);
+    return buf.toOwnedSlice();
 }
 
 fn renderComponents(alloc: Allocator, w: anytype, json: []const u8, width: usize) !void {

@@ -10,6 +10,7 @@
 // and the OpenAI SSE parser from openai_sse.zig.
 
 const std = @import("std");
+const fsio = @import("../fsio.zig");
 const stdio = @import("../stdio.zig");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
@@ -158,7 +159,7 @@ pub const DeepSeekClient = struct {
                 const wait_secs: u64 = std.math.shl(u64, 2, @as(u6, @intCast(attempt - 1)));
                 const stderr = stdio.stderr();
                 stderr.print("\n[deepseek] Rate limited, waiting {d}s ({d}/{d})...\n", .{ wait_secs, attempt, max_retries }) catch {};
-                std.Thread.sleep(wait_secs * 1_000_000_000);
+                fsio.sleepNs(wait_secs * 1_000_000_000);
                 parser.reset();
                 continue;
             }
@@ -204,13 +205,13 @@ fn serializeOpenAiRequest(
     tools_defs: []const protocol.ToolDefinition,
     max_tokens: u32,
 ) ![]u8 {
-    var buf: ArrayList(u8) = .empty;
-    const w = buf.writer(alloc);
+    var buf: std.Io.Writer.Allocating = .init(alloc);
+    const w = &buf.writer;
 
     try w.writeAll("{\"model\":\"");
     try writeJsonStr(w, model);
     try w.writeAll("\",\"max_tokens\":");
-    try std.fmt.format(w, "{d}", .{max_tokens});
+    try w.print("{d}", .{max_tokens});
     try w.writeAll(",\"stream\":true");
 
     // Messages array (system message first, then conversation)
@@ -350,7 +351,7 @@ fn serializeOpenAiRequest(
     }
 
     try w.writeByte('}');
-    return buf.toOwnedSlice(alloc);
+    return buf.toOwnedSlice();
 }
 
 /// Write a JSON-escaped string (without surrounding quotes).
@@ -364,7 +365,7 @@ fn writeJsonStr(w: anytype, s: []const u8) !void {
             '\t' => try w.writeAll("\\t"),
             else => {
                 if (c < 0x20) {
-                    try std.fmt.format(w, "\\u{x:0>4}", .{c});
+                    try w.print("\\u{x:0>4}", .{c});
                 } else {
                     try w.writeByte(c);
                 }

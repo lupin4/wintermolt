@@ -103,14 +103,14 @@ pub const RagClient = struct {
         defer self.alloc.free(url);
 
         // Build request body
-        var body_buf: ArrayList(u8) = .empty;
-        const w = body_buf.writer(self.alloc);
+        var body_buf: std.Io.Writer.Allocating = .init(self.alloc);
+        const w = &body_buf.writer;
         try w.writeAll("{\"query\":{\"inputs\":{\"text\":");
         try writeJsonQuoted(w, query_text);
         try w.writeAll("},\"top_k\":");
-        try std.fmt.format(w, "{d}", .{top_k});
+        try w.print("{d}", .{top_k});
         try w.writeAll("}}");
-        const body = try body_buf.toOwnedSlice(self.alloc);
+        const body = try body_buf.toOwnedSlice();
         defer self.alloc.free(body);
 
         // POST to Pinecone (search uses application/json)
@@ -145,8 +145,8 @@ pub const RagClient = struct {
         defer self.alloc.free(record_id);
 
         // Build NDJSON body: flat record (Pinecone records API uses application/x-ndjson)
-        var body_buf: ArrayList(u8) = .empty;
-        const w = body_buf.writer(self.alloc);
+        var body_buf: std.Io.Writer.Allocating = .init(self.alloc);
+        const w = &body_buf.writer;
         try w.writeAll("{\"_id\":");
         try writeJsonQuoted(w, record_id);
         try w.writeAll(",\"text\":");
@@ -158,9 +158,9 @@ pub const RagClient = struct {
         try w.writeAll(",\"mode\":");
         try writeJsonQuoted(w, mode);
         try w.writeAll(",\"timestamp\":");
-        try std.fmt.format(w, "{d}", .{timestamp});
+        try w.print("{d}", .{timestamp});
         try w.writeAll("}");
-        const body = try body_buf.toOwnedSlice(self.alloc);
+        const body = try body_buf.toOwnedSlice();
         defer self.alloc.free(body);
 
         const response = try self.doPost(url, body, "application/x-ndjson");
@@ -190,8 +190,8 @@ pub const RagClient = struct {
     pub fn buildRagContext(self: *const RagClient, hits: []const SearchHit) ![]u8 {
         if (hits.len == 0) return self.alloc.dupe(u8, "");
 
-        var buf: ArrayList(u8) = .empty;
-        const w = buf.writer(self.alloc);
+        var buf: std.Io.Writer.Allocating = .init(self.alloc);
+        const w = &buf.writer;
 
         try w.writeAll(
             \\
@@ -202,7 +202,7 @@ pub const RagClient = struct {
         );
 
         for (hits, 0..) |hit, i| {
-            try std.fmt.format(w, "\n[{d}] ({s}):\n{s}\n", .{
+            try w.print("\n[{d}] ({s}):\n{s}\n", .{
                 i + 1,
                 hit.role,
                 hit.text,
@@ -215,7 +215,7 @@ pub const RagClient = struct {
             \\
         );
 
-        return buf.toOwnedSlice(self.alloc);
+        return buf.toOwnedSlice();
     }
 
     /// Build knowledge context from domain-specific namespace hits.
@@ -224,10 +224,10 @@ pub const RagClient = struct {
     pub fn buildKnowledgeContext(self: *const RagClient, hits: []const SearchHit, domain_label: []const u8) ![]u8 {
         if (hits.len == 0) return self.alloc.dupe(u8, "");
 
-        var buf: ArrayList(u8) = .empty;
-        const w = buf.writer(self.alloc);
+        var buf: std.Io.Writer.Allocating = .init(self.alloc);
+        const w = &buf.writer;
 
-        try std.fmt.format(w,
+        try w.print(
             "\n\n--- {s} Reference ---\n" ++
             "The following are relevant documentation entries from the {s} knowledge base.\n" ++
             "Use this reference data to generate accurate, version-correct code.\n",
@@ -235,16 +235,16 @@ pub const RagClient = struct {
         );
 
         for (hits, 0..) |hit, i| {
-            try std.fmt.format(w, "\n[{d}] (score: {d:.2}):\n{s}\n", .{
+            try w.print("\n[{d}] (score: {d:.2}):\n{s}\n", .{
                 i + 1,
                 hit.score,
                 hit.text,
             });
         }
 
-        try std.fmt.format(w, "\n--- End {s} Reference ---\n", .{domain_label});
+        try w.print("\n--- End {s} Reference ---\n", .{domain_label});
 
-        return buf.toOwnedSlice(self.alloc);
+        return buf.toOwnedSlice();
     }
 
     /// Search with an explicit namespace override (e.g., "core_memory").
@@ -256,14 +256,14 @@ pub const RagClient = struct {
         );
         defer self.alloc.free(url);
 
-        var body_buf: ArrayList(u8) = .empty;
-        const w = body_buf.writer(self.alloc);
+        var body_buf: std.Io.Writer.Allocating = .init(self.alloc);
+        const w = &body_buf.writer;
         try w.writeAll("{\"query\":{\"inputs\":{\"text\":");
         try writeJsonQuoted(w, query_text);
         try w.writeAll("},\"top_k\":");
-        try std.fmt.format(w, "{d}", .{top_k});
+        try w.print("{d}", .{top_k});
         try w.writeAll("}}");
-        const body = try body_buf.toOwnedSlice(self.alloc);
+        const body = try body_buf.toOwnedSlice();
         defer self.alloc.free(body);
 
         const response = try self.doPost(url, body, "application/json");
@@ -488,7 +488,7 @@ pub fn writeJsonQuoted(w: anytype, s: []const u8) !void {
             0x0C => try w.writeAll("\\f"),
             else => {
                 if (c < 0x20) {
-                    try std.fmt.format(w, "\\u{x:0>4}", .{c});
+                    try w.print("\\u{x:0>4}", .{c});
                 } else {
                     try w.writeByte(c);
                 }

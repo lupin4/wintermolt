@@ -7,6 +7,7 @@
 // Can also play audio directly via system audio (afplay on macOS, aplay on Linux).
 
 const std = @import("std");
+const fsio = @import("../fsio.zig");
 const compat = @import("../compat.zig");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
@@ -89,9 +90,7 @@ fn playAudio(alloc: Allocator, path: []const u8) !void {
     defer alloc.free(cmd_z);
 
     const argv = [_][]const u8{ "/bin/sh", "-c", cmd_z };
-    var child = std.process.Child.init(&argv, alloc);
-    child.stdout_behavior = .Ignore;
-    child.stderr_behavior = .Ignore;
-    try child.spawn();
-    // Don't wait — play in background
+    // spawnDetached deliberately does not reap the child, matching what this site
+    // already did: waiting would block until playback finished.
+    try fsio.spawnDetached(alloc, &argv);
 }

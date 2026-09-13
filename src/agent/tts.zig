@@ -159,7 +159,7 @@ pub const TtsClient = struct {
 
         // Write to temp file
         const path = try std.fmt.allocPrint(self.alloc, "/tmp/wintermolt_tts_{d}.{s}", .{
-            std.time.milliTimestamp(),
+            fsio.milliTimestamp(),
             result.format,
         });
         errdefer self.alloc.free(path);
@@ -169,7 +169,7 @@ pub const TtsClient = struct {
 
         const file = try fsio.createFile(path_z, .{});
         defer fsio.close(file);
-        try file.writeAll(result.audio_data);
+        try fsio.writeAll(file, result.audio_data);
 
         return path;
     }
@@ -249,24 +249,16 @@ pub const TtsClient = struct {
         defer self.alloc.free(cmd_z);
 
         const argv = [_][]const u8{ "/bin/sh", "-c", cmd_z };
-        var child = std.process.Child.init(&argv, self.alloc);
-        child.stdout_behavior = .Pipe;
-        child.stderr_behavior = .Ignore;
-        try child.spawn();
-
-        var audio_data: ArrayList(u8) = .empty;
-        const stdout = child.stdout.?;
-        while (true) {
-            var buf: [4096]u8 = undefined;
-            const n = stdout.read(&buf) catch break;
-            if (n == 0) break;
-            try audio_data.appendSlice(self.alloc, buf[0..n]);
-        }
-
-        _ = child.wait() catch {};
+        // Child.init, the read loop and wait() all collapse into runCapture.
+        // The 64 MiB cap is new -- the old loop read until EOF with no limit --
+        // and is far above any plausible TTS clip.
+        const run = try fsio.runCapture(self.alloc, &argv, 64 * 1024 * 1024, null);
+        // stdout was allocated with self.alloc, which is what TtsResult frees
+        // with, so ownership transfers instead of being copied.
+        self.alloc.free(run.stderr);
 
         return TtsResult{
-            .audio_data = try audio_data.toOwnedSlice(self.alloc),
+            .audio_data = run.stdout,
             .format = "wav",
             .alloc = self.alloc,
         };
@@ -278,7 +270,7 @@ pub const TtsClient = struct {
 
     fn synthesizeEdgeTts(self: *const TtsClient, text: []const u8, voice: []const u8) !TtsResult {
         const tmp_path = try std.fmt.allocPrint(self.alloc, "/tmp/wintermolt_edge_{d}.mp3", .{
-            std.time.milliTimestamp(),
+            fsio.milliTimestamp(),
         });
         defer self.alloc.free(tmp_path);
 
@@ -294,11 +286,11 @@ pub const TtsClient = struct {
         defer self.alloc.free(cmd_z);
 
         const argv = [_][]const u8{ "/bin/sh", "-c", cmd_z };
-        var child = std.process.Child.init(&argv, self.alloc);
-        child.stdout_behavior = .Ignore;
-        child.stderr_behavior = .Ignore;
-        try child.spawn();
-        _ = child.wait() catch {};
+        // Output and exit status were both discarded here; the file written to
+        // disk is the real result, and the open below is what reports failure.
+        if (fsio.runCapture(self.alloc, &argv, 4096, null)) |run| {
+            run.deinit(self.alloc);
+        } else |_| {}
 
         // Read the generated file
         const tmp_path_z = try self.alloc.dupeZ(u8, tmp_path);
@@ -334,7 +326,7 @@ pub const TtsClient = struct {
         defer self.alloc.free(url_z);
 
         var response = ResponseBuffer{
-            .data = .{},
+            .data = .empty,
             .alloc = self.alloc,
         };
 

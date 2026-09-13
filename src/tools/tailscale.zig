@@ -65,8 +65,8 @@ fn getTailscaleStatus(alloc: Allocator) ![]u8 {
     defer alloc.free(readable_output);
 
     // Combine both outputs
-    var buf: ArrayList(u8) = .empty;
-    const w = buf.writer(alloc);
+    var buf: std.Io.Writer.Allocating = .init(alloc);
+    const w = &buf.writer;
 
     try w.writeAll("=== Tailscale Network Status ===\n\n");
     try w.writeAll(readable_output);
@@ -76,12 +76,12 @@ fn getTailscaleStatus(alloc: Allocator) ![]u8 {
     const max_json: usize = 8000;
     if (json_output.len > max_json) {
         try w.writeAll(json_output[0..max_json]);
-        try std.fmt.format(w, "\n... ({d} bytes truncated)\n", .{json_output.len - max_json});
+        try w.print("\n... ({d} bytes truncated)\n", .{json_output.len - max_json});
     } else {
         try w.writeAll(json_output);
     }
 
-    return buf.toOwnedSlice(alloc);
+    return buf.toOwnedSlice();
 }
 
 /// Query Tailscale REST API for device list.
@@ -116,8 +116,8 @@ fn getTailscaleDevices(alloc: Allocator, input_json: []const u8) ![]u8 {
     }
 
     // Prepend header
-    var buf: ArrayList(u8) = .empty;
-    const w = buf.writer(alloc);
+    var buf: std.Io.Writer.Allocating = .init(alloc);
+    const w = &buf.writer;
 
     try w.writeAll("=== Tailscale Devices (API) ===\n\n");
 
@@ -125,13 +125,13 @@ fn getTailscaleDevices(alloc: Allocator, input_json: []const u8) ![]u8 {
     const max_size: usize = 12000;
     if (result.len > max_size) {
         try w.writeAll(result[0..max_size]);
-        try std.fmt.format(w, "\n... ({d} bytes truncated)\n", .{result.len - max_size});
+        try w.print("\n... ({d} bytes truncated)\n", .{result.len - max_size});
     } else {
         try w.writeAll(result);
     }
 
     alloc.free(result);
-    return buf.toOwnedSlice(alloc);
+    return buf.toOwnedSlice();
 }
 
 /// Run `tailscale ping <target>` and return the result.

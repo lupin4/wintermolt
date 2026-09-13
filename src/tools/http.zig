@@ -188,10 +188,10 @@ pub fn httpRequest(
     const content_type = if (content_type_ptr) |ct| std.mem.span(ct) else "unknown";
 
     // Build response
-    var output: ArrayList(u8) = .empty;
-    const w = output.writer(alloc);
+    var output: std.Io.Writer.Allocating = .init(alloc);
+    const w = &output.writer;
 
-    try std.fmt.format(w, "HTTP {d} {s}\nContent-Type: {s}\nSize: {d} bytes\n\n", .{
+    try w.print("HTTP {d} {s}\nContent-Type: {s}\nSize: {d} bytes\n\n", .{
         http_code, method, content_type, resp_buf.data.items.len,
     });
 
@@ -204,13 +204,13 @@ pub fn httpRequest(
         const body_data = resp_buf.data.items;
         if (body_data.len > max_body) {
             try w.writeAll(body_data[0..max_body]);
-            try std.fmt.format(w, "\n\n[truncated: {d} bytes total, showing first {d}]", .{ body_data.len, max_body });
+            try w.print("\n\n[truncated: {d} bytes total, showing first {d}]", .{ body_data.len, max_body });
         } else {
             try w.writeAll(body_data);
         }
     }
 
-    return output.toOwnedSlice(alloc);
+    return output.toOwnedSlice();
 }
 
 /// Download a file from URL to disk. Returns result message.
@@ -255,7 +255,7 @@ pub fn downloadFile(alloc: Allocator, url: []const u8, output_path: []const u8) 
     };
     defer fsio.close(file);
 
-    file.writeAll(resp_buf.data.items) catch |e| {
+    fsio.writeAll(file, resp_buf.data.items) catch |e| {
         return std.fmt.allocPrint(alloc, "Failed to write file: {s}", .{@errorName(e)});
     };
 

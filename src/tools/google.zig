@@ -126,8 +126,8 @@ fn executeGmail(alloc: Allocator, auth: *google_auth.GoogleAuth, input_json: []c
 }
 
 fn formatGmailList(alloc: Allocator, auth: *google_auth.GoogleAuth, list_json: []const u8) ![]u8 {
-    var buf: ArrayList(u8) = .empty;
-    const w = buf.writer(alloc);
+    var buf: std.Io.Writer.Allocating = .init(alloc);
+    const w = &buf.writer;
 
     try w.writeAll("=== Gmail Messages ===\n\n");
 
@@ -156,7 +156,7 @@ fn formatGmailList(alloc: Allocator, auth: *google_auth.GoogleAuth, list_json: [
         const snippet = sse.findJsonString(meta, "snippet") orelse "";
         const from = sse.findJsonString(meta, "value") orelse "unknown";
 
-        try std.fmt.format(w, "  [{s}] From: {s}\n    {s}\n\n", .{
+        try w.print("  [{s}] From: {s}\n    {s}\n\n", .{
             msg_id[0..@min(12, msg_id.len)],
             from[0..@min(40, from.len)],
             snippet[0..@min(80, snippet.len)],
@@ -168,7 +168,7 @@ fn formatGmailList(alloc: Allocator, auth: *google_auth.GoogleAuth, list_json: [
 
     if (count == 0) try w.writeAll("  No messages found.\n");
 
-    return buf.toOwnedSlice(alloc);
+    return buf.toOwnedSlice();
 }
 
 // ---------------------------------------------------------------------------
@@ -186,13 +186,13 @@ fn executeCalendar(alloc: Allocator, auth: *google_auth.GoogleAuth, input_json: 
         const time_max = sse.findJsonString(input_json, "time_max") orelse "";
         const max_results = sse.findJsonString(input_json, "max_results") orelse "10";
 
-        var url_buf: ArrayList(u8) = .empty;
-        const uw = url_buf.writer(alloc);
+        var url_buf: std.Io.Writer.Allocating = .init(alloc);
+        const uw = &url_buf.writer;
         try uw.writeAll("https://www.googleapis.com/calendar/v3/calendars/primary/events?singleEvents=true&orderBy=startTime");
-        try std.fmt.format(uw, "&timeMin={s}&maxResults={s}", .{ time_min, max_results });
-        if (time_max.len > 0) try std.fmt.format(uw, "&timeMax={s}", .{time_max});
+        try uw.print("&timeMin={s}&maxResults={s}", .{ time_min, max_results });
+        if (time_max.len > 0) try uw.print("&timeMax={s}", .{time_max});
 
-        const url = try url_buf.toOwnedSlice(alloc);
+        const url = try url_buf.toOwnedSlice();
         defer alloc.free(url);
 
         const resp = google_auth.googleGet(alloc, auth, url) catch |e|
@@ -264,13 +264,13 @@ fn executeDrive(alloc: Allocator, auth: *google_auth.GoogleAuth, input_json: []c
         const query = sse.findJsonString(input_json, "query") orelse "";
         const max_results = sse.findJsonString(input_json, "max_results") orelse "20";
 
-        var url_buf: ArrayList(u8) = .empty;
-        const uw = url_buf.writer(alloc);
+        var url_buf: std.Io.Writer.Allocating = .init(alloc);
+        const uw = &url_buf.writer;
         try uw.writeAll("https://www.googleapis.com/drive/v3/files?fields=files(id,name,mimeType,modifiedTime,size)");
-        try std.fmt.format(uw, "&pageSize={s}", .{max_results});
-        if (query.len > 0) try std.fmt.format(uw, "&q={s}", .{query});
+        try uw.print("&pageSize={s}", .{max_results});
+        if (query.len > 0) try uw.print("&q={s}", .{query});
 
-        const url = try url_buf.toOwnedSlice(alloc);
+        const url = try url_buf.toOwnedSlice();
         defer alloc.free(url);
 
         const resp = google_auth.googleGet(alloc, auth, url) catch |e|
@@ -313,7 +313,7 @@ fn executeDrive(alloc: Allocator, auth: *google_auth.GoogleAuth, input_json: []c
         const file = fsio.createFile(path_z, .{}) catch
             return std.fmt.allocPrint(alloc, "Error: Could not create output file.", .{});
         defer fsio.close(file);
-        file.writeAll(data) catch {};
+        fsio.writeAll(file, data) catch {};
 
         return std.fmt.allocPrint(alloc, "Downloaded to: {s} ({d} bytes)", .{ output_path, data.len });
     }

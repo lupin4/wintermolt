@@ -69,7 +69,7 @@ pub fn executeTool(alloc: Allocator, input_json: []const u8) ![]u8 {
         return alloc.dupe(u8, "Error: Failed to initialize HTTP client.");
     defer curl_easy_cleanup(handle);
 
-    var response = ResponseBuffer{ .data = .{}, .alloc = alloc };
+    var response = ResponseBuffer{ .data = .empty, .alloc = alloc };
 
     const auth_header = try std.fmt.allocPrint(alloc, "Authorization: Bearer {s}", .{api_key});
     defer alloc.free(auth_header);
@@ -109,7 +109,7 @@ pub fn executeTool(alloc: Allocator, input_json: []const u8) ![]u8 {
     };
 
     // Download the image
-    const output_path = try std.fmt.allocPrint(alloc, "/tmp/wintermolt_gen_{d}.png", .{std.time.milliTimestamp()});
+    const output_path = try std.fmt.allocPrint(alloc, "/tmp/wintermolt_gen_{d}.png", .{fsio.milliTimestamp()});
     defer alloc.free(output_path);
 
     const download_result = downloadImage(alloc, image_url, output_path) catch {
@@ -134,7 +134,7 @@ fn downloadImage(alloc: Allocator, url: []const u8, output_path: []const u8) !bo
     const handle = curl_easy_init() orelse return false;
     defer curl_easy_cleanup(handle);
 
-    var response = ResponseBuffer{ .data = .{}, .alloc = alloc };
+    var response = ResponseBuffer{ .data = .empty, .alloc = alloc };
 
     const url_z = try alloc.dupeZ(u8, url);
     defer alloc.free(url_z);
@@ -156,7 +156,7 @@ fn downloadImage(alloc: Allocator, url: []const u8, output_path: []const u8) !bo
 
     const file = fsio.createFile(path_z, .{}) catch return false;
     defer fsio.close(file);
-    file.writeAll(response.data.items) catch return false;
+    fsio.writeAll(file, response.data.items) catch return false;
 
     return true;
 }

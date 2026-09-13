@@ -168,8 +168,8 @@ pub const OpenAiStreamParser = struct {
         while (self.tool_calls.items.len <= index) {
             self.tool_calls.append(self.alloc, .{
                 .id = self.alloc.dupe(u8, "") catch return,
-                .name = .{},
-                .arguments = .{},
+                .name = .empty,
+                .arguments = .empty,
             }) catch return;
         }
 

@@ -157,7 +157,7 @@ fn cdpHttpGet(alloc: Allocator, path: []const u8) ![]u8 {
     _ = curl_easy_setopt(handle, CURLOPT_MAXREDIRS, @as(c_long, 3));
 
     var resp_buf = ResponseBuffer{
-        .data = .{},
+        .data = .empty,
         .alloc = alloc,
     };
     defer resp_buf.data.deinit(alloc);
@@ -199,10 +199,10 @@ fn listTabs(alloc: Allocator) ![]u8 {
         return alloc.dupe(u8, response);
     }
 
-    var output: ArrayList(u8) = .empty;
-    const w = output.writer(alloc);
+    var output: std.Io.Writer.Allocating = .init(alloc);
+    const w = &output.writer;
 
-    try std.fmt.format(w, "Open tabs ({d}):\n", .{parsed.value.array.items.len});
+    try w.print("Open tabs ({d}):\n", .{parsed.value.array.items.len});
 
     for (parsed.value.array.items, 0..) |item, idx| {
         if (item != .object) continue;
@@ -228,12 +228,12 @@ fn listTabs(alloc: Allocator) ![]u8 {
             else => "unknown",
         } else "unknown";
 
-        try std.fmt.format(w, "\n  [{d}] {s}\n      URL: {s}\n      ID: {s}\n      Type: {s}\n", .{
+        try w.print("\n  [{d}] {s}\n      URL: {s}\n      ID: {s}\n      Type: {s}\n", .{
             idx, title, tab_url, tab_id, tab_type,
         });
     }
 
-    return output.toOwnedSlice(alloc);
+    return output.toOwnedSlice();
 }
 
 /// Open a new tab with an optional URL.
@@ -241,11 +241,11 @@ fn newTab(alloc: Allocator, input_json: []const u8) ![]u8 {
     const url = sse.findJsonString(input_json, "url") orelse "about:blank";
 
     // URL-encode the target URL for the query parameter
-    var path: ArrayList(u8) = .empty;
-    defer path.deinit(alloc);
-    const pw = path.writer(alloc);
-    try std.fmt.format(pw, "/json/new?{s}", .{url});
-    const path_slice = path.items;
+    var path: std.Io.Writer.Allocating = .init(alloc);
+    defer path.deinit();
+    const pw = &path.writer;
+    try pw.print("/json/new?{s}", .{url});
+    const path_slice = path.written();
 
     const response = cdpHttpGet(alloc, path_slice) catch |e| {
         return std.fmt.allocPrint(alloc, "Error opening new tab: {s}\nIs Chrome running with --remote-debugging-port={d}?", .{ @errorName(e), getCdpPort() });
@@ -264,11 +264,11 @@ fn closeTab(alloc: Allocator, input_json: []const u8) ![]u8 {
     const tab_id = sse.findJsonString(input_json, "tab_id") orelse
         return std.fmt.allocPrint(alloc, "Error: missing 'tab_id' field. Use list_tabs to see available tab IDs.", .{});
 
-    var path: ArrayList(u8) = .empty;
-    defer path.deinit(alloc);
-    const pw = path.writer(alloc);
-    try std.fmt.format(pw, "/json/close/{s}", .{tab_id});
-    const path_slice = path.items;
+    var path: std.Io.Writer.Allocating = .init(alloc);
+    defer path.deinit();
+    const pw = &path.writer;
+    try pw.print("/json/close/{s}", .{tab_id});
+    const path_slice = path.written();
 
     const response = cdpHttpGet(alloc, path_slice) catch |e| {
         return std.fmt.allocPrint(alloc, "Error closing tab '{s}': {s}\nIs Chrome running with --remote-debugging-port={d}?", .{ tab_id, @errorName(e), getCdpPort() });
@@ -359,9 +359,9 @@ fn cdpCommand(alloc: Allocator, ws_url: []const u8, method: []const u8, params_j
     // We try websocat first because it's simpler and faster.
 
     // Escape single quotes in the CDP message for shell embedding
-    var escaped_msg: ArrayList(u8) = .empty;
-    defer escaped_msg.deinit(alloc);
-    const ew = escaped_msg.writer(alloc);
+    var escaped_msg: std.Io.Writer.Allocating = .init(alloc);
+    defer escaped_msg.deinit();
+    const ew = &escaped_msg.writer;
     for (cdp_msg) |ch| {
         if (ch == '\'') {
             try ew.writeAll("'\"'\"'");
@@ -371,9 +371,9 @@ fn cdpCommand(alloc: Allocator, ws_url: []const u8, method: []const u8, params_j
     }
 
     // Escape single quotes in the WS URL too
-    var escaped_url: ArrayList(u8) = .empty;
-    defer escaped_url.deinit(alloc);
-    const uw = escaped_url.writer(alloc);
+    var escaped_url: std.Io.Writer.Allocating = .init(alloc);
+    defer escaped_url.deinit();
+    const uw = &escaped_url.writer;
     for (ws_url) |ch| {
         if (ch == '\'') {
             try uw.writeAll("'\"'\"'");
@@ -399,60 +399,44 @@ fn cdpCommand(alloc: Allocator, ws_url: []const u8, method: []const u8, params_j
         \\  exit 1
         \\fi
     , .{
-        escaped_msg.items,
-        escaped_url.items,
-        escaped_url.items,
+        escaped_msg.written(),
+        escaped_url.written(),
+        escaped_url.written(),
         CDP_WS_TIMEOUT,
-        escaped_msg.items,
+        escaped_msg.written(),
     });
     defer alloc.free(shell_cmd);
 
     const shell_z = try alloc.dupeZ(u8, shell_cmd);
     defer alloc.free(shell_z);
 
-    // Spawn the subprocess
-    var child = Child.init(
-        &[_][]const u8{ "/bin/sh", "-c", shell_z },
-        alloc,
-    );
-    child.stdout_behavior = .Pipe;
-    child.stderr_behavior = .Pipe;
+    // Spawn the subprocess. Child.init + collectOutput + wait collapse into
+    // runCapture. The StreamTooLong tolerance becomes a hard error, which for a
+    // CDP response over MAX_CDP_RESPONSE is more honest than handing back a
+    // truncated JSON document.
+    const run = try fsio.runCapture(alloc, &[_][]const u8{ "/bin/sh", "-c", shell_z }, MAX_CDP_RESPONSE, null);
+    defer run.deinit(alloc);
 
-    try child.spawn();
-
-    var stdout_buf: ArrayList(u8) = .empty;
-    defer stdout_buf.deinit(alloc);
-    var stderr_buf: ArrayList(u8) = .empty;
-    defer stderr_buf.deinit(alloc);
-
-    child.collectOutput(alloc, &stdout_buf, &stderr_buf, MAX_CDP_RESPONSE) catch |e| {
-        switch (e) {
-            error.StdoutStreamTooLong, error.StderrStreamTooLong => {},
-            else => return e,
-        }
-    };
-
-    const term = try child.wait();
-
-    const exit_code: i64 = switch (term) {
-        .Exited => |code| @as(i64, code),
-        .Signal => |sig| -@as(i64, @intCast(sig)),
-        else => -1,
-    };
+    const exit_code: i64 = if (run.exited)
+        @as(i64, run.exit_code)
+    else if (run.signal) |sig|
+        -@as(i64, @intCast(sig))
+    else
+        -1;
 
     if (exit_code != 0) {
-        const stderr_out = stderr_buf.items;
+        const stderr_out = run.stderr;
         if (stderr_out.len > 0) {
             return std.fmt.allocPrint(alloc, "CDP command failed (exit {d}): {s}", .{ exit_code, stderr_out });
         }
         return std.fmt.allocPrint(alloc, "CDP command failed with exit code {d}", .{exit_code});
     }
 
-    if (stdout_buf.items.len == 0) {
+    if (run.stdout.len == 0) {
         return std.fmt.allocPrint(alloc, "CDP command returned empty response", .{});
     }
 
-    return alloc.dupe(u8, stdout_buf.items);
+    return alloc.dupe(u8, run.stdout);
 }
 
 /// Helper: resolve WS URL and send a CDP command, returning the parsed result.
@@ -485,14 +469,14 @@ fn navigate(alloc: Allocator, input_json: []const u8) ![]u8 {
         return std.fmt.allocPrint(alloc, "Error: missing 'url' field for navigate operation", .{});
 
     // Build CDP params — escape the URL for JSON embedding
-    var params: ArrayList(u8) = .empty;
-    defer params.deinit(alloc);
-    const pw = params.writer(alloc);
+    var params: std.Io.Writer.Allocating = .init(alloc);
+    defer params.deinit();
+    const pw = &params.writer;
     try pw.writeAll("{\"url\":\"");
     try writeJsonEscaped(pw, url);
     try pw.writeAll("\"}");
 
-    const response = try cdpCommandToTab(alloc, input_json, "Page.navigate", params.items);
+    const response = try cdpCommandToTab(alloc, input_json, "Page.navigate", params.written());
     defer alloc.free(response);
 
     // Check for frameId in response (indicates success)
@@ -521,14 +505,14 @@ fn snapshot(alloc: Allocator, input_json: []const u8) ![]u8 {
         \\})()
     ;
 
-    var params: ArrayList(u8) = .empty;
-    defer params.deinit(alloc);
-    const pw = params.writer(alloc);
+    var params: std.Io.Writer.Allocating = .init(alloc);
+    defer params.deinit();
+    const pw = &params.writer;
     try pw.writeAll("{\"expression\":\"");
     try writeJsonEscaped(pw, js_expression);
     try pw.writeAll("\",\"returnByValue\":true}");
 
-    const response = try cdpCommandToTab(alloc, input_json, "Runtime.evaluate", params.items);
+    const response = try cdpCommandToTab(alloc, input_json, "Runtime.evaluate", params.written());
     defer alloc.free(response);
 
     // Extract the result value from the CDP response
@@ -542,9 +526,9 @@ fn click(alloc: Allocator, input_json: []const u8) ![]u8 {
         return std.fmt.allocPrint(alloc, "Error: missing 'selector' field for click operation", .{});
 
     // Build a JS expression that finds and clicks the element
-    var js: ArrayList(u8) = .empty;
-    defer js.deinit(alloc);
-    const jw = js.writer(alloc);
+    var js: std.Io.Writer.Allocating = .init(alloc);
+    defer js.deinit();
+    const jw = &js.writer;
     try jw.writeAll(
         \\(function() {
         \\  var el = document.querySelector('
@@ -582,14 +566,14 @@ fn click(alloc: Allocator, input_json: []const u8) ![]u8 {
         \\})()
     );
 
-    var params: ArrayList(u8) = .empty;
-    defer params.deinit(alloc);
-    const pw = params.writer(alloc);
+    var params: std.Io.Writer.Allocating = .init(alloc);
+    defer params.deinit();
+    const pw = &params.writer;
     try pw.writeAll("{\"expression\":\"");
-    try writeJsonEscaped(pw, js.items);
+    try writeJsonEscaped(pw, js.written());
     try pw.writeAll("\",\"returnByValue\":true}");
 
-    const response = try cdpCommandToTab(alloc, input_json, "Runtime.evaluate", params.items);
+    const response = try cdpCommandToTab(alloc, input_json, "Runtime.evaluate", params.written());
     defer alloc.free(response);
 
     return extractEvalResult(alloc, response);
@@ -604,9 +588,9 @@ fn typeText(alloc: Allocator, input_json: []const u8) ![]u8 {
         return std.fmt.allocPrint(alloc, "Error: missing 'text' field for type_text operation", .{});
 
     // Build JS that sets the value and dispatches events
-    var js: ArrayList(u8) = .empty;
-    defer js.deinit(alloc);
-    const jw = js.writer(alloc);
+    var js: std.Io.Writer.Allocating = .init(alloc);
+    defer js.deinit();
+    const jw = &js.writer;
     try jw.writeAll("(function() { var el = document.querySelector('");
     for (selector) |ch| {
         if (ch == '\'') {
@@ -666,17 +650,17 @@ fn typeText(alloc: Allocator, input_json: []const u8) ![]u8 {
     try jw.writeAll("el.dispatchEvent(new Event('change', {bubbles: true})); ");
     try jw.writeAll("return 'Typed ' + '");
     // Write escaped text length
-    try std.fmt.format(jw, "{d}", .{text.len});
+    try jw.print("{d}", .{text.len});
     try jw.writeAll("' + ' characters into ' + el.tagName.toLowerCase(); })()");
 
-    var params: ArrayList(u8) = .empty;
-    defer params.deinit(alloc);
-    const pw = params.writer(alloc);
+    var params: std.Io.Writer.Allocating = .init(alloc);
+    defer params.deinit();
+    const pw = &params.writer;
     try pw.writeAll("{\"expression\":\"");
-    try writeJsonEscaped(pw, js.items);
+    try writeJsonEscaped(pw, js.written());
     try pw.writeAll("\",\"returnByValue\":true}");
 
-    const response = try cdpCommandToTab(alloc, input_json, "Runtime.evaluate", params.items);
+    const response = try cdpCommandToTab(alloc, input_json, "Runtime.evaluate", params.written());
     defer alloc.free(response);
 
     return extractEvalResult(alloc, response);
@@ -687,14 +671,14 @@ fn evaluate(alloc: Allocator, input_json: []const u8) ![]u8 {
     const expression = sse.findJsonString(input_json, "expression") orelse
         return std.fmt.allocPrint(alloc, "Error: missing 'expression' field for evaluate operation", .{});
 
-    var params: ArrayList(u8) = .empty;
-    defer params.deinit(alloc);
-    const pw = params.writer(alloc);
+    var params: std.Io.Writer.Allocating = .init(alloc);
+    defer params.deinit();
+    const pw = &params.writer;
     try pw.writeAll("{\"expression\":\"");
     try writeJsonEscaped(pw, expression);
     try pw.writeAll("\",\"returnByValue\":true,\"awaitPromise\":true}");
 
-    const response = try cdpCommandToTab(alloc, input_json, "Runtime.evaluate", params.items);
+    const response = try cdpCommandToTab(alloc, input_json, "Runtime.evaluate", params.written());
     defer alloc.free(response);
 
     return extractEvalResult(alloc, response);
@@ -721,7 +705,7 @@ fn screenshot(alloc: Allocator, input_json: []const u8) ![]u8 {
                     return std.fmt.allocPrint(alloc, "Screenshot captured but failed to write to '{s}': {s}", .{ path, @errorName(e) });
                 };
                 defer fsio.close(file);
-                file.writeAll(decoded) catch |e| {
+                fsio.writeAll(file, decoded) catch |e| {
                     return std.fmt.allocPrint(alloc, "Screenshot write error: {s}", .{@errorName(e)});
                 };
 
@@ -763,7 +747,7 @@ fn writeJsonEscaped(writer: anytype, s: []const u8) !void {
             else => {
                 if (ch < 0x20) {
                     // Control characters — use \u00XX encoding
-                    try std.fmt.format(writer, "\\u{x:0>4}", .{ch});
+                    try writer.print("\\u{x:0>4}", .{ch});
                 } else {
                     try writer.writeByte(ch);
                 }
@@ -801,11 +785,11 @@ fn extractEvalResult(alloc: Allocator, response: []const u8) ![]u8 {
                 if (sse.findJsonString(inner_result, "value")) |value| {
                     // Truncate very large results
                     if (value.len > MAX_CDP_RESPONSE) {
-                        var output: ArrayList(u8) = .empty;
-                        const w = output.writer(alloc);
+                        var output: std.Io.Writer.Allocating = .init(alloc);
+                        const w = &output.writer;
                         try w.writeAll(value[0..MAX_CDP_RESPONSE]);
-                        try std.fmt.format(w, "\n\n[truncated: {d} chars total, showing first {d}]", .{ value.len, MAX_CDP_RESPONSE });
-                        return output.toOwnedSlice(alloc);
+                        try w.print("\n\n[truncated: {d} chars total, showing first {d}]", .{ value.len, MAX_CDP_RESPONSE });
+                        return output.toOwnedSlice();
                     }
                     return alloc.dupe(u8, value);
                 }

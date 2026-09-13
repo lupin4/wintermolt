@@ -344,7 +344,7 @@ pub fn main(init: std.process.Init) !void {
         };
         defer bridge.deinit();
 
-        std.Thread.sleep(500 * std.time.ns_per_ms);
+        fsio.sleepNs(500 * std.time.ns_per_ms);
         const is_headless = compat.getenv("K_SERVICE") != null or
             compat.getenv("WINTERMOLT_HEADLESS") != null;
         if (!is_headless) {
@@ -353,11 +353,9 @@ pub fn main(init: std.process.Init) !void {
             const open_args = try alloc.alloc([]const u8, 2);
             open_args[0] = "open";
             open_args[1] = url;
-            var open_child = std.process.Child.init(open_args, alloc);
-            open_child.stdin_behavior = .Ignore;
-            open_child.stdout_behavior = .Ignore;
-            open_child.stderr_behavior = .Ignore;
-            open_child.spawn() catch {};
+            // Fire and forget: `open <url>` hands off to the browser and we do
+            // not care when it exits.
+            fsio.spawnDetached(alloc, open_args) catch {};
         }
 
         bridge.run();
@@ -719,8 +717,8 @@ fn configureKey(
 
     // Write updated file
     var content_buf: [8192]u8 = undefined;
-    var stream = std.io.fixedBufferStream(&content_buf);
-    const sw = stream.writer();
+    var stream: std.Io.Writer = .fixed(&content_buf);
+    const sw = &stream;
 
     try sw.writeAll("# Wintermolt configuration\n");
     try sw.writeAll("# Edit manually or use /keys command to reconfigure.\n\n");
@@ -739,7 +737,7 @@ fn configureKey(
 
     const file = fsio.createFile(env_path, .{ .truncate = true }) catch return;
     defer fsio.close(file);
-    file.writeAll(stream.getWritten()) catch {};
+    fsio.writeAll(file, stream.buffered()) catch {};
 
     try w.writeByte('\n');
 }
@@ -994,10 +992,10 @@ fn handleSessionCmd(mgr: *session_mod.SessionManager, alloc: std.mem.Allocator, 
     if (std.mem.startsWith(u8, arg, "end ")) {
         const sid = std.mem.trim(u8, arg[4..], " \t");
         mgr.endSession(sid) catch |e| {
-            try std.fmt.format(w, "[session] Error: {s}\n", .{@errorName(e)});
+            try w.print("[session] Error: {s}\n", .{@errorName(e)});
             return;
         };
-        try std.fmt.format(w, "[session] Ended: {s}\n", .{sid});
+        try w.print("[session] Ended: {s}\n", .{sid});
         return;
     }
 
@@ -1021,9 +1019,9 @@ fn handleTtsCmd(alloc: std.mem.Allocator, w: anytype, _stderr: anytype, arg: []c
     if (text.len == 0) {
         const provider = compat.getenv("WINTERMOLT_TTS_PROVIDER") orelse "not configured";
         const voice = compat.getenv("WINTERMOLT_TTS_VOICE") orelse "alloy";
-        try std.fmt.format(w, "TTS Status\n", .{});
-        try std.fmt.format(w, "  Provider: {s}\n", .{provider});
-        try std.fmt.format(w, "  Voice: {s}\n", .{voice});
+        try w.print("TTS Status\n", .{});
+        try w.print("  Provider: {s}\n", .{provider});
+        try w.print("  Voice: {s}\n", .{voice});
         try w.writeAll("\nUsage: /tts <text to speak>\n");
         try w.writeAll("Inline directives: [[voice:nova]] [[speed:1.2]] [[provider:openai]]\n");
         try w.writeAll("\nProviders: openai, elevenlabs, piper, edge\n");
@@ -1034,11 +1032,11 @@ fn handleTtsCmd(alloc: std.mem.Allocator, w: anytype, _stderr: anytype, arg: []c
     try w.writeAll("[tts] Synthesizing...\n");
     var client = tts_mod.TtsClient.init(alloc);
     const path = client.synthesizeToFile(text) catch |e| {
-        try std.fmt.format(w, "[tts] Error: {s}\n", .{@errorName(e)});
+        try w.print("[tts] Error: {s}\n", .{@errorName(e)});
         return;
     };
     defer alloc.free(path);
-    try std.fmt.format(w, "[tts] Audio saved: {s}\n", .{path});
+    try w.print("[tts] Audio saved: {s}\n", .{path});
 
     // Auto-play on macOS
     const play_cmd = std.fmt.allocPrint(alloc, "afplay \"{s}\" &", .{path}) catch return;
@@ -1047,10 +1045,9 @@ fn handleTtsCmd(alloc: std.mem.Allocator, w: anytype, _stderr: anytype, arg: []c
     defer alloc.free(play_z);
 
     const play_argv = [_][]const u8{ "/bin/sh", "-c", play_z };
-    var child = std.process.Child.init(&play_argv, alloc);
-    child.stdout_behavior = .Ignore;
-    child.stderr_behavior = .Ignore;
-    child.spawn() catch return;
+    // Fire and forget: audio plays in the background, so the child is
+    // deliberately not reaped -- waiting would block until playback finished.
+    fsio.spawnDetached(alloc, &play_argv) catch return;
 }
 
 fn handleRouteCmd(alloc: std.mem.Allocator, w: anytype, _stderr: anytype, arg: []const u8) !void {
@@ -1112,11 +1109,11 @@ fn handleRouteCmd(alloc: std.mem.Allocator, w: anytype, _stderr: anytype, arg: [
             null, // account_id
             null, // roles
         ) catch |e| {
-            try std.fmt.format(w, "[route] Failed to add: {s}\n", .{@errorName(e)});
+            try w.print("[route] Failed to add: {s}\n", .{@errorName(e)});
             return;
         };
         defer alloc.free(binding_id);
-        try std.fmt.format(w, "[route] Added binding [{s}] → agent:{s} (tier:{s})\n", .{ binding_id[0..8], agent_id, tier_str });
+        try w.print("[route] Added binding [{s}] → agent:{s} (tier:{s})\n", .{ binding_id[0..8], agent_id, tier_str });
         return;
     }
 
@@ -1124,7 +1121,7 @@ fn handleRouteCmd(alloc: std.mem.Allocator, w: anytype, _stderr: anytype, arg: [
     if (std.mem.startsWith(u8, arg, "remove ")) {
         const id = std.mem.trim(u8, arg[7..], " \t");
         _ = router.removeBinding(id);
-        try std.fmt.format(w, "[route] Removed binding: {s}\n", .{id});
+        try w.print("[route] Removed binding: {s}\n", .{id});
         return;
     }
 

@@ -90,15 +90,15 @@ pub const OllamaClient = struct {
         const use_model = model_override orelse self.model;
 
         // Build JSON body: {"model":"...","prompt":"...","stream":false}
-        var body_buf: ArrayList(u8) = .empty;
-        defer body_buf.deinit(self.alloc);
-        const bw = body_buf.writer(self.alloc);
+        var body_buf: std.Io.Writer.Allocating = .init(self.alloc);
+        defer body_buf.deinit();
+        const bw = &body_buf.writer;
         try bw.writeAll("{\"model\":\"");
         try writeJsonStr(bw, use_model);
         try bw.writeAll("\",\"prompt\":\"");
         try writeJsonStr(bw, prompt);
         try bw.print("\",\"stream\":false,\"keep_alive\":\"{s}\",\"options\":{{\"num_ctx\":{d}}}}}", .{ self.keep_alive, self.num_ctx });
-        const body = try body_buf.toOwnedSlice(self.alloc);
+        const body = try body_buf.toOwnedSlice();
         defer self.alloc.free(body);
 
         // Build URL: {base_url}/api/generate
@@ -140,7 +140,7 @@ pub const OllamaClient = struct {
         if (http_code != 200) return error.HttpError;
 
         // Parse "response" field from JSON
-        const resp_data = collector.buf.items;
+        const resp_data = collector.buf.written();
         if (sse.findJsonString(resp_data, "response")) |response_text| {
             return self.alloc.dupe(u8, response_text);
         }
@@ -262,8 +262,8 @@ pub const OllamaClient = struct {
         messages: []const protocol.Message,
         tool_defs: []const protocol.ToolDefinition,
     ) ![]u8 {
-        var buf: ArrayList(u8) = .empty;
-        const w = buf.writer(self.alloc);
+        var buf: std.Io.Writer.Allocating = .init(self.alloc);
+        const w = &buf.writer;
 
         try w.writeAll("{\"model\":\"");
         try writeJsonStr(w, self.model);
@@ -421,7 +421,7 @@ pub const OllamaClient = struct {
         }
 
         try w.writeByte('}');
-        return buf.toOwnedSlice(self.alloc);
+        return buf.toOwnedSlice();
     }
 };
 
@@ -446,7 +446,7 @@ const QuickCheckCollector = struct {
         return .{ .buf = .{}, .alloc = alloc };
     }
     fn deinit(self: *QuickCheckCollector) void {
-        self.buf.deinit(self.alloc);
+        self.buf.deinit();
     }
 };
 
@@ -475,7 +475,7 @@ fn writeJsonStr(w: anytype, s: []const u8) !void {
             0x0C => try w.writeAll("\\f"),
             else => {
                 if (c < 0x20) {
-                    try std.fmt.format(w, "\\u{x:0>4}", .{c});
+                    try w.print("\\u{x:0>4}", .{c});
                 } else {
                     try w.writeByte(c);
                 }

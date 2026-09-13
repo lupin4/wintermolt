@@ -29,6 +29,7 @@
 // should be moved over; noted, not silently changed.)
 
 const std = @import("std");
+const fsio = @import("../fsio.zig");
 const Allocator = std.mem.Allocator;
 
 /// Codes are read aloud, typed on a TV remote, and squinted at on a watch, so
@@ -137,7 +138,7 @@ pub const Registry = struct {
     failed_attempts: u32 = 0,
 
     pub fn init(alloc: Allocator) Registry {
-        return .{ .alloc = alloc, .devices = std.ArrayList(Device){} };
+        return .{ .alloc = alloc, .devices = .empty };
     }
 
     pub fn deinit(self: *Registry) void {
@@ -150,7 +151,7 @@ pub const Registry = struct {
     /// valid behind them.
     pub fn beginPairing(self: *Registry, now: i64) PendingCode {
         var raw: [CODE_LEN]u8 = undefined;
-        std.crypto.random.bytes(&raw);
+        _ = fsio.randomBytes(&raw);
         var code: [CODE_LEN]u8 = undefined;
         for (raw, 0..) |b, i| code[i] = CODE_ALPHABET[b % CODE_ALPHABET.len];
         self.pending = .{ .code = code, .issued_at = now };
@@ -201,12 +202,12 @@ pub const Registry = struct {
         }
 
         var token: [TOKEN_BYTES]u8 = undefined;
-        std.crypto.random.bytes(&token);
+        _ = fsio.randomBytes(&token);
         var hash: [32]u8 = undefined;
         std.crypto.hash.sha2.Sha256.hash(&token, &hash, .{});
 
         var id: [16]u8 = undefined;
-        std.crypto.random.bytes(&id);
+        _ = fsio.randomBytes(&id);
 
         const owned = self.alloc.dupe(u8, name) catch return PairError.RegistryFull;
         self.devices.append(self.alloc, .{

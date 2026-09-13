@@ -402,6 +402,76 @@ pub inline fn realpathAlloc(gpa: std.mem.Allocator, path: []const u8) ![]u8 {
     return if (zig16) cwd().realPathFileAlloc(io(), path, gpa) else cwd().realpathAlloc(gpa, path);
 }
 
+// ── clocks and randomness, for a binary with no forTime to lean on ─────────
+//
+// 0.16 removed the whole std.time timestamp family (timestamp, milliTimestamp,
+// microTimestamp, nanoTimestamp); std.time now holds only the ns_per_* constants.
+// The replacements want an Io threaded from main, which a helper called at
+// arbitrary depth does not have -- so these go straight to libc, the same
+// reasoning that puts getenv on std.c.getenv.
+//
+// WALL CLOCK. Anything measuring an INTERVAL should use monoNs(): the wall clock
+// steps backwards on an NTP correction, so a duration measured with it can come
+// out negative.
+
+/// Nanoseconds since the Unix epoch.
+pub fn nanoTimestamp() i128 {
+    var ts: std.c.timespec = undefined;
+    _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
+    return @as(i128, @intCast(ts.sec)) * 1_000_000_000 + @as(i128, @intCast(ts.nsec));
+}
+
+/// Milliseconds since the Unix epoch -- std.time.milliTimestamp's replacement.
+pub fn milliTimestamp() i64 {
+    return @intCast(@divTrunc(nanoTimestamp(), 1_000_000));
+}
+
+/// Whole seconds since the Unix epoch -- std.time.timestamp's replacement.
+pub fn timestamp() i64 {
+    return @intCast(@divTrunc(nanoTimestamp(), 1_000_000_000));
+}
+
+/// Monotonic nanoseconds, for measuring intervals.
+pub fn monoNs() u64 {
+    var ts: std.c.timespec = undefined;
+    _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts);
+    return @as(u64, @intCast(ts.sec)) * 1_000_000_000 + @as(u64, @intCast(ts.nsec));
+}
+
+/// Random bytes -- std.crypto.random's replacement.
+///
+/// 0.16 removed the global CSPRNG. getentropy is the kernel's own source and
+/// needs no seeding or state, which is what a global was providing. It is capped
+/// at 256 bytes per call, so this loops.
+///
+/// Returns false if the kernel refused, rather than silently leaving the buffer
+/// as it was -- a caller generating an ID from unwritten stack memory is the
+/// failure this prevents.
+pub fn randomBytes(buf: []u8) bool {
+    if (comptime @import("builtin").os.tag == .windows) {
+        // BCryptGenRandom is the Windows source; left to winX86, which can test
+        // it. Reporting failure is the honest answer here -- see the note above
+        // about callers building IDs out of unwritten stack memory.
+        return false;
+    }
+    var off: usize = 0;
+    while (off < buf.len) {
+        const chunk = @min(buf.len - off, 256);
+        if (c_getentropy(buf.ptr + off, chunk) != 0) return false;
+        off += chunk;
+    }
+    return true;
+}
+
+/// libc's getentropy, declared here rather than reached through std.c.
+///
+/// std.c.getentropy is literally `{}` on Darwin in 0.16 -- the platform switch
+/// has `else => {}` -- even though libSystem exports the symbol. So going
+/// through std.c gives "type 'void' not a function" rather than a call.
+extern "c" fn getentropy(buffer: [*]u8, size: usize) c_int;
+const c_getentropy = getentropy;
+
+
 // ── other 0.16 relocations ──────────────────────────────────────────────────
 //
 // These are not filesystem, but they are the same problem -- one name that moved
@@ -768,6 +838,48 @@ pub fn runCapture(gpa: std.mem.Allocator, argv: []const []const u8, max: usize, 
             .signal = if (res.term == .Signal) res.term.Signal else null,
         };
     }
+}
+
+/// Spawn a LONG-LIVED child with stdin and stdout pipes, for a process the caller
+/// keeps talking to -- an MCP server over stdio, for instance.
+///
+/// runCapture is the wrong shape for this: it waits for exit and hands back the
+/// finished output. This returns the LIVE Child, whose .stdin and .stdout are
+/// open pipes.
+///
+/// The Io here is the process-wide single-threaded instance, deliberately: the
+/// caller stores the Child in a struct, so an Io on the spawning function's stack
+/// would be gone by the time anyone called kill or wait. Its documented limit is
+/// that it works with a FAILING allocator -- POSIX spawn does not allocate (the
+/// argv conversion that does is Windows-only), so this is sound on POSIX and is
+/// the spot winX86 will need a longer-lived Threaded instead.
+pub fn spawnPiped(gpa: std.mem.Allocator, argv: []const []const u8) !std.process.Child {
+    if (comptime zig16) {
+        return std.process.spawn(io(), .{
+            .argv = argv,
+            .stdin = .pipe,
+            .stdout = .pipe,
+            .stderr = .inherit,
+        });
+    } else {
+        var child = std.process.Child.init(argv, gpa);
+        child.stdin_behavior = .Pipe;
+        child.stdout_behavior = .Pipe;
+        child.stderr_behavior = .Inherit;
+        try child.spawn();
+        return child;
+    }
+}
+
+/// Kill a child. 0.16 threads the Io through kill.
+pub fn killChild(child: *std.process.Child) void {
+    if (comptime zig16) child.kill(io()) else _ = child.kill() catch {};
+}
+
+/// Reap a child. 0.16 threads the Io through wait.
+pub fn waitChild(child: *std.process.Child) !std.process.Child.Term {
+    if (comptime zig16) return child.wait(io());
+    return child.wait();
 }
 
 /// Start a command and do NOT wait for it -- fire and forget.

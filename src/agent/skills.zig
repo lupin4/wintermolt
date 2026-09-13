@@ -120,10 +120,10 @@ pub const skills = [_]SkillEntry{
 
 /// List all skills with short descriptions (for the `list` operation).
 pub fn listSkills(alloc: Allocator) ![]u8 {
-    var buf: std.ArrayList(u8) = .empty;
-    defer buf.deinit(alloc);
+    var buf: std.Io.Writer.Allocating = .init(alloc);
+    defer buf.deinit();
 
-    const writer = buf.writer(alloc);
+    const writer = &buf.writer;
     try writer.writeAll("# Wintermolt Skill Catalog\n\n");
 
     var current_cat: []const u8 = "";
@@ -136,22 +136,22 @@ pub fn listSkills(alloc: Allocator) ![]u8 {
     }
 
     try writer.print("\nUse skills tool with operation='detail' and name='<skill>' for full docs.\n", .{});
-    return try alloc.dupe(u8, buf.items);
+    return try alloc.dupe(u8, buf.written());
 }
 
 /// Get detailed info for a specific skill (for the `detail` operation).
 pub fn getSkillDetail(alloc: Allocator, name: []const u8) ![]u8 {
     for (&skills) |*s| {
         if (std.mem.eql(u8, s.name, name)) {
-            var buf: std.ArrayList(u8) = .empty;
-            defer buf.deinit(alloc);
+            var buf: std.Io.Writer.Allocating = .init(alloc);
+            defer buf.deinit();
 
-            const writer = buf.writer(alloc);
+            const writer = &buf.writer;
             try writer.print("# {s}\n", .{s.name});
             try writer.print("Category: {s}\n\n", .{s.category});
             try writer.print("{s}\n\n", .{s.full_desc});
             try writer.print("## Operations\n{s}\n", .{s.operations});
-            return try alloc.dupe(u8, buf.items);
+            return try alloc.dupe(u8, buf.written());
         }
     }
     return try std.fmt.allocPrint(alloc, "Unknown skill: '{s}'. Use operation='list' to see available skills.", .{name});

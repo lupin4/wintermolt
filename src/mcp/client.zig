@@ -63,7 +63,7 @@ pub const McpServer = struct {
         defer self.alloc.free(request);
 
         // Write request + newline
-        const writer = self.stdin_file.deprecatedWriter();
+        const writer = stdio.writerFor(self.stdin_file);
         try writer.writeAll(request);
         try writer.writeByte('\n');
 
@@ -80,7 +80,7 @@ pub const McpServer = struct {
         , .{method});
         defer self.alloc.free(notif);
 
-        const writer = self.stdin_file.deprecatedWriter();
+        const writer = stdio.writerFor(self.stdin_file);
         try writer.writeAll(notif);
         try writer.writeByte('\n');
     }
@@ -211,8 +211,8 @@ pub const McpServer = struct {
 
         // Close pipes and terminate
         fsio.close(self.stdin_file);
-        _ = self.child.kill() catch {};
-        _ = self.child.wait() catch {};
+        fsio.killChild(&self.child);
+        _ = fsio.waitChild(&self.child) catch {};
     }
 };
 
@@ -223,7 +223,7 @@ pub const McpClientManager = struct {
 
     pub fn init(alloc: Allocator) McpClientManager {
         return .{
-            .servers = .{},
+            .servers = .empty,
             .alloc = alloc,
         };
     }
@@ -347,11 +347,9 @@ pub const McpClientManager = struct {
 
         try stderr.print("[mcp-client] Spawning {s}: {s}\n", .{ name, command });
 
-        var child = Child.init(argv, self.alloc);
-        child.stdout_behavior = .Pipe;
-        child.stdin_behavior = .Pipe;
-        child.stderr_behavior = .Inherit;
-        try child.spawn();
+        // A long-lived child with both pipes open -- the caller keeps talking to
+        // it, so runCapture (which waits for exit) is the wrong shape here.
+        const child = try fsio.spawnPiped(self.alloc, argv);
 
         const name_copy = try self.alloc.dupe(u8, name);
 
@@ -360,7 +358,7 @@ pub const McpClientManager = struct {
             .child = child,
             .stdin_file = child.stdin.?,
             .stdout_file = child.stdout.?,
-            .tools = .{},
+            .tools = .empty,
             .alloc = self.alloc,
         };
 

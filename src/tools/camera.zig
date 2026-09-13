@@ -128,34 +128,21 @@ fn captureOakd(alloc: Allocator, output_path: []const u8, device: []const u8) !v
         break;
     }
 
-    var child = Child.init(&[_][]const u8{
+    // Child.init, collectOutput and wait()'s no-arg form were all removed in
+    // 0.16; runCapture is the whole sequence.
+    const run = try fsio.runCapture(alloc, &[_][]const u8{
         python_path,
         script_path,
         output_path,
         mode,
-    }, alloc);
-    child.stdout_behavior = .Pipe;
-    child.stderr_behavior = .Pipe;
+    }, 4096, null);
+    defer run.deinit(alloc);
 
-    try child.spawn();
-
-    var stdout_list: ArrayList(u8) = .empty;
-    defer stdout_list.deinit(alloc);
-    var stderr_list: ArrayList(u8) = .empty;
-    defer stderr_list.deinit(alloc);
-
-    child.collectOutput(alloc, &stdout_list, &stderr_list, 4096) catch {};
-
-    const term = try child.wait();
-    switch (term) {
-        .Exited => |code| {
-            if (code != 0) {
-                const stderr = stdio.stderr();
-                stderr.print("[oakd] capture failed: {s}\n", .{stderr_list.items}) catch {};
-                return error.CaptureCommandFailed;
-            }
-        },
-        else => return error.CaptureCommandFailed,
+    if (!run.exited) return error.CaptureCommandFailed;
+    if (run.exit_code != 0) {
+        const stderr = stdio.stderr();
+        stderr.print("[oakd] capture failed: {s}\n", .{run.stderr}) catch {};
+        return error.CaptureCommandFailed;
     }
 }
 
@@ -182,59 +169,25 @@ fn captureImagesnap(alloc: Allocator, output_path: []const u8, device: ?[]const 
     argv_buf[argc] = output_path;
     argc += 1;
 
-    var child = Child.init(argv_buf[0..argc], alloc);
-    child.stdout_behavior = .Pipe;
-    child.stderr_behavior = .Pipe;
-
-    try child.spawn();
-
-    var stdout_list: ArrayList(u8) = .empty;
-    defer stdout_list.deinit(alloc);
-    var stderr_list: ArrayList(u8) = .empty;
-    defer stderr_list.deinit(alloc);
-
-    child.collectOutput(alloc, &stdout_list, &stderr_list, 4096) catch {};
-
-    const term = try child.wait();
-    switch (term) {
-        .Exited => |code| {
-            if (code != 0) return error.CaptureCommandFailed;
-        },
-        else => return error.CaptureCommandFailed,
-    }
+    const run = try fsio.runCapture(alloc, argv_buf[0..argc], 4096, null);
+    defer run.deinit(alloc);
+    if (!run.exited or run.exit_code != 0) return error.CaptureCommandFailed;
 }
 
 /// Capture using ffmpeg on Linux (v4l2 device).
 fn captureFfmpeg(alloc: Allocator, output_path: []const u8, device: ?[]const u8) !void {
     const dev = device orelse "/dev/video0";
 
-    var child = Child.init(&[_][]const u8{
+    const run = try fsio.runCapture(alloc, &[_][]const u8{
         "ffmpeg",    "-y",
         "-f",        "v4l2",
         "-i",        dev,
         "-frames:v", "1",
         "-q:v",      "2", // JPEG quality
         output_path,
-    }, alloc);
-    child.stdout_behavior = .Pipe;
-    child.stderr_behavior = .Pipe;
-
-    try child.spawn();
-
-    var stdout_list: ArrayList(u8) = .empty;
-    defer stdout_list.deinit(alloc);
-    var stderr_list: ArrayList(u8) = .empty;
-    defer stderr_list.deinit(alloc);
-
-    child.collectOutput(alloc, &stdout_list, &stderr_list, 4096) catch {};
-
-    const term = try child.wait();
-    switch (term) {
-        .Exited => |code| {
-            if (code != 0) return error.CaptureCommandFailed;
-        },
-        else => return error.CaptureCommandFailed,
-    }
+    }, 4096, null);
+    defer run.deinit(alloc);
+    if (!run.exited or run.exit_code != 0) return error.CaptureCommandFailed;
 }
 
 /// List available camera devices. Returns human-readable string.
@@ -243,55 +196,28 @@ pub fn listDevices(alloc: Allocator) ![]u8 {
 
     if (is_macos) {
         // imagesnap -l lists available devices
-        var child = Child.init(&[_][]const u8{ "imagesnap", "-l" }, alloc);
-        child.stdout_behavior = .Pipe;
-        child.stderr_behavior = .Pipe;
-
-        try child.spawn();
-
-        var stdout_list: ArrayList(u8) = .empty;
-        defer stdout_list.deinit(alloc);
-        var stderr_list: ArrayList(u8) = .empty;
-        defer stderr_list.deinit(alloc);
-
-        child.collectOutput(alloc, &stdout_list, &stderr_list, 4096) catch {};
-
-        const term = try child.wait();
-        switch (term) {
-            .Exited => |code| {
-                if (code != 0) {
-                    return std.fmt.allocPrint(alloc, "imagesnap not found. Install with: brew install imagesnap", .{});
-                }
-            },
-            else => {
-                return std.fmt.allocPrint(alloc, "Failed to list devices", .{});
-            },
+        const run = try fsio.runCapture(alloc, &[_][]const u8{ "imagesnap", "-l" }, 4096, null);
+        defer run.deinit(alloc);
+        if (!run.exited) return std.fmt.allocPrint(alloc, "Failed to list devices", .{});
+        if (run.exit_code != 0) {
+            return std.fmt.allocPrint(alloc, "imagesnap not found. Install with: brew install imagesnap", .{});
         }
 
-        // imagesnap -l prints to stderr on some versions
-        if (stderr_list.items.len > stdout_list.items.len) {
-            return alloc.dupe(u8, stderr_list.items);
+        // imagesnap -l prints to stderr on some versions. The dupe happens before
+        // the deferred deinit, so the returned slice is owned by the caller.
+        if (run.stderr.len > run.stdout.len) {
+            return alloc.dupe(u8, run.stderr);
         }
-        return alloc.dupe(u8, stdout_list.items);
+        return alloc.dupe(u8, run.stdout);
     } else {
         // Linux: list v4l2 devices
-        var child = Child.init(&[_][]const u8{ "v4l2-ctl", "--list-devices" }, alloc);
-        child.stdout_behavior = .Pipe;
-        child.stderr_behavior = .Pipe;
+        // Exit status was deliberately ignored here: v4l2-ctl returns non-zero
+        // when it simply finds no devices.
+        const run = try fsio.runCapture(alloc, &[_][]const u8{ "v4l2-ctl", "--list-devices" }, 4096, null);
+        defer run.deinit(alloc);
 
-        try child.spawn();
-
-        var stdout_list: ArrayList(u8) = .empty;
-        defer stdout_list.deinit(alloc);
-        var stderr_list: ArrayList(u8) = .empty;
-        defer stderr_list.deinit(alloc);
-
-        child.collectOutput(alloc, &stdout_list, &stderr_list, 4096) catch {};
-
-        _ = try child.wait();
-
-        if (stdout_list.items.len > 0) {
-            return alloc.dupe(u8, stdout_list.items);
+        if (run.stdout.len > 0) {
+            return alloc.dupe(u8, run.stdout);
         }
         return std.fmt.allocPrint(alloc, "No video devices found (install v4l-utils for device listing)", .{});
     }
@@ -304,44 +230,14 @@ pub fn captureScreenshot(alloc: Allocator) !CaptureResult {
     const is_macos = @import("builtin").os.tag == .macos;
 
     if (is_macos) {
-        var child = Child.init(&[_][]const u8{ "screencapture", "-x", tmp_path }, alloc);
-        child.stdout_behavior = .Pipe;
-        child.stderr_behavior = .Pipe;
-        try child.spawn();
-
-        var stdout_list: ArrayList(u8) = .empty;
-        defer stdout_list.deinit(alloc);
-        var stderr_list: ArrayList(u8) = .empty;
-        defer stderr_list.deinit(alloc);
-        child.collectOutput(alloc, &stdout_list, &stderr_list, 4096) catch {};
-
-        const term = try child.wait();
-        switch (term) {
-            .Exited => |code| {
-                if (code != 0) return error.ScreenshotFailed;
-            },
-            else => return error.ScreenshotFailed,
-        }
+        const run = try fsio.runCapture(alloc, &[_][]const u8{ "screencapture", "-x", tmp_path }, 4096, null);
+        defer run.deinit(alloc);
+        if (!run.exited or run.exit_code != 0) return error.ScreenshotFailed;
     } else {
         // Linux: try scrot first, then gnome-screenshot
-        var child = Child.init(&[_][]const u8{ "scrot", tmp_path }, alloc);
-        child.stdout_behavior = .Pipe;
-        child.stderr_behavior = .Pipe;
-        try child.spawn();
-
-        var stdout_list: ArrayList(u8) = .empty;
-        defer stdout_list.deinit(alloc);
-        var stderr_list: ArrayList(u8) = .empty;
-        defer stderr_list.deinit(alloc);
-        child.collectOutput(alloc, &stdout_list, &stderr_list, 4096) catch {};
-
-        const term = try child.wait();
-        switch (term) {
-            .Exited => |code| {
-                if (code != 0) return error.ScreenshotFailed;
-            },
-            else => return error.ScreenshotFailed,
-        }
+        const run = try fsio.runCapture(alloc, &[_][]const u8{ "scrot", tmp_path }, 4096, null);
+        defer run.deinit(alloc);
+        if (!run.exited or run.exit_code != 0) return error.ScreenshotFailed;
     }
 
     // Read the screenshot file
@@ -446,7 +342,7 @@ fn objectDetect(alloc: Allocator, input_json: []const u8, device: ?[]const u8) !
         const f = fsio.createFile(tmp_req, .{}) catch
             return std.fmt.allocPrint(alloc, "Object detect: cannot create temp request file", .{});
         defer fsio.close(f);
-        f.writeAll(request_body) catch
+        fsio.writeAll(f, request_body) catch
             return std.fmt.allocPrint(alloc, "Object detect: cannot write temp request file", .{});
     }
 
@@ -461,17 +357,13 @@ fn objectDetect(alloc: Allocator, input_json: []const u8, device: ?[]const u8) !
         "--max-time", "30",
     };
 
-    var child = std.process.Child.init(&argv, alloc);
-    child.stdout_behavior = .Pipe;
-    child.stderr_behavior = .Pipe;
-    try child.spawn();
-
-    var stdout_list: std.ArrayListAligned(u8, null) = .empty;
-    var stderr_list: std.ArrayListAligned(u8, null) = .empty;
-    child.collectOutput(alloc, &stdout_list, &stderr_list, 1024 * 1024) catch {};
-    _ = child.wait() catch {};
-    const stdout = stdout_list.items;
-    defer stdout_list.deinit(alloc);
+    // Exit status was ignored and collectOutput's failure swallowed, so a spawn
+    // failure stays non-fatal: fall through with empty output and let the
+    // "did not return a response" message below report it. (The old code also
+    // never freed stderr_list; both are released here.)
+    const maybe_run: ?fsio.RunResult = fsio.runCapture(alloc, &argv, 1024 * 1024, null) catch null;
+    defer if (maybe_run) |r| r.deinit(alloc);
+    const stdout: []const u8 = if (maybe_run) |r| r.stdout else "";
 
     // Step 6: Parse Ollama response — extract "response" field
     const response_text = sse.findJsonString(stdout, "response") orelse

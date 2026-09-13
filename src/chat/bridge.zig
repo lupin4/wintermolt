@@ -75,12 +75,9 @@ pub const ChatBridge = struct {
 
         try stderr.print("[chat] Starting sidecar: {s}\n", .{chat_binary});
 
-        var child = Child.init(chat_args, alloc);
-        child.stdout_behavior = .Pipe;
-        child.stdin_behavior = .Pipe;
-        child.stderr_behavior = .Inherit; // Chat sidecar logs go to our stderr
-
-        try child.spawn();
+        // Long-lived sidecar with both pipes open, stderr inherited so its logs
+        // land on ours -- spawnPiped is exactly this shape.
+        const child = try fsio.spawnPiped(alloc, chat_args);
 
         return .{
             .alloc = alloc,
@@ -116,7 +113,7 @@ pub const ChatBridge = struct {
 
     /// Send a threaded reply to the chat sidecar.
     pub fn sendReplyThreaded(self: *ChatBridge, platform: []const u8, to: []const u8, text: []const u8, thread_id: ?[]const u8) !void {
-        const writer = self.stdin_file.deprecatedWriter();
+        const writer = stdio.writerFor(self.stdin_file);
         try writer.writeAll("{\"type\":\"reply\",\"platform\":\"");
         try writeJsonEscaped(writer, platform);
         try writer.writeAll("\",\"to\":\"");
@@ -132,7 +129,7 @@ pub const ChatBridge = struct {
 
     /// Send a voice message to the chat sidecar (base64-encoded audio).
     pub fn sendVoice(self: *ChatBridge, platform: []const u8, to: []const u8, audio_b64: []const u8) !void {
-        const writer = self.stdin_file.deprecatedWriter();
+        const writer = stdio.writerFor(self.stdin_file);
         try writer.writeAll("{\"type\":\"voice\",\"platform\":\"");
         try writeJsonEscaped(writer, platform);
         try writer.writeAll("\",\"to\":\"");
@@ -147,7 +144,7 @@ pub const ChatBridge = struct {
         // Close stdin to signal the child to exit
         fsio.close(self.stdin_file);
         // Wait for child to exit
-        _ = self.child.wait() catch {};
+        _ = fsio.waitChild(&self.child) catch {};
         // Free heap-allocated argv
         self.alloc.free(self.chat_argv);
     }

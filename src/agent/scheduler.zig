@@ -12,6 +12,7 @@
 //   cron   — standard cron expression ("*/5 * * * *")
 
 const std = @import("std");
+const fsio = @import("../fsio.zig");
 const stdio = @import("../stdio.zig");
 const compat = @import("../compat.zig");
 const Allocator = std.mem.Allocator;
@@ -131,7 +132,7 @@ pub const Scheduler = struct {
         }
         // cron validation happens implicitly during computeNextRun
 
-        const now = std.time.timestamp();
+        const now = fsio.timestamp();
         const job_id = generateJobId(name, now);
         const next_run = computeNextRun(schedule_type, schedule_value, now);
 
@@ -183,8 +184,8 @@ pub const Scheduler = struct {
         const stmt = try self.prepare(db, sql);
         defer _ = sqlite3_finalize(stmt);
 
-        var buf: ArrayList(u8) = .empty;
-        const w = buf.writer(alloc);
+        var buf: std.Io.Writer.Allocating = .init(alloc);
+        const w = &buf.writer;
 
         try w.writeAll("=== Scheduled Jobs ===\n\n");
 
@@ -208,23 +209,23 @@ pub const Scheduler = struct {
             const cmd_str = if (cmd_raw) |p| std.mem.span(p) else "?";
 
             const status_str = if (enabled != 0) "ON" else "OFF";
-            const now = std.time.timestamp();
+            const now = fsio.timestamp();
             const secs_until = next_run - now;
 
-            try std.fmt.format(w, "  [{s}] {s} ({s})\n", .{ id_str, name_str, status_str });
-            try std.fmt.format(w, "    Schedule: {s} {s}\n", .{ stype_str, sval_str });
-            try std.fmt.format(w, "    Command:  {s}\n", .{cmd_str});
+            try w.print("  [{s}] {s} ({s})\n", .{ id_str, name_str, status_str });
+            try w.print("    Schedule: {s} {s}\n", .{ stype_str, sval_str });
+            try w.print("    Command:  {s}\n", .{cmd_str});
 
             if (last_run > 0) {
                 const ago = now - last_run;
-                try std.fmt.format(w, "    Last run: {d}s ago\n", .{ago});
+                try w.print("    Last run: {d}s ago\n", .{ago});
             } else {
                 try w.writeAll("    Last run: never\n");
             }
 
             if (secs_until > 0) {
                 const dur = formatDuration(secs_until);
-                try std.fmt.format(w, "    Next run: in {s}\n", .{dur.buf[0..dur.len]});
+                try w.print("    Next run: in {s}\n", .{dur.buf[0..dur.len]});
             } else {
                 try w.writeAll("    Next run: overdue (will run on next tick)\n");
             }
@@ -235,10 +236,10 @@ pub const Scheduler = struct {
         if (count == 0) {
             try w.writeAll("  No jobs scheduled.\n");
         } else {
-            try std.fmt.format(w, "Total: {d} job(s)\n", .{count});
+            try w.print("Total: {d} job(s)\n", .{count});
         }
 
-        return buf.toOwnedSlice(alloc);
+        return buf.toOwnedSlice();
     }
 
     /// Enable or disable a job.
@@ -261,7 +262,7 @@ pub const Scheduler = struct {
     /// jobs, or null if nothing ran. Caller owns returned slice.
     pub fn tick(self: *Scheduler, alloc: Allocator) !?[]u8 {
         const db = self.db orelse return null;
-        const now = std.time.timestamp();
+        const now = fsio.timestamp();
 
         // Query all due, enabled jobs (skip those with status='failed')
         const sql =
@@ -323,14 +324,14 @@ pub const Scheduler = struct {
         if (due_jobs.items.len == 0) return null;
 
         // Execute each due job and build summary
-        var result: ArrayList(u8) = .empty;
-        const w = result.writer(alloc);
+        var result: std.Io.Writer.Allocating = .init(alloc);
+        const w = &result.writer;
 
-        try std.fmt.format(w, "[scheduler] {d} job(s) due at {d}:\n\n", .{ due_jobs.items.len, now });
+        try w.print("[scheduler] {d} job(s) due at {d}:\n\n", .{ due_jobs.items.len, now });
 
         for (due_jobs.items) |job| {
-            try std.fmt.format(w, "--- Job: {s} ({s}) ---\n", .{ job.name, job.id });
-            try std.fmt.format(w, "Command: {s}\n", .{job.command});
+            try w.print("--- Job: {s} ({s}) ---\n", .{ job.name, job.id });
+            try w.print("Command: {s}\n", .{job.command});
 
             // Execute the job command via bash tool
             const output = self.executeJob(alloc, job.id, job.command) catch |e| blk: {
@@ -343,7 +344,7 @@ pub const Scheduler = struct {
             const max_preview: usize = 500;
             if (output.len > max_preview) {
                 try w.writeAll(output[0..max_preview]);
-                try std.fmt.format(w, "\n... ({d} bytes truncated)\n", .{output.len - max_preview});
+                try w.print("\n... ({d} bytes truncated)\n", .{output.len - max_preview});
             } else {
                 try w.writeAll(output);
                 if (output.len > 0 and output[output.len - 1] != '\n') {
@@ -369,13 +370,13 @@ pub const Scheduler = struct {
             // Update last_run and compute next_run
             const new_next_run = computeNextRun(job.schedule_type, job.schedule_value, now);
             self.updateJobAfterRun(db, job.id, now, new_next_run) catch |e| {
-                std.fmt.format(w, "[scheduler] Failed to update job {s}: {s}\n", .{ job.id, @errorName(e) }) catch {};
+                w.print("[scheduler] Failed to update job {s}: {s}\n", .{ job.id, @errorName(e) }) catch {};
             };
 
             try w.writeByte('\n');
         }
 
-        const slice = try result.toOwnedSlice(alloc);
+        const slice = try result.toOwnedSlice();
         return slice;
     }
 
@@ -709,7 +710,7 @@ fn generateJobId(name: []const u8, timestamp: i64) [8]u8 {
         hash ^= byte; hash *%= prime;
     }
     var rand_bytes: [4]u8 = undefined;
-    std.crypto.random.bytes(&rand_bytes);
+    _ = fsio.randomBytes(&rand_bytes);
     for (rand_bytes) |c| { hash ^= c; hash *%= prime; }
     const hex = "0123456789abcdef";
     var id: [8]u8 = undefined;
@@ -723,8 +724,9 @@ fn generateJobId(name: []const u8, timestamp: i64) [8]u8 {
 
 fn formatDuration(secs: i64) FormatDurationResult {
     var result = FormatDurationResult{ .buf = undefined, .len = 0 };
-    var stream = std.io.fixedBufferStream(&result.buf);
-    const writer = stream.writer();
+    // std.io is gone; Writer.fixed is the fixed-buffer writer.
+    var stream: std.Io.Writer = .fixed(&result.buf);
+    const writer = &stream;
     const abs_secs: u64 = if (secs < 0) @intCast(-secs) else @intCast(secs);
     if (abs_secs >= 86400) {
         writer.print("{d}d {d}h", .{ abs_secs / 86400, (abs_secs % 86400) / 3600 }) catch {};
@@ -735,7 +737,8 @@ fn formatDuration(secs: i64) FormatDurationResult {
     } else {
         writer.print("{d}s", .{abs_secs}) catch {};
     }
-    result.len = stream.pos;
+    // Writer tracks how much it holds in `end`, not `pos`.
+    result.len = stream.end;
     return result;
 }
 
@@ -751,8 +754,9 @@ fn getDbPath(alloc: Allocator) ![]u8 {
     const home = compat.getenv("HOME") orelse return error.NoHomeDir;
     const dir_path = try std.fmt.allocPrint(alloc, "{s}/.wintermolt", .{home});
     defer alloc.free(dir_path);
-    std.fs.makeDirAbsolute(dir_path) catch |e| {
-        if (e != error.PathAlreadyExists) return e;
-    };
+    // std.fs.makeDirAbsolute is gone. fsio.makePath creates missing parents and
+    // does NOT error when the directory exists, so the PathAlreadyExists special
+    // case it replaced is no longer needed.
+    try fsio.makePath(dir_path);
     return std.fmt.allocPrint(alloc, "{s}/.wintermolt/scheduler.db", .{home});
 }

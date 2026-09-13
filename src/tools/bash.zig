@@ -37,37 +37,22 @@ fn executeHost(alloc: Allocator, command: []const u8) ![]u8 {
     defer alloc.free(cmd_z);
 
     // Use login shell to inherit user's PATH (Homebrew, pyenv, etc.)
-    var child = Child.init(
-        &[_][]const u8{ "/bin/sh", "-l", "-c", cmd_z },
-        alloc,
-    );
-    child.stdout_behavior = .Pipe;
-    child.stderr_behavior = .Pipe;
+    // Child.init + collectOutput + wait were all removed in 0.16; runCapture is
+    // the whole sequence.
+    //
+    // BEHAVIOUR CHANGE, stated rather than buried: collectOutput TOLERATED
+    // Std{out,err}StreamTooLong and kept the partial data. runCapture reads via
+    // readToEndAlloc, which fails on overflow, so output beyond MAX_OUTPUT is now
+    // an error instead of a truncated success.
+    const run = try fsio.runCapture(alloc, &[_][]const u8{ "/bin/sh", "-l", "-c", cmd_z }, MAX_OUTPUT, null);
+    defer run.deinit(alloc);
 
-    try child.spawn();
-
-    // Collect stdout and stderr using the 0.15.2 poll-based API
-    var stdout_list: ArrayList(u8) = .empty;
-    defer stdout_list.deinit(alloc);
-    var stderr_list: ArrayList(u8) = .empty;
-    defer stderr_list.deinit(alloc);
-
-    child.collectOutput(alloc, &stdout_list, &stderr_list, MAX_OUTPUT) catch |e| {
-        // If stream too long, that's ok — we have partial data
-        switch (e) {
-            error.StdoutStreamTooLong, error.StderrStreamTooLong => {},
-            else => return e,
-        }
-    };
-
-    const term = try child.wait();
-
-    const stdout = stdout_list.items;
-    const stderr_out = stderr_list.items;
+    const stdout = run.stdout;
+    const stderr_out = run.stderr;
 
     // Build output: combine stdout + stderr + exit code
-    var result: ArrayList(u8) = .empty;
-    const w = result.writer(alloc);
+    var result: std.Io.Writer.Allocating = .init(alloc);
+    const w = &result.writer;
 
     if (stdout.len > 0) {
         try w.writeAll(stdout);
@@ -77,22 +62,23 @@ fn executeHost(alloc: Allocator, command: []const u8) ![]u8 {
         try w.writeAll(stderr_out);
     }
 
-    const exit_code: i64 = switch (term) {
-        .Exited => |code| @as(i64, code),
-        .Signal => |sig| -@as(i64, @intCast(sig)),
-        else => -1,
-    };
+    const exit_code: i64 = if (run.exited)
+        @as(i64, run.exit_code)
+    else if (run.signal) |sig|
+        -@as(i64, @intCast(sig))
+    else
+        -1;
 
     if (exit_code != 0) {
-        try std.fmt.format(w, "\n[exit code: {d}]", .{exit_code});
+        try w.print("\n[exit code: {d}]", .{exit_code});
     }
 
-    if (result.items.len == 0) {
+    if (result.written().len == 0) {
         try w.writeAll("[no output]");
     }
 
     // Redact secrets before returning to API context
-    const raw = try result.toOwnedSlice(alloc);
+    const raw = try result.toOwnedSlice();
     return redactSecrets(alloc, raw);
 }
 
@@ -123,65 +109,50 @@ fn executeSandboxed(alloc: Allocator, command: []const u8) ![]u8 {
     const cmd_z = try alloc.dupeZ(u8, command);
     defer alloc.free(cmd_z);
 
-    var child = Child.init(
-        &[_][]const u8{
-            "docker",    "run",          "--rm",
-            net_flag,    mem_flag,        "--cpus=1",
-            "--stop-timeout", timeout_str, "-v",
-            vol_mount,   "-w",           "/workspace",
-            sandbox_image, "sh",          "-c",
-            cmd_z,
-        },
-        alloc,
-    );
-    child.stdout_behavior = .Pipe;
-    child.stderr_behavior = .Pipe;
-
-    child.spawn() catch |e| {
+    // Same collapse as the host path. A failure here still means "sandbox
+    // unavailable", so the fall-back-to-host behaviour is preserved verbatim.
+    // The StreamTooLong tolerance is gone for the same reason noted above: it now
+    // takes the host fallback rather than returning truncated sandbox output.
+    const run = fsio.runCapture(alloc, &[_][]const u8{
+        "docker",    "run",          "--rm",
+        net_flag,    mem_flag,        "--cpus=1",
+        "--stop-timeout", timeout_str, "-v",
+        vol_mount,   "-w",           "/workspace",
+        sandbox_image, "sh",          "-c",
+        cmd_z,
+    }, MAX_OUTPUT, null) catch |e| {
         // Docker not available — fall back to host if sandbox not strictly required
         const stderr = stdio.stderr();
         stderr.print("[sandbox] Docker unavailable ({s}), falling back to host execution\n", .{@errorName(e)}) catch {};
         return executeHost(alloc, command);
     };
+    defer run.deinit(alloc);
 
-    var stdout_list: ArrayList(u8) = .empty;
-    defer stdout_list.deinit(alloc);
-    var stderr_list: ArrayList(u8) = .empty;
-    defer stderr_list.deinit(alloc);
+    var result: std.Io.Writer.Allocating = .init(alloc);
+    const w = &result.writer;
 
-    child.collectOutput(alloc, &stdout_list, &stderr_list, MAX_OUTPUT) catch |e| {
-        switch (e) {
-            error.StdoutStreamTooLong, error.StderrStreamTooLong => {},
-            else => return e,
-        }
-    };
-
-    const term = try child.wait();
-
-    var result: ArrayList(u8) = .empty;
-    const w = result.writer(alloc);
-
-    if (stdout_list.items.len > 0) try w.writeAll(stdout_list.items);
-    if (stderr_list.items.len > 0) {
-        if (stdout_list.items.len > 0) try w.writeByte('\n');
-        try w.writeAll(stderr_list.items);
+    if (run.stdout.len > 0) try w.writeAll(run.stdout);
+    if (run.stderr.len > 0) {
+        if (run.stdout.len > 0) try w.writeByte('\n');
+        try w.writeAll(run.stderr);
     }
 
-    const exit_code: i64 = switch (term) {
-        .Exited => |code| @as(i64, code),
-        .Signal => |sig| -@as(i64, @intCast(sig)),
-        else => -1,
-    };
+    const exit_code: i64 = if (run.exited)
+        @as(i64, run.exit_code)
+    else if (run.signal) |sig|
+        -@as(i64, @intCast(sig))
+    else
+        -1;
 
     if (exit_code != 0) {
-        try std.fmt.format(w, "\n[exit code: {d}]", .{exit_code});
+        try w.print("\n[exit code: {d}]", .{exit_code});
     }
 
-    if (result.items.len == 0) {
+    if (result.written().len == 0) {
         try w.writeAll("[no output]");
     }
 
-    const raw = try result.toOwnedSlice(alloc);
+    const raw = try result.toOwnedSlice();
     return redactSecrets(alloc, raw);
 }
 
@@ -222,8 +193,8 @@ fn redactSecrets(alloc: Allocator, raw: []u8) ![]u8 {
     // Fast path: short output unlikely to contain secrets
     if (raw.len < 10) return raw;
 
-    var output: ArrayList(u8) = .empty;
-    const w = output.writer(alloc);
+    var output: std.Io.Writer.Allocating = .init(alloc);
+    const w = &output.writer;
 
     var line_iter = std.mem.splitScalar(u8, raw, '\n');
     var first_line = true;
@@ -244,7 +215,7 @@ fn redactSecrets(alloc: Allocator, raw: []u8) ![]u8 {
     }
 
     alloc.free(raw);
-    return output.toOwnedSlice(alloc);
+    return output.toOwnedSlice();
 }
 
 const RedactedLine = struct {

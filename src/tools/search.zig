@@ -171,20 +171,20 @@ pub fn webSearch(alloc: Allocator, query: []const u8, max_results: usize) ![]u8 
     }
 
     // Format results as clean text
-    var output: ArrayList(u8) = .empty;
-    const w = output.writer(alloc);
+    var output: std.Io.Writer.Allocating = .init(alloc);
+    const w = &output.writer;
 
-    try std.fmt.format(w, "Web search: \"{s}\" ({d} results)\n\n", .{ query, results.items.len });
+    try w.print("Web search: \"{s}\" ({d} results)\n\n", .{ query, results.items.len });
 
     for (results.items, 1..) |r, i| {
-        try std.fmt.format(w, "{d}. {s}\n   {s}\n", .{ i, r.title, r.url });
+        try w.print("{d}. {s}\n   {s}\n", .{ i, r.title, r.url });
         if (r.snippet.len > 0) {
-            try std.fmt.format(w, "   {s}\n", .{r.snippet});
+            try w.print("   {s}\n", .{r.snippet});
         }
         try w.writeByte('\n');
     }
 
-    return output.toOwnedSlice(alloc);
+    return output.toOwnedSlice();
 }
 
 // ---------------------------------------------------------------------------

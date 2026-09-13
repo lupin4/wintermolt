@@ -29,8 +29,8 @@ pub fn exportHistory(
 
     if (convos.len == 0) return 0;
 
-    var buf: ArrayList(u8) = .empty;
-    const w = buf.writer(alloc);
+    var buf: std.Io.Writer.Allocating = .init(alloc);
+    const w = &buf.writer;
     var total: usize = 0;
 
     for (convos) |convo| {
@@ -38,7 +38,7 @@ pub fn exportHistory(
         defer storage.freeMessages(messages);
 
         for (messages) |msg| {
-            try std.fmt.format(w,
+            try w.print(
                 \\{{"role":"{s}","content":{s},"sequence":{d}}}
             , .{
                 msg.role,
@@ -50,12 +50,12 @@ pub fn exportHistory(
         }
     }
 
-    const jsonl = try buf.toOwnedSlice(alloc);
+    const jsonl = try buf.toOwnedSlice();
     defer alloc.free(jsonl);
 
     const file = try fsio.createFile(path, .{});
     defer fsio.close(file);
-    try file.writeAll(jsonl);
+    try fsio.writeAll(file, jsonl);
 
     return total;
 }

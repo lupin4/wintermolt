@@ -19,7 +19,7 @@ pub fn readFile(alloc: Allocator, path: []const u8, offset: ?usize, limit: ?usiz
     };
     defer fsio.close(file);
 
-    const contents = file.readToEndAlloc(alloc, MAX_FILE_SIZE) catch |e| {
+    const contents = fsio.readToEndAlloc(file, alloc, MAX_FILE_SIZE) catch |e| {
         return formatError(alloc, "Cannot read file '{s}': {s}", .{ path, @errorName(e) });
     };
     defer alloc.free(contents);
@@ -28,8 +28,8 @@ pub fn readFile(alloc: Allocator, path: []const u8, offset: ?usize, limit: ?usiz
     const start_line = offset orelse 0;
     const max_lines = limit orelse std.math.maxInt(usize);
 
-    var result: std.ArrayList(u8) = .empty;
-    const w = result.writer(alloc);
+    var result: std.Io.Writer.Allocating = .init(alloc);
+    const w = &result.writer;
 
     var line_num: usize = 0;
     var lines_written: usize = 0;
@@ -39,15 +39,15 @@ pub fn readFile(alloc: Allocator, path: []const u8, offset: ?usize, limit: ?usiz
         if (line_num <= start_line) continue;
         if (lines_written >= max_lines) break;
 
-        try std.fmt.format(w, "{d:>6}\t{s}\n", .{ line_num, line });
+        try w.print("{d:>6}\t{s}\n", .{ line_num, line });
         lines_written += 1;
     }
 
-    if (result.items.len == 0) {
+    if (result.written().len == 0) {
         try w.writeAll("[empty file]");
     }
 
-    return result.toOwnedSlice(alloc);
+    return result.toOwnedSlice();
 }
 
 /// Write content to a file (creates or overwrites).
@@ -62,7 +62,7 @@ pub fn writeFile(alloc: Allocator, path: []const u8, content: []const u8) ![]u8 
     };
     defer fsio.close(file);
 
-    file.writeAll(content) catch |e| {
+    fsio.writeAll(file, content) catch |e| {
         return formatError(alloc, "Cannot write to '{s}': {s}", .{ path, @errorName(e) });
     };
 
@@ -76,7 +76,7 @@ pub fn editFile(alloc: Allocator, path: []const u8, old_string: []const u8, new_
     };
     defer fsio.close(file);
 
-    const contents = file.readToEndAlloc(alloc, MAX_FILE_SIZE) catch |e| {
+    const contents = fsio.readToEndAlloc(file, alloc, MAX_FILE_SIZE) catch |e| {
         return formatError(alloc, "Cannot read file '{s}': {s}", .{ path, @errorName(e) });
     };
     defer alloc.free(contents);
@@ -105,7 +105,7 @@ pub fn editFile(alloc: Allocator, path: []const u8, old_string: []const u8, new_
     };
     defer fsio.close(out_file);
 
-    out_file.writeAll(new_contents) catch |e| {
+    fsio.writeAll(out_file, new_contents) catch |e| {
         return formatError(alloc, "Write failed for '{s}': {s}", .{ path, @errorName(e) });
     };
 

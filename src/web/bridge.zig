@@ -67,12 +67,9 @@ pub const WebBridge = struct {
 
         try stderr.print("[web] Starting sidecar: {s} {s}\n", .{ web_path.binary, web_path.server_path });
 
-        var child = Child.init(web_args, alloc);
-        child.stdout_behavior = .Pipe;
-        child.stdin_behavior = .Pipe;
-        child.stderr_behavior = .Inherit;
-
-        try child.spawn();
+        // Long-lived sidecar with both pipes open and stderr inherited --
+        // spawnPiped is this exact shape.
+        const child = try fsio.spawnPiped(alloc, web_args);
 
         return .{
             .alloc = alloc,
@@ -86,7 +83,7 @@ pub const WebBridge = struct {
     }
 
     pub fn deinit(self: *WebBridge) void {
-        _ = self.child.kill() catch {};
+        fsio.killChild(&self.child);
         if (self.web_rag_namespace) |ns| self.alloc.free(@constCast(ns));
         self.alloc.free(self.line_buf);
         self.alloc.free(self.web_argv);
@@ -299,7 +296,7 @@ pub const WebBridge = struct {
             self.sendError(id, "Failed to write audio file") catch {};
             return;
         };
-        file.writeAll(decoded) catch {
+        fsio.writeAll(file, decoded) catch {
             fsio.close(file);
             self.sendError(id, "Failed to write audio data") catch {};
             return;
@@ -472,7 +469,7 @@ pub const WebBridge = struct {
             std.fmt.bufPrint(&buf, "{{\"type\":\"token\",\"id\":\"{s}\",\"text\":\"{s}\",\"done\":{s}}}\n", .{
                 id, escapeJsonString(text), if (done) "true" else "false",
             }) catch return;
-        self.stdin_file.writeAll(json) catch {};
+        fsio.writeAll(self.stdin_file, json) catch {};
     }
 
     fn sendToolStartMsg(self: *WebBridge, id: []const u8, tool: []const u8, tool_id: []const u8, preview: []const u8) !void {
@@ -480,7 +477,7 @@ pub const WebBridge = struct {
         const json = std.fmt.bufPrint(&buf, "{{\"type\":\"tool_start\",\"id\":\"{s}\",\"tool\":\"{s}\",\"tool_id\":\"{s}\",\"preview\":\"{s}\"}}\n", .{
             id, tool, tool_id, escapeJsonString(preview),
         }) catch return;
-        self.stdin_file.writeAll(json) catch {};
+        fsio.writeAll(self.stdin_file, json) catch {};
     }
 
     fn sendToolDoneMsg(self: *WebBridge, id: []const u8, tool_id: []const u8, ok: bool, preview: []const u8) !void {
@@ -488,7 +485,7 @@ pub const WebBridge = struct {
         const json = std.fmt.bufPrint(&buf, "{{\"type\":\"tool_done\",\"id\":\"{s}\",\"tool_id\":\"{s}\",\"ok\":{s},\"preview\":\"{s}\"}}\n", .{
             id, tool_id, if (ok) "true" else "false", escapeJsonString(preview),
         }) catch return;
-        self.stdin_file.writeAll(json) catch {};
+        fsio.writeAll(self.stdin_file, json) catch {};
     }
 
     fn sendStatus(self: *WebBridge) !void {
@@ -505,7 +502,7 @@ pub const WebBridge = struct {
             "{{\"type\":\"status\",\"model\":\"{s}\",\"backend\":\"{s}\"}}\n",
             .{ model_label, backend_name },
         ) catch return;
-        self.stdin_file.writeAll(json) catch {};
+        fsio.writeAll(self.stdin_file, json) catch {};
     }
 
     fn sendError(self: *WebBridge, id: []const u8, err: []const u8) !void {
@@ -513,7 +510,7 @@ pub const WebBridge = struct {
         const json = std.fmt.bufPrint(&buf, "{{\"type\":\"error\",\"id\":\"{s}\",\"error\":\"{s}\"}}\n", .{
             id, err,
         }) catch return;
-        self.stdin_file.writeAll(json) catch {};
+        fsio.writeAll(self.stdin_file, json) catch {};
     }
 
     fn sendTranscription(self: *WebBridge, id: []const u8, text: []const u8) !void {
@@ -521,7 +518,7 @@ pub const WebBridge = struct {
         const json = std.fmt.bufPrint(&buf, "{{\"type\":\"transcription\",\"id\":\"{s}\",\"text\":\"{s}\"}}\n", .{
             id, escapeJsonString(text),
         }) catch return;
-        self.stdin_file.writeAll(json) catch {};
+        fsio.writeAll(self.stdin_file, json) catch {};
     }
 
     /// Forward an A2UI canvas message to the web sidecar for browser rendering.
@@ -530,7 +527,7 @@ pub const WebBridge = struct {
         const json = std.fmt.bufPrint(&buf, "{{\"type\":\"canvas\",\"surface\":\"{s}\",\"msg\":{s}}}\n", .{
             surface_id, a2ui_json,
         }) catch return;
-        self.stdin_file.writeAll(json) catch {};
+        fsio.writeAll(self.stdin_file, json) catch {};
     }
 
     fn sendCommandResult(self: *WebBridge, command: []const u8, result: []const u8) !void {
@@ -538,7 +535,7 @@ pub const WebBridge = struct {
         const json = std.fmt.bufPrint(&buf, "{{\"type\":\"command_result\",\"command\":\"{s}\",\"result\":\"{s}\"}}\n", .{
             command, result,
         }) catch return;
-        self.stdin_file.writeAll(json) catch {};
+        fsio.writeAll(self.stdin_file, json) catch {};
     }
 
     /// Parse images array from JSON message line.
@@ -697,7 +694,7 @@ pub const WebBridge = struct {
                 search_start = obj_end + 1;
                 continue;
             };
-            file.writeAll(decoded) catch {
+            fsio.writeAll(file, decoded) catch {
                 fsio.close(file);
                 search_start = obj_end + 1;
                 continue;
@@ -742,7 +739,7 @@ fn webStreamText(text: []const u8) void {
         id, escapeJsonString(text),
     }) catch return;
 
-    stdin.writeAll(json) catch {};
+    fsio.writeAll(stdin, json) catch {};
 }
 
 /// Callback for tool execution start events.
@@ -755,7 +752,7 @@ fn webToolStart(tool_name: []const u8, tool_id: []const u8) void {
         id, tool_name, tool_id,
     }) catch return;
 
-    stdin.writeAll(json) catch {};
+    fsio.writeAll(stdin, json) catch {};
 }
 
 /// Callback for tool execution done events.
@@ -768,14 +765,14 @@ fn webToolDone(tool_id: []const u8, ok: bool) void {
         id, tool_id, if (ok) "true" else "false",
     }) catch return;
 
-    stdin.writeAll(json) catch {};
+    fsio.writeAll(stdin, json) catch {};
 }
 
 /// Callback for perspective/phase events (pre-formatted JSON).
 fn webPerspective(json: []const u8) void {
     const stdin = active_bridge_stdin orelse return;
-    stdin.writeAll(json) catch {};
-    stdin.writeAll("\n") catch {};
+    fsio.writeAll(stdin, json) catch {};
+    fsio.writeAll(stdin, "\n") catch {};
 }
 
 /// Voice callback — sends base64 audio data to the web UI for playback.
@@ -805,11 +802,11 @@ fn webVoiceAudio(audio_path: []const u8) void {
     _ = b64.encode(encoded, audio_data);
 
     // Send as JSON line: {"type":"audio","id":"m1","data":"base64...","format":"mp3"}
-    stdin.writeAll("{\"type\":\"audio\",\"id\":\"") catch return;
-    stdin.writeAll(mid) catch return;
-    stdin.writeAll("\",\"data\":\"") catch return;
-    stdin.writeAll(encoded) catch return;
-    stdin.writeAll("\",\"format\":\"mp3\"}\n") catch return;
+    fsio.writeAll(stdin, "{\"type\":\"audio\",\"id\":\"") catch return;
+    fsio.writeAll(stdin, mid) catch return;
+    fsio.writeAll(stdin, "\",\"data\":\"") catch return;
+    fsio.writeAll(stdin, encoded) catch return;
+    fsio.writeAll(stdin, "\",\"format\":\"mp3\"}\n") catch return;
 }
 
 // ---------------------------------------------------------------------------
@@ -1037,30 +1034,12 @@ fn transcribeWhisperWeb(alloc: Allocator, audio_path: []const u8) ?[]u8 {
     argv[9] = "-F";
     argv[10] = "model=whisper-1";
 
-    var child = std.process.Child.init(argv, alloc);
-    child.stdin_behavior = .Ignore;
-    child.stdout_behavior = .Pipe;
-    child.stderr_behavior = .Pipe;
-
-    child.spawn() catch return null;
-
-    var stdout_list: ArrayList(u8) = .empty;
-    defer stdout_list.deinit(alloc);
-    var stderr_list: ArrayList(u8) = .empty;
-    defer stderr_list.deinit(alloc);
-
-    child.collectOutput(alloc, &stdout_list, &stderr_list, 65536) catch return null;
-
-    const term = child.wait() catch return null;
-    switch (term) {
-        .Exited => |code| {
-            if (code != 0) return null;
-        },
-        else => return null,
-    }
+    const run = fsio.runCapture(alloc, argv, 65536, null) catch return null;
+    defer run.deinit(alloc);
+    if (!run.exited or run.exit_code != 0) return null;
 
     // Parse JSON response: {"text":"transcribed text here"}
-    const response = stdout_list.items;
+    const response = run.stdout;
     if (response.len == 0) return null;
 
     const text = sse.findJsonString(response, "text") orelse return null;

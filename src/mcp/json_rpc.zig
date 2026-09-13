@@ -206,8 +206,8 @@ pub fn findJsonArray(json: []const u8, key: []const u8) ?[]const u8 {
 
 /// Escape a string for JSON output (handles ", \, newlines, tabs).
 pub fn jsonEscapeString(alloc: Allocator, input: []const u8) ![]u8 {
-    var buf: std.ArrayList(u8) = .empty;
-    const w = buf.writer(alloc);
+    var buf: std.Io.Writer.Allocating = .init(alloc);
+    const w = &buf.writer;
     for (input) |c| {
         switch (c) {
             '"' => try w.writeAll("\\\""),
@@ -224,5 +224,5 @@ pub fn jsonEscapeString(alloc: Allocator, input: []const u8) ![]u8 {
             },
         }
     }
-    return buf.toOwnedSlice(alloc);
+    return buf.toOwnedSlice();
 }

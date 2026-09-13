@@ -48,11 +48,9 @@ pub const GatewayBridge = struct {
 
         try stderr.print("[gateway] Starting sidecar: {s}\n", .{binary});
 
-        var child = Child.init(argv, alloc);
-        child.stdout_behavior = .Pipe;
-        child.stdin_behavior = .Pipe;
-        child.stderr_behavior = .Inherit;
-        try child.spawn();
+        // Long-lived sidecar with both pipes open and stderr inherited --
+        // spawnPiped is this exact shape.
+        const child = try fsio.spawnPiped(alloc, argv);
 
         return .{
             .alloc = alloc,
@@ -67,7 +65,7 @@ pub const GatewayBridge = struct {
 
     pub fn deinit(self: *GatewayBridge) void {
         fsio.close(self.stdin_file);
-        _ = self.child.wait() catch {};
+        _ = fsio.waitChild(&self.child) catch {};
         self.alloc.free(self.gateway_argv);
         self.registry.deinit();
     }
@@ -142,7 +140,7 @@ pub const GatewayBridge = struct {
         const response_text = if (response_buf.items.len > 0) response_buf.items else "(no response)";
 
         // Send OpenAI-compatible response
-        const writer = self.stdin_file.deprecatedWriter();
+        const writer = stdio.writerFor(self.stdin_file);
         try writer.writeAll("{\"type\":\"api_response\",\"id\":\"");
         try writeJsonEscaped(writer, request_id);
         try writer.writeAll("\",\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"");
@@ -156,7 +154,7 @@ pub const GatewayBridge = struct {
         if (self.registry.devices.items.len == 0) return true;
         const token_hex = sse.findJsonString(json, "device_token") orelse return false;
         const token = decodeToken(token_hex) orelse return false;
-        return self.registry.touch(&token, std.time.timestamp());
+        return self.registry.touch(&token, fsio.timestamp());
     }
 
     /// `{"type":"pair_request","id":"p1","code":"ACDE4679","name":"Living Room
@@ -190,11 +188,11 @@ pub const GatewayBridge = struct {
             else => {},
         }
 
-        const token = self.registry.completePairing(code, name, platform, caps, std.time.timestamp()) catch |e| {
+        const token = self.registry.completePairing(code, name, platform, caps, fsio.timestamp()) catch |e| {
             // Deliberately coarse to the client: a caller must not learn WHICH
             // way it was wrong (expired vs mismatch vs burned), only that it
             // failed. The operator still sees the specific reason on stderr.
-            const stderr = std.fs.File.stderr().deprecatedWriter();
+            const stderr = stdio.stderr();
             stderr.print("[gateway] pairing refused: {s}\n", .{@errorName(e)}) catch {};
             return self.sendPairResponse(request_id, "rejected", "pairing refused", null);
         };
@@ -210,8 +208,8 @@ pub const GatewayBridge = struct {
     fn handleBeacon(self: *GatewayBridge, request_id: []const u8, json: []const u8) !void {
         const token_hex = sse.findJsonString(json, "device_token") orelse return;
         const token = decodeToken(token_hex) orelse return;
-        const ok = self.registry.touch(&token, std.time.timestamp());
-        const writer = self.stdin_file.deprecatedWriter();
+        const ok = self.registry.touch(&token, fsio.timestamp());
+        const writer = stdio.writerFor(self.stdin_file);
         try writer.writeAll("{\"type\":\"beacon_ack\",\"id\":\"");
         try writeJsonEscaped(writer, request_id);
         try writer.print("\",\"alive\":{s}}}\n", .{if (ok) "true" else "false"});
@@ -224,7 +222,7 @@ pub const GatewayBridge = struct {
         detail: []const u8,
         token_hex: ?[]const u8,
     ) !void {
-        const writer = self.stdin_file.deprecatedWriter();
+        const writer = stdio.writerFor(self.stdin_file);
         try writer.writeAll("{\"type\":\"pair_response\",\"id\":\"");
         try writeJsonEscaped(writer, request_id);
         try writer.writeAll("\",\"status\":\"");
@@ -246,7 +244,7 @@ pub const GatewayBridge = struct {
     }
 
     fn sendStatusResponse(self: *GatewayBridge, request_id: []const u8) !void {
-        const writer = self.stdin_file.deprecatedWriter();
+        const writer = stdio.writerFor(self.stdin_file);
         const info = self.agent.getBackendInfo();
         try writer.writeAll("{\"type\":\"status\",\"id\":\"");
         try writeJsonEscaped(writer, request_id);
@@ -258,7 +256,7 @@ pub const GatewayBridge = struct {
     }
 
     fn sendErrorResponse(self: *GatewayBridge, request_id: []const u8, error_msg: []const u8) !void {
-        const writer = self.stdin_file.deprecatedWriter();
+        const writer = stdio.writerFor(self.stdin_file);
         try writer.writeAll("{\"type\":\"api_error\",\"id\":\"");
         try writeJsonEscaped(writer, request_id);
         try writer.writeAll("\",\"error\":{\"message\":\"");

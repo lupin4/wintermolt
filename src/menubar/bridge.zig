@@ -66,12 +66,9 @@ pub const MenuBarBridge = struct {
 
         try stderr.print("[menubar] Starting sidecar: {s}\n", .{binary_path});
 
-        var child = Child.init(argv, alloc);
-        child.stdout_behavior = .Pipe;
-        child.stdin_behavior = .Pipe;
-        child.stderr_behavior = .Inherit;
-
-        try child.spawn();
+        // Long-lived sidecar with both pipes open and stderr inherited --
+        // spawnPiped is this exact shape.
+        const child = try fsio.spawnPiped(alloc, argv);
 
         return .{
             .alloc = alloc,
@@ -85,7 +82,7 @@ pub const MenuBarBridge = struct {
     }
 
     pub fn deinit(self: *MenuBarBridge) void {
-        _ = self.child.kill() catch {};
+        fsio.killChild(&self.child);
         self.alloc.free(self.line_buf);
         self.alloc.free(self.argv);
     }
@@ -196,7 +193,7 @@ pub const MenuBarBridge = struct {
             "{{\"type\":\"status\",\"model\":\"{s}\",\"backend\":\"{s}\",\"tokens\":{d}}}\n",
             .{ info.model, info.name, self.agent.history.approx_tokens },
         ) catch return;
-        self.stdin_file.writeAll(json) catch {};
+        fsio.writeAll(self.stdin_file, json) catch {};
     }
 
     fn sendIcon(self: *MenuBarBridge, state: []const u8) !void {
@@ -205,7 +202,7 @@ pub const MenuBarBridge = struct {
             "{{\"type\":\"set_icon\",\"state\":\"{s}\"}}\n",
             .{state},
         ) catch return;
-        self.stdin_file.writeAll(json) catch {};
+        fsio.writeAll(self.stdin_file, json) catch {};
     }
 
     pub fn sendNotify(self: *MenuBarBridge, title: []const u8, body: []const u8) !void {
@@ -214,7 +211,7 @@ pub const MenuBarBridge = struct {
             "{{\"type\":\"notify\",\"title\":\"{s}\",\"body\":\"{s}\"}}\n",
             .{ title, body },
         ) catch return;
-        self.stdin_file.writeAll(json) catch {};
+        fsio.writeAll(self.stdin_file, json) catch {};
     }
 
     fn sendResponse(self: *MenuBarBridge, text: []const u8) !void {
@@ -227,7 +224,7 @@ pub const MenuBarBridge = struct {
             "{{\"type\":\"response\",\"text\":\"{s}\"}}\n",
             .{escapeJsonString(display)},
         ) catch return;
-        self.stdin_file.writeAll(json) catch {};
+        fsio.writeAll(self.stdin_file, json) catch {};
     }
 };
 
@@ -241,7 +238,7 @@ fn menubarStreamText(text: []const u8) void {
     const json = std.fmt.bufPrint(&buf, "{{\"type\":\"token\",\"text\":\"{s}\"}}\n", .{
         escapeJsonString(text),
     }) catch return;
-    stdin.writeAll(json) catch {};
+    fsio.writeAll(stdin, json) catch {};
 }
 
 // ---------------------------------------------------------------------------

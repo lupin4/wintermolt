@@ -10,6 +10,7 @@
 // to the stream parser in real-time, enabling live text output.
 
 const std = @import("std");
+const fsio = @import("../fsio.zig");
 const stdio = @import("../stdio.zig");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
@@ -176,7 +177,7 @@ pub const Client = struct {
                 const wait_secs: u64 = std.math.shl(u64, 2, @as(u6, @intCast(attempt - 1)));
                 const stderr = stdio.stderr();
                 stderr.print("\n[Rate limited] Waiting {d}s before retry ({d}/{d})...\n", .{ wait_secs, attempt, max_retries }) catch {};
-                std.Thread.sleep(wait_secs * 1_000_000_000);
+                fsio.sleepNs(wait_secs * 1_000_000_000);
                 // Reset SSE parser state for clean retry
                 parser.reset();
                 continue;

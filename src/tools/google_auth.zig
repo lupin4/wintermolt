@@ -12,6 +12,7 @@
 // Tokens are cached in memory and auto-refreshed when expired.
 
 const std = @import("std");
+const fsio = @import("../fsio.zig");
 const compat = @import("../compat.zig");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
@@ -84,7 +85,7 @@ pub const GoogleAuth = struct {
 
     /// Get a valid access token. Refreshes if expired.
     pub fn getAccessToken(self: *GoogleAuth) ![]const u8 {
-        const now = std.time.timestamp();
+        const now = fsio.timestamp();
 
         // Return cached token if still valid (with 60s buffer)
         if (self.access_token) |tok| {
@@ -147,7 +148,7 @@ pub const GoogleAuth = struct {
         // Cache the token
         if (self.access_token) |old| self.alloc.free(old);
         self.access_token = try self.alloc.dupe(u8, token);
-        self.token_expiry = std.time.timestamp() + expires_in;
+        self.token_expiry = fsio.timestamp() + expires_in;
     }
 };
 

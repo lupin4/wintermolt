@@ -18,6 +18,7 @@
 // Spec: docs/superpowers/specs/2026-04-26-wintermolt-kernel-backend.md
 
 const std = @import("std");
+const compat = @import("../compat.zig");
 const fsio = @import("../fsio.zig");
 const stdio = @import("../stdio.zig");
 const builtin = @import("builtin");
@@ -196,8 +197,8 @@ pub const KernelClient = struct {
             idx += 1;
         }
         for (messages) |msg| {
-            var buf: ArrayList(u8) = .empty;
-            const w = buf.writer(self.alloc);
+            var buf: std.Io.Writer.Allocating = .init(self.alloc);
+            const w = &buf.writer;
             for (msg.content.items) |block| {
                 switch (block) {
                     .text => |t| try w.writeAll(t),
@@ -206,7 +207,7 @@ pub const KernelClient = struct {
                     .image => try w.writeAll("[image omitted — kernel backend is text-only]"),
                 }
             }
-            const content_slice = try buf.toOwnedSlice(self.alloc);
+            const content_slice = try buf.toOwnedSlice();
             const content_z = try self.alloc.dupeZ(u8, content_slice);
             self.alloc.free(content_slice);
             try content_alloc.append(self.alloc, content_z);
@@ -393,7 +394,7 @@ pub fn resolveModelPath(alloc: Allocator, alias: []const u8, model_dir: []const 
 
 fn expandHome(alloc: Allocator, path: []const u8) ![]const u8 {
     if (path.len == 0 or path[0] != '~') return try alloc.dupe(u8, path);
-    const home = std.posix.getenv("HOME") orelse return try alloc.dupe(u8, path);
+    const home = compat.getenv("HOME") orelse return try alloc.dupe(u8, path);
     if (path.len == 1) return try alloc.dupe(u8, home);
     if (path[1] != '/') return try alloc.dupe(u8, path);
     return try std.fmt.allocPrint(alloc, "{s}{s}", .{ home, path[1..] });
@@ -401,9 +402,9 @@ fn expandHome(alloc: Allocator, path: []const u8) ![]const u8 {
 
 /// Default model directory: $WINTERMOLT_KERNEL_MODEL_DIR or ~/.wintermolt/models
 pub fn defaultModelDir(alloc: Allocator) ![]const u8 {
-    if (std.posix.getenv("WINTERMOLT_KERNEL_MODEL_DIR")) |dir| {
+    if (compat.getenv("WINTERMOLT_KERNEL_MODEL_DIR")) |dir| {
         return try alloc.dupe(u8, dir);
     }
-    const home = std.posix.getenv("HOME") orelse return Error.ModelNotFound;
+    const home = compat.getenv("HOME") orelse return Error.ModelNotFound;
     return try std.fmt.allocPrint(alloc, "{s}/.wintermolt/models", .{home});
 }

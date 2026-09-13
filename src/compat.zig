@@ -8,6 +8,7 @@
 // is identical to pre-port.
 
 const std = @import("std");
+const fsio = @import("fsio.zig");
 const builtin = @import("builtin");
 
 // =============================================================================
@@ -20,7 +21,7 @@ const builtin = @import("builtin");
 
 var env_cache: std.StringHashMap([]const u8) = undefined;
 var env_cache_inited: bool = false;
-var env_mutex: std.Thread.Mutex = .{};
+var env_mutex: fsio.Mutex = fsio.mutex_init;
 const env_allocator = std.heap.page_allocator;
 
 fn ensureEnvCache() void {
@@ -46,8 +47,8 @@ pub fn getenv(name: []const u8) ?[]const u8 {
         return std.mem.span(v);
     }
 
-    env_mutex.lock();
-    defer env_mutex.unlock();
+    fsio.lock(&env_mutex);
+    defer fsio.unlock(&env_mutex);
     ensureEnvCache();
 
     if (env_cache.get(name)) |cached| {
