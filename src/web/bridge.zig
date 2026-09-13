@@ -962,7 +962,8 @@ fn escapeJsonStringSlow(text: []const u8) []const u8 {
 // ---------------------------------------------------------------------------
 
 const base64_decode_table = blk: {
-    var table: [256]u8 = [_]u8{0xFF} ** 256;
+    // 0.17 removed `**` array-repeat; @splat is the replacement, same on 0.16.
+    var table: [256]u8 = @splat(0xFF);
     const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     for (alphabet, 0..) |c, i| {
         table[c] = @intCast(i);

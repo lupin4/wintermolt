@@ -31,11 +31,18 @@ const std = @import("std");
 /// `access` call needs two arguments on one toolchain and three on the other.
 /// Branch is on `@hasDecl` -- a feature test, not a version number.
 fn buildRootHas(b: *std.Build, sub_path: []const u8) !void {
-    if (comptime @hasDecl(std.fs, "cwd")) {
-        return b.build_root.handle.access(sub_path, .{});
-    } else {
+    if (comptime @hasField(std.Build, "build_root")) {
+        // 0.15.2 and 0.16 both hang the build-root Dir handle off the Build
+        // object; they differ only in whether `access` takes an Io.
+        if (comptime @hasDecl(std.fs, "cwd")) {
+            return b.build_root.handle.access(sub_path, .{});
+        }
         return b.build_root.handle.access(b.graph.io, sub_path, .{});
     }
+    // 0.17 removed Build.build_root, and LazyPath lost getPath, so there is no
+    // handle to ask any more. The build runner's CWD *is* the build root --
+    // verified against 0.17 with a sentinel file, not assumed -- so ask cwd.
+    return std.Io.Dir.cwd().access(b.graph.io, sub_path, .{});
 }
 
 pub fn build(b: *std.Build) void {
@@ -46,11 +53,16 @@ pub fn build(b: *std.Build) void {
     //
     // NOT a bare standardOptimizeOption(.{}): that defaults to Debug, which
     // materializes `undefined` as real bytes and once shipped a 68MB archive.
+    // 0.17 lower-cased the Optimize enum (ReleaseFast -> fast). Feature-test the
+    // field rather than the compiler version, so this build.zig keeps working for
+    // agents still on 0.16.
+    const release_fast: std.builtin.OptimizeMode =
+        if (@hasField(std.builtin.OptimizeMode, "ReleaseFast")) .ReleaseFast else .fast;
     const optimize = b.option(
         std.builtin.OptimizeMode,
         "optimize",
         "Prioritize performance, safety, or binary size (delivery default: ReleaseFast)",
-    ) orelse .ReleaseFast;
+    ) orelse release_fast;
 
     // -------------------------------------------------------------------
     // WINTERMOLT EXECUTABLE
@@ -150,6 +162,30 @@ pub fn build(b: *std.Build) void {
         }
     }
 
+    // --- llama.cpp C ABI as a MODULE, not @cImport ---
+    // 0.17 removed @cImport outright (0.16's AstGen references it, 0.17's does
+    // not), so llama.h is translated by a build step instead of a builtin call
+    // inside api/kernel.zig. addTranslateC exists identically on 0.16 and 0.17,
+    // so this single form serves both and needs no feature test.
+    //
+    // Registered on EVERY target on purpose: `@import("llama_c")` resolves at
+    // AstGen, before comptime folding, so the name has to exist even where
+    // llama.cpp does not. Off darwin-arm64 it resolves to an empty stub, which
+    // is what kernel.zig's `is_supported == false` branches already assume.
+    const llama_c_mod = if (t.os.tag == .macos and t.cpu.arch == .aarch64) blk: {
+        const tc = b.addTranslateC(.{
+            .root_source_file = b.path("prebuilt/macos/include_kernel/llama.h"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        });
+        tc.addIncludePath(b.path("prebuilt/macos/include_kernel"));
+        break :blk tc.createModule();
+    } else b.createModule(.{
+        .root_source_file = b.path("src/api/llama_c_unavailable.zig"),
+    });
+    exe_mod.addImport("llama_c", llama_c_mod);
+
     const exe = b.addExecutable(.{
         .name = "wintermolt",
         .root_module = exe_mod,
@@ -167,8 +203,15 @@ pub fn build(b: *std.Build) void {
     // -------------------------------------------------------------------
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
-    if (b.args) |args| {
-        run_cmd.addArgs(args);
+    // 0.17 removed Build.args -- the `zig build run -- <args>` passthrough -- and
+    // ships no replacement accessor on Build or Step.Run. Feature-test it: the
+    // passthrough still works on 0.15.2/0.16, and on 0.17 `zig build run` simply
+    // takes no trailing args. Invoking the installed binary directly is
+    // unaffected, which is how wintermolt is actually run.
+    if (comptime @hasField(std.Build, "args")) {
+        if (b.args) |args| {
+            run_cmd.addArgs(args);
+        }
     }
 
     const run_step = b.step("run", "Build and run Wintermolt");
@@ -177,13 +220,17 @@ pub fn build(b: *std.Build) void {
     // -------------------------------------------------------------------
     // Test step: `zig build test`
     // -------------------------------------------------------------------
-    const unit_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/main.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
+    const test_mod = b.createModule(.{
+        .root_source_file = b.path("src/main.zig"),
+        .target = target,
+        .optimize = optimize,
     });
+    // Same module the exe gets: without it `@import("llama_c")` fails to resolve
+    // under `zig build test`. NOTE: this test module still links none of the
+    // prebuilt archives, so `zig build test` remains narrower than it looks --
+    // a pre-existing gap, flagged not silently widened.
+    test_mod.addImport("llama_c", llama_c_mod);
+    const unit_tests = b.addTest(.{ .root_module = test_mod });
 
     const run_unit_tests = b.addRunArtifact(unit_tests);
     const test_step = b.step("test", "Run unit tests");

@@ -275,7 +275,9 @@ pub fn getRelevantDefinitions(user_text: []const u8) []const protocol.ToolDefini
     // the catalog. (port of Wintermute 717a96e)
     if (user_text.len < 3) return getCoreDefinitions();
 
-    var included: [tool_definitions.len]bool = [_]bool{false} ** tool_definitions.len;
+    // 0.17 removed the `**` array-repeat operator (it now tokenizes as two `*`).
+    // @splat is the replacement and behaves identically on 0.16, so no feature test.
+    var included: [tool_definitions.len]bool = @splat(false);
     var count: usize = 0;
 
     // Always include core tools (subject to policy)

@@ -169,7 +169,8 @@ fn writeBmp(image: *const Image, path: []const u8) !void {
     try file.writeAll(&fh);
 
     // DIB header (40 bytes — BITMAPINFOHEADER)
-    var dib: [40]u8 = .{0} ** 40;
+    // 0.17 removed `**` array-repeat; @splat is the replacement (same on 0.16).
+    var dib: [40]u8 = @splat(0);
     std.mem.writeInt(u32, dib[0..4], 40, .little);
     std.mem.writeInt(i32, dib[4..8], @intCast(w), .little);
     std.mem.writeInt(i32, dib[8..12], @intCast(h), .little); // positive = bottom-up

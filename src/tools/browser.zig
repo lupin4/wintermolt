@@ -852,7 +852,8 @@ fn extractEvalResult(alloc: Allocator, response: []const u8) ![]u8 {
 /// Base64 decode table (comptime lookup for standard alphabet).
 /// Same pattern as web/bridge.zig — proven to compile on Zig 0.15.2.
 const base64_decode_table = blk: {
-    var table: [256]u8 = [_]u8{0xFF} ** 256;
+    // 0.17 removed `**` array-repeat; @splat is the replacement (same on 0.16).
+    var table: [256]u8 = @splat(0xFF);
     const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     for (alphabet, 0..) |c, i| {
         table[c] = @intCast(i);

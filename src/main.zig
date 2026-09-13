@@ -39,17 +39,40 @@ const export_mod = @import("agent/export.zig");
 
 const VERSION = "0.5.0";
 
-pub fn main() !void {
+// 0.16/0.17 hand main a `std.process.Init`: it carries the args, the environment
+// and a properly configured Io, replacing the positionless std.process helpers
+// that were removed. Both toolchains accept this signature identically, so there
+// is no feature test -- start.zig dispatches on the parameter.
+pub fn main(init: std.process.Init) !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    const stdout = std.fs.File.stdout().deprecatedWriter();
-    const stderr = std.fs.File.stderr().deprecatedWriter();
+    // std.fs.File and deprecatedWriter are both gone (0.16 removed std.fs.File;
+    // deprecatedWriter went with it). std.Io.File + writerStreaming replaces
+    // them, and this exact form compiles and behaves identically on 0.16 and
+    // 0.17, so it needs no feature test.
+    //
+    // The buffers are ZERO-LENGTH on purpose. A File.Writer drains whenever its
+    // buffer is full, so a zero-length buffer drains on every write -- which is
+    // precisely deprecatedWriter's unbuffered behaviour. That matters here: this
+    // function has many early returns, and a real buffer would need a matching
+    // flush on every one of them. Verified by writing without any flush and
+    // seeing the output arrive.
+    // Use the Io main was handed rather than the global single-threaded one:
+    // that instance documents that it does not support concurrency.
+    const io = init.io;
+    var stdout_buf: [0]u8 = undefined;
+    var stdout_fw = std.Io.File.stdout().writerStreaming(io, &stdout_buf);
+    const stdout = &stdout_fw.interface;
+    var stderr_buf: [0]u8 = undefined;
+    var stderr_fw = std.Io.File.stderr().writerStreaming(io, &stderr_buf);
+    const stderr = &stderr_fw.interface;
 
     // Parse args
-    var args = try std.process.argsWithAllocator(alloc);
-    defer args.deinit();
+    // std.process.argsWithAllocator is gone; the iterator comes off Init now and
+    // needs no allocator or deinit on POSIX (it walks the existing argv vector).
+    var args = init.minimal.args.iterate();
     _ = args.next(); // skip executable name
 
     var exec_prompt: ?[]const u8 = null;
