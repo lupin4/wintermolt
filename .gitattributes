@@ -1,0 +1,4 @@
+# Shell scripts keep LF line endings on every checkout. With core.autocrlf=true
+# (the Windows default) git wrote scripts/*.sh with CRLF, and bash failed on its
+# first option: "set: pipefail\r: invalid option name".
+*.sh text eol=lf
