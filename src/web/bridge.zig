@@ -22,6 +22,8 @@
 //      {"type":"status","tier":"sonnet","model":"claude-sonnet-4-5","backend":"claude"}
 
 const std = @import("std");
+const fsio = @import("../fsio.zig");
+const stdio = @import("../stdio.zig");
 const compat = @import("../compat.zig");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
@@ -31,15 +33,15 @@ const loop_mod = @import("../agent/loop.zig");
 const protocol = @import("../api/protocol.zig");
 
 /// State shared with streaming callbacks via threadlocal (Zig has no closures).
-threadlocal var active_bridge_stdin: ?std.fs.File = null;
+threadlocal var active_bridge_stdin: ?fsio.File = null;
 threadlocal var active_message_id: ?[]const u8 = null;
 threadlocal var active_bridge_alloc: ?Allocator = null;
 
 pub const WebBridge = struct {
     alloc: Allocator,
     child: Child,
-    stdout_file: std.fs.File,
-    stdin_file: std.fs.File,
+    stdout_file: fsio.File,
+    stdin_file: fsio.File,
     web_argv: []const []const u8,
     // 4MB line buffer (heap-allocated) — large enough for audio base64
     line_buf: []u8,
@@ -53,7 +55,7 @@ pub const WebBridge = struct {
     ///   2. ./web/dist/server.js (production build)
     ///   3. npx tsx web/server/index.ts (dev mode)
     pub fn init(alloc: Allocator, agent: *loop_mod.AgentLoop) !WebBridge {
-        const stderr = std.fs.File.stderr().deprecatedWriter();
+        const stderr = stdio.stderr();
 
         const web_path = getWebPath();
         const web_args = try allocWebArgs(alloc, web_path);
@@ -92,12 +94,12 @@ pub const WebBridge = struct {
 
     /// Main run loop — read IPC messages from sidecar, dispatch to agent.
     pub fn run(self: *WebBridge) void {
-        const stderr = std.fs.File.stderr().deprecatedWriter();
+        const stderr = stdio.stderr();
 
         // Send initial status
         self.sendStatus() catch {};
 
-        const reader = self.stdout_file.deprecatedReader();
+        var reader = stdio.readerFor(self.stdout_file);
         while (true) {
             const line = reader.readUntilDelimiter(self.line_buf, '\n') catch |e| {
                 if (e == error.EndOfStream) break;
@@ -136,7 +138,7 @@ pub const WebBridge = struct {
     }
 
     fn handleMessage(self: *WebBridge, line: []const u8) !void {
-        const stderr = std.fs.File.stderr().deprecatedWriter();
+        const stderr = stdio.stderr();
 
         // Extract "id" and "text" from JSON
         const id = extractJsonString(line, "id") orelse return;
@@ -269,7 +271,7 @@ pub const WebBridge = struct {
 
     /// Handle "listen" message — decode base64 audio, transcribe with Whisper, feed to agent.
     fn handleListen(self: *WebBridge, line: []const u8) !void {
-        const stderr = std.fs.File.stderr().deprecatedWriter();
+        const stderr = stdio.stderr();
         const id = extractJsonString(line, "id") orelse return;
         const audio_data = extractJsonString(line, "data") orelse {
             self.sendError(id, "No audio data") catch {};
@@ -293,16 +295,16 @@ pub const WebBridge = struct {
         defer self.alloc.free(decoded);
 
         // Write decoded audio to temp file
-        const file = std.fs.cwd().createFile(audio_path, .{}) catch {
+        const file = fsio.createFile(audio_path, .{}) catch {
             self.sendError(id, "Failed to write audio file") catch {};
             return;
         };
         file.writeAll(decoded) catch {
-            file.close();
+            fsio.close(file);
             self.sendError(id, "Failed to write audio data") catch {};
             return;
         };
-        file.close();
+        fsio.close(file);
 
         try stderr.writeAll("[web] Transcribing with Whisper...\n");
 
@@ -385,7 +387,7 @@ pub const WebBridge = struct {
 
     fn handleCommand(self: *WebBridge, line: []const u8) !void {
         const command = extractJsonString(line, "command") orelse return;
-        const stderr = std.fs.File.stderr().deprecatedWriter();
+        const stderr = stdio.stderr();
         try stderr.print("[web] Command: {s}\n", .{command});
 
         // Dispatch known commands
@@ -410,7 +412,7 @@ pub const WebBridge = struct {
     fn handleFeedback(self: *WebBridge, line: []const u8) void {
         _ = self;
         _ = line;
-        const stderr = std.fs.File.stderr().deprecatedWriter();
+        const stderr = stdio.stderr();
         stderr.writeAll("[web] Feedback received (not stored in lite version)\n") catch {};
     }
 
@@ -601,7 +603,7 @@ pub const WebBridge = struct {
     /// Parse "files" array from JSON, decode binary content, write to /tmp.
     /// Returns comma-separated list of temp file paths, or null if no binary files.
     fn parseAndSaveFiles(self: *WebBridge, line: []const u8) ?[]const u8 {
-        const stderr = std.fs.File.stderr().deprecatedWriter();
+        const stderr = stdio.stderr();
 
         // Quick check: does the JSON even contain a files array?
         const needle = "\"files\":[";
@@ -690,17 +692,17 @@ pub const WebBridge = struct {
             };
             defer self.alloc.free(decoded);
 
-            const file = std.fs.cwd().createFile(tmp_path, .{}) catch {
+            const file = fsio.createFile(tmp_path, .{}) catch {
                 stderr.print("[web] Failed to create temp file: {s}\n", .{tmp_path}) catch {};
                 search_start = obj_end + 1;
                 continue;
             };
             file.writeAll(decoded) catch {
-                file.close();
+                fsio.close(file);
                 search_start = obj_end + 1;
                 continue;
             };
-            file.close();
+            fsio.close(file);
 
             stderr.print("[web] Saved uploaded file: {s} ({d} bytes)\n", .{ tmp_path, decoded.len }) catch {};
 
@@ -786,15 +788,15 @@ fn webVoiceAudio(audio_path: []const u8) void {
     const path_z = alloc.dupeZ(u8, audio_path) catch return;
     defer alloc.free(path_z);
 
-    const file = std.fs.openFileAbsolute(path_z, .{}) catch return;
-    defer file.close();
+    const file = fsio.openFile(path_z, .{}) catch return;
+    defer fsio.close(file);
 
-    const stat = file.stat() catch return;
+    const stat = fsio.stat(file) catch return;
     if (stat.size > 10_000_000) return; // Skip files > 10MB
 
     const audio_data = alloc.alloc(u8, stat.size) catch return;
     defer alloc.free(audio_data);
-    _ = file.readAll(audio_data) catch return;
+    _ = fsio.readAllAt(file, audio_data, 0) catch return;
 
     const b64 = std.base64.standard.Encoder;
     const encoded_len = b64.calcSize(audio_data.len);
@@ -831,18 +833,18 @@ fn getWebPath() WebPath {
     // 2. Production build — check both CWD layouts
     //    (running from repo root: web/dist/server.js)
     //    (running from web/ dir: dist/server.js)
-    if (std.fs.cwd().access("web/dist/server.js", .{})) |_| {
+    if (fsio.access("web/dist/server.js", .{})) |_| {
         return .{ .binary = "node", .server_path = "web/dist/server.js" };
     } else |_| {}
-    if (std.fs.cwd().access("dist/server.js", .{})) |_| {
+    if (fsio.access("dist/server.js", .{})) |_| {
         return .{ .binary = "node", .server_path = "dist/server.js" };
     } else |_| {}
 
     // 3. Dev mode — check both layouts
-    if (std.fs.cwd().access("web/server/index.ts", .{})) |_| {
+    if (fsio.access("web/server/index.ts", .{})) |_| {
         return .{ .binary = "npx", .server_path = "web/server/index.ts" };
     } else |_| {}
-    if (std.fs.cwd().access("server/index.ts", .{})) |_| {
+    if (fsio.access("server/index.ts", .{})) |_| {
         return .{ .binary = "npx", .server_path = "server/index.ts" };
     } else |_| {}
 
@@ -1042,9 +1044,9 @@ fn transcribeWhisperWeb(alloc: Allocator, audio_path: []const u8) ?[]u8 {
 
     child.spawn() catch return null;
 
-    var stdout_list: ArrayList(u8) = .{};
+    var stdout_list: ArrayList(u8) = .empty;
     defer stdout_list.deinit(alloc);
-    var stderr_list: ArrayList(u8) = .{};
+    var stderr_list: ArrayList(u8) = .empty;
     defer stderr_list.deinit(alloc);
 
     child.collectOutput(alloc, &stdout_list, &stderr_list, 65536) catch return null;

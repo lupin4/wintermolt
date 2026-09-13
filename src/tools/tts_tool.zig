@@ -35,7 +35,7 @@ pub fn executeTool(alloc: Allocator, input_json: []const u8) ![]u8 {
     }
 
     // Build text with optional inline directives
-    var full_text: ArrayList(u8) = .{};
+    var full_text: ArrayList(u8) = .empty;
     defer full_text.deinit(alloc);
 
     // Apply voice/provider overrides as inline directives

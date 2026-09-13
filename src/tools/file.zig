@@ -7,16 +7,17 @@
 // file_edit:  Find-and-replace within a file
 
 const std = @import("std");
+const fsio = @import("../fsio.zig");
 const Allocator = std.mem.Allocator;
 
 const MAX_FILE_SIZE: usize = 1_000_000; // 1MB read limit
 
 /// Read a file, optionally with line offset and limit.
 pub fn readFile(alloc: Allocator, path: []const u8, offset: ?usize, limit: ?usize) ![]u8 {
-    const file = std.fs.cwd().openFile(path, .{}) catch |e| {
+    const file = fsio.openFile(path, .{}) catch |e| {
         return formatError(alloc, "Cannot open file '{s}': {s}", .{ path, @errorName(e) });
     };
-    defer file.close();
+    defer fsio.close(file);
 
     const contents = file.readToEndAlloc(alloc, MAX_FILE_SIZE) catch |e| {
         return formatError(alloc, "Cannot read file '{s}': {s}", .{ path, @errorName(e) });
@@ -27,7 +28,7 @@ pub fn readFile(alloc: Allocator, path: []const u8, offset: ?usize, limit: ?usiz
     const start_line = offset orelse 0;
     const max_lines = limit orelse std.math.maxInt(usize);
 
-    var result: std.ArrayList(u8) = .{};
+    var result: std.ArrayList(u8) = .empty;
     const w = result.writer(alloc);
 
     var line_num: usize = 0;
@@ -53,13 +54,13 @@ pub fn readFile(alloc: Allocator, path: []const u8, offset: ?usize, limit: ?usiz
 pub fn writeFile(alloc: Allocator, path: []const u8, content: []const u8) ![]u8 {
     // Ensure parent directory exists
     if (std.fs.path.dirname(path)) |dir| {
-        std.fs.cwd().makePath(dir) catch {};
+        fsio.makePath(dir) catch {};
     }
 
-    const file = std.fs.cwd().createFile(path, .{}) catch |e| {
+    const file = fsio.createFile(path, .{}) catch |e| {
         return formatError(alloc, "Cannot create file '{s}': {s}", .{ path, @errorName(e) });
     };
-    defer file.close();
+    defer fsio.close(file);
 
     file.writeAll(content) catch |e| {
         return formatError(alloc, "Cannot write to '{s}': {s}", .{ path, @errorName(e) });
@@ -70,10 +71,10 @@ pub fn writeFile(alloc: Allocator, path: []const u8, content: []const u8) ![]u8 
 
 /// Edit a file by replacing old_string with new_string.
 pub fn editFile(alloc: Allocator, path: []const u8, old_string: []const u8, new_string: []const u8) ![]u8 {
-    const file = std.fs.cwd().openFile(path, .{}) catch |e| {
+    const file = fsio.openFile(path, .{}) catch |e| {
         return formatError(alloc, "Cannot open file '{s}': {s}", .{ path, @errorName(e) });
     };
-    defer file.close();
+    defer fsio.close(file);
 
     const contents = file.readToEndAlloc(alloc, MAX_FILE_SIZE) catch |e| {
         return formatError(alloc, "Cannot read file '{s}': {s}", .{ path, @errorName(e) });
@@ -99,10 +100,10 @@ pub fn editFile(alloc: Allocator, path: []const u8, old_string: []const u8, new_
     @memcpy(new_contents[pos + new_string.len ..], contents[pos + old_string.len ..]);
 
     // Write back
-    const out_file = std.fs.cwd().createFile(path, .{}) catch |e| {
+    const out_file = fsio.createFile(path, .{}) catch |e| {
         return formatError(alloc, "Cannot write file '{s}': {s}", .{ path, @errorName(e) });
     };
-    defer out_file.close();
+    defer fsio.close(out_file);
 
     out_file.writeAll(new_contents) catch |e| {
         return formatError(alloc, "Write failed for '{s}': {s}", .{ path, @errorName(e) });

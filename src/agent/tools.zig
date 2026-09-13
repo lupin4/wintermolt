@@ -459,7 +459,7 @@ fn executeSkills(alloc: Allocator, input_json: []const u8) ![]u8 {
         return skills_mod.getSkillDetail(alloc, name);
     }
     // Default: list all skills (comptime catalog + runtime plugins)
-    var buf: ArrayList(u8) = .{};
+    var buf: ArrayList(u8) = .empty;
     defer buf.deinit(alloc);
     const w = buf.writer(alloc);
 
@@ -488,7 +488,7 @@ fn executeMemorySearch(alloc: Allocator, input_json: []const u8) ![]u8 {
     const top_k: u32 = if (top_k_str) |s| std.fmt.parseInt(u32, s, 10) catch 5 else 5;
     const k = @min(top_k, 20);
 
-    var buf: std.ArrayList(u8) = .{};
+    var buf: std.ArrayList(u8) = .empty;
     const w = buf.writer(alloc);
 
     // 1. SQLite conversation history: LIKE-based text search on messages

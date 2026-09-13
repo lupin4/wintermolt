@@ -20,6 +20,8 @@
 //      {"type":"status","agents":2,"uptime":3600}
 
 const std = @import("std");
+const fsio = @import("../fsio.zig");
+const stdio = @import("../stdio.zig");
 const compat = @import("../compat.zig");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
@@ -31,8 +33,8 @@ const pairing = @import("pairing.zig");
 pub const GatewayBridge = struct {
     alloc: Allocator,
     child: Child,
-    stdout_file: std.fs.File,
-    stdin_file: std.fs.File,
+    stdout_file: fsio.File,
+    stdin_file: fsio.File,
     agent: *loop_mod.AgentLoop,
     gateway_argv: []const []const u8,
     line_buf: [65536]u8 = undefined, // 64KB for large API requests
@@ -40,7 +42,7 @@ pub const GatewayBridge = struct {
     registry: pairing.Registry,
 
     pub fn init(alloc: Allocator, agent: *loop_mod.AgentLoop) !GatewayBridge {
-        const stderr = std.fs.File.stderr().deprecatedWriter();
+        const stderr = stdio.stderr();
         const binary = getGatewayPath();
         const argv = try allocGatewayArgs(alloc, binary);
 
@@ -64,7 +66,7 @@ pub const GatewayBridge = struct {
     }
 
     pub fn deinit(self: *GatewayBridge) void {
-        self.stdin_file.close();
+        fsio.close(self.stdin_file);
         _ = self.child.wait() catch {};
         self.alloc.free(self.gateway_argv);
         self.registry.deinit();
@@ -72,8 +74,8 @@ pub const GatewayBridge = struct {
 
     /// Main event loop — reads requests from gateway sidecar, processes them, sends responses.
     pub fn run(self: *GatewayBridge) void {
-        const reader = self.stdout_file.deprecatedReader();
-        const stderr = std.fs.File.stderr().deprecatedWriter();
+        var reader = stdio.readerFor(self.stdout_file);
+        const stderr = stdio.stderr();
 
         while (true) {
             const line = reader.readUntilDelimiter(&self.line_buf, '\n') catch |e| {
@@ -130,7 +132,7 @@ pub const GatewayBridge = struct {
         // Process through agent
         self.agent.startConversation();
 
-        var response_buf: ArrayList(u8) = .{};
+        var response_buf: ArrayList(u8) = .empty;
         defer response_buf.deinit(self.alloc);
 
         self.agent.processInputCapture(text, &response_buf) catch |e| {
@@ -239,7 +241,7 @@ pub const GatewayBridge = struct {
 
     fn handleCommand(_: *GatewayBridge, json: []const u8) !void {
         const cmd = sse.findJsonString(json, "command") orelse return;
-        const stderr = std.fs.File.stderr().deprecatedWriter();
+        const stderr = stdio.stderr();
         stderr.print("[gateway] Command: {s}\n", .{cmd}) catch {};
     }
 
@@ -338,7 +340,7 @@ fn allocGatewayArgs(alloc: Allocator, binary: []const u8) ![]const []const u8 {
 }
 
 fn fileExists(path: []const u8) bool {
-    std.fs.cwd().access(path, .{}) catch return false;
+    fsio.access(path, .{}) catch return false;
     return true;
 }
 
@@ -348,7 +350,7 @@ fn commandExists(name: []const u8) bool {
     while (iter.next()) |dir| {
         var path_buf: [1024]u8 = undefined;
         const full = std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ dir, name }) catch continue;
-        std.fs.cwd().access(full, .{}) catch continue;
+        fsio.access(full, .{}) catch continue;
         return true;
     }
     return false;

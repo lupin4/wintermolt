@@ -15,6 +15,8 @@
 //   wintermolt --mcp-server — MCP JSON-RPC server over stdio
 
 const std = @import("std");
+const fsio = @import("fsio.zig");
+const stdio = @import("stdio.zig");
 const compat = @import("compat.zig");
 const ArrayList = std.ArrayList;
 const config_mod = @import("agent/config.zig");
@@ -233,7 +235,7 @@ pub fn main(init: std.process.Init) !void {
     // api-override (wintermolt.json models.chat.prefer + a cloud key present):
     // switch the primary off ollama onto the API for reliable native tool-calling.
     if (config.api_override) {
-        std.fs.File.stderr().deprecatedWriter().print("[config] api-override → claude ({s})\n", .{config.model}) catch {};
+        stdio.stderr().print("[config] api-override → claude ({s})\n", .{config.model}) catch {};
         agent.switchBackend("claude", config.model);
     }
 
@@ -313,7 +315,7 @@ pub fn main(init: std.process.Init) !void {
                 alloc.free(sid);
             }
 
-            var response_buf: ArrayList(u8) = .{};
+            var response_buf: ArrayList(u8) = .empty;
             defer response_buf.deinit(alloc);
 
             routed_agent.processInputCapture(msg.text, &response_buf) catch |e| {
@@ -400,7 +402,11 @@ pub fn main(init: std.process.Init) !void {
     // Interactive REPL
     try printBanner(stdout);
 
-    const stdin = std.fs.File.stdin().deprecatedReader();
+    // stdio.stdinReader is BUFFERED and returned by value, so it is bound to a
+    // var and used through a pointer -- copying it would strand buffered bytes.
+    // Buffering is wanted here: the REPL reads whole lines.
+    var stdin_reader = stdio.stdinReader();
+    const stdin = &stdin_reader;
     var line_buf: [8192]u8 = undefined;
 
     while (true) {
@@ -729,10 +735,10 @@ fn configureKey(
     // Ensure directory exists
     var dir_buf: [512]u8 = undefined;
     const dir_path = std.fmt.bufPrint(&dir_buf, "{s}/.wintermolt", .{home}) catch return;
-    std.fs.cwd().makePath(dir_path) catch {};
+    fsio.makePath(dir_path) catch {};
 
-    const file = std.fs.cwd().createFile(env_path, .{ .truncate = true }) catch return;
-    defer file.close();
+    const file = fsio.createFile(env_path, .{ .truncate = true }) catch return;
+    defer fsio.close(file);
     file.writeAll(stream.getWritten()) catch {};
 
     try w.writeByte('\n');
@@ -952,7 +958,7 @@ fn spawnSubagent(
     child_agent.startConversation();
 
     // Capture output
-    var output_buf: ArrayList(u8) = .{};
+    var output_buf: ArrayList(u8) = .empty;
     child_agent.processInputCapture(task, &output_buf) catch {
         output_buf.deinit(alloc);
         return alloc.dupe(u8, "Error: Subagent execution failed") catch return @constCast("");

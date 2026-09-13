@@ -136,7 +136,7 @@ pub fn webSearch(alloc: Allocator, query: []const u8, max_results: usize) ![]u8 
 
     // Response buffer
     var resp_buf = ResponseBuffer{
-        .data = .{},
+        .data = .empty,
         .alloc = alloc,
     };
     defer resp_buf.data.deinit(alloc);
@@ -161,7 +161,7 @@ pub fn webSearch(alloc: Allocator, query: []const u8, max_results: usize) ![]u8 
     const html = resp_buf.data.items;
 
     // Parse search results from DDG HTML
-    var results: ArrayList(SearchResult) = .{};
+    var results: ArrayList(SearchResult) = .empty;
     defer results.deinit(alloc);
 
     parseResults(alloc, html, max_results, &results);
@@ -171,7 +171,7 @@ pub fn webSearch(alloc: Allocator, query: []const u8, max_results: usize) ![]u8 
     }
 
     // Format results as clean text
-    var output: ArrayList(u8) = .{};
+    var output: ArrayList(u8) = .empty;
     const w = output.writer(alloc);
 
     try std.fmt.format(w, "Web search: \"{s}\" ({d} results)\n\n", .{ query, results.items.len });
@@ -312,7 +312,7 @@ fn cleanDdgUrl(alloc: Allocator, url: []const u8) ![]const u8 {
 
 /// Simple URL decoder (%XX → byte).
 fn urlDecode(alloc: Allocator, input: []const u8) ![]u8 {
-    var output: ArrayList(u8) = .{};
+    var output: ArrayList(u8) = .empty;
     var i: usize = 0;
     while (i < input.len) {
         if (input[i] == '%' and i + 2 < input.len) {
@@ -343,7 +343,7 @@ fn hexVal(c: u8) ?u8 {
 
 /// Strip HTML tags from text, decode basic HTML entities.
 fn stripHtml(alloc: Allocator, input: []const u8) ![]u8 {
-    var output: ArrayList(u8) = .{};
+    var output: ArrayList(u8) = .empty;
     var i: usize = 0;
     var in_tag = false;
 

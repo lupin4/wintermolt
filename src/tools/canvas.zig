@@ -11,6 +11,7 @@
 // A client renderer consumes this stream and renders using native widgets.
 
 const std = @import("std");
+const stdio = @import("../stdio.zig");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 const sse = @import("../api/sse.zig");
@@ -48,7 +49,7 @@ fn handleCreateOrUpdate(alloc: Allocator, surface_id: []const u8, input_json: []
     };
 
     // Print to stdout for the user to see
-    const stdout = std.fs.File.stdout().deprecatedWriter();
+    const stdout = stdio.stdout();
     stdout.writeByte('\n') catch {};
     stdout.writeAll(rendered) catch {};
     stdout.writeByte('\n') catch {};

@@ -17,6 +17,8 @@
 // child alive (long-running) and reads/writes continuously.
 
 const std = @import("std");
+const fsio = @import("../fsio.zig");
+const stdio = @import("../stdio.zig");
 const compat = @import("../compat.zig");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
@@ -50,8 +52,8 @@ pub const StatusEvent = struct {
 pub const ChatBridge = struct {
     alloc: Allocator,
     child: Child,
-    stdout_file: std.fs.File,
-    stdin_file: std.fs.File,
+    stdout_file: fsio.File,
+    stdin_file: fsio.File,
     chat_argv: []const []const u8, // heap-allocated, freed in deinit
     line_buf: [8192]u8 = undefined,
 
@@ -62,7 +64,7 @@ pub const ChatBridge = struct {
     ///   3. ./chat/wintermolt-chat
     ///   4. bun run chat/src/index.ts (dev mode fallback)
     pub fn init(alloc: Allocator) !ChatBridge {
-        const stderr = std.fs.File.stderr().deprecatedWriter();
+        const stderr = stdio.stderr();
 
         // Determine chat binary path
         const chat_binary = getChatBinaryPath();
@@ -92,10 +94,10 @@ pub const ChatBridge = struct {
     /// Read the next incoming message from the chat sidecar.
     /// Blocks until a message arrives. Returns null on EOF (process exited).
     pub fn readMessage(self: *ChatBridge) ?ChatMessage {
-        const reader = self.stdout_file.deprecatedReader();
+        var reader = stdio.readerFor(self.stdout_file);
         const line = reader.readUntilDelimiter(&self.line_buf, '\n') catch |e| {
             if (e == error.EndOfStream) return null;
-            const stderr = std.fs.File.stderr().deprecatedWriter();
+            const stderr = stdio.stderr();
             stderr.print("[chat] Read error: {s}\n", .{@errorName(e)}) catch {};
             return null;
         };
@@ -143,7 +145,7 @@ pub const ChatBridge = struct {
     /// Shut down the chat sidecar.
     pub fn deinit(self: *ChatBridge) void {
         // Close stdin to signal the child to exit
-        self.stdin_file.close();
+        fsio.close(self.stdin_file);
         // Wait for child to exit
         _ = self.child.wait() catch {};
         // Free heap-allocated argv
@@ -181,7 +183,7 @@ fn parseMessage(json: []const u8) ?ChatMessage {
         const status = sse.findJsonString(json, "status") orelse "unknown";
         const data = sse.findJsonString(json, "data");
 
-        const stderr = std.fs.File.stderr().deprecatedWriter();
+        const stderr = stdio.stderr();
         if (data) |d| {
             stderr.print("[{s}] {s}: {s}\n", .{ platform, status, d }) catch {};
         } else {
@@ -261,7 +263,7 @@ fn allocChatArgs(alloc: Allocator, binary: []const u8) ![]const []const u8 {
 }
 
 fn fileExists(path: []const u8) bool {
-    std.fs.cwd().access(path, .{}) catch return false;
+    fsio.access(path, .{}) catch return false;
     return true;
 }
 
@@ -272,7 +274,7 @@ fn commandExists(name: []const u8) bool {
     while (iter.next()) |dir| {
         var path_buf: [1024]u8 = undefined;
         const full = std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ dir, name }) catch continue;
-        std.fs.cwd().access(full, .{}) catch continue;
+        fsio.access(full, .{}) catch continue;
         return true;
     }
     return false;

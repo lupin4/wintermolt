@@ -65,7 +65,7 @@ fn getTailscaleStatus(alloc: Allocator) ![]u8 {
     defer alloc.free(readable_output);
 
     // Combine both outputs
-    var buf: ArrayList(u8) = .{};
+    var buf: ArrayList(u8) = .empty;
     const w = buf.writer(alloc);
 
     try w.writeAll("=== Tailscale Network Status ===\n\n");
@@ -116,7 +116,7 @@ fn getTailscaleDevices(alloc: Allocator, input_json: []const u8) ![]u8 {
     }
 
     // Prepend header
-    var buf: ArrayList(u8) = .{};
+    var buf: ArrayList(u8) = .empty;
     const w = buf.writer(alloc);
 
     try w.writeAll("=== Tailscale Devices (API) ===\n\n");

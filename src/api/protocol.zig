@@ -9,6 +9,7 @@
 // Wire format reference: https://docs.anthropic.com/en/api/messages
 
 const std = @import("std");
+const stdio = @import("../stdio.zig");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 
@@ -59,7 +60,7 @@ pub const ToolResult = struct {
 
 pub const Message = struct {
     role: Role,
-    content: ArrayList(ContentBlock) = .{},
+    content: ArrayList(ContentBlock) = .empty,
 
     pub fn initUser(alloc: Allocator, text: []const u8) !Message {
         var msg = Message{ .role = .user };
@@ -103,7 +104,7 @@ pub const StopReason = enum {
 /// Accumulated response from a single API call.
 pub const Response = struct {
     stop_reason: StopReason = .unknown,
-    content: ArrayList(ContentBlock) = .{},
+    content: ArrayList(ContentBlock) = .empty,
     alloc: Allocator,
 
     pub fn init(alloc: Allocator) Response {
@@ -129,7 +130,7 @@ pub fn serializeRequest(
     tools: []const ToolDefinition,
     max_tokens: u32,
 ) ![]u8 {
-    var buf: ArrayList(u8) = .{};
+    var buf: ArrayList(u8) = .empty;
     const w = buf.writer(alloc);
 
     try w.writeAll("{\"model\":\"");
@@ -239,7 +240,7 @@ fn serializeMessage(w: anytype, msg: Message) !void {
             .image => |img| {
                 // Debug: log image serialization details to stderr
                 {
-                    const dbg = std.fs.File.stderr().deprecatedWriter();
+                    const dbg = stdio.stderr();
                     dbg.print("[api] Serializing image block: media_type={s}, data_len={d}, data_prefix={s}\n", .{
                         img.media_type,
                         img.data.len,

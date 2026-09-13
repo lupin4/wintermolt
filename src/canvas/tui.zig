@@ -25,7 +25,7 @@ const sse = @import("../api/sse.zig");
 /// The input_json contains the full canvas_update tool input with "components"
 /// and optional "data" fields.
 pub fn renderSurface(alloc: Allocator, input_json: []const u8) ![]u8 {
-    var buf: ArrayList(u8) = .{};
+    var buf: ArrayList(u8) = .empty;
     const w = buf.writer(alloc);
 
     // Extract title if present

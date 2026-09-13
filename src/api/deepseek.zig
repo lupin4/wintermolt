@@ -10,6 +10,7 @@
 // and the OpenAI SSE parser from openai_sse.zig.
 
 const std = @import("std");
+const stdio = @import("../stdio.zig");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 const protocol = @import("protocol.zig");
@@ -90,7 +91,7 @@ pub const DeepSeekClient = struct {
         defer self.alloc.free(body);
 
         {
-            const dbg = std.fs.File.stderr().deprecatedWriter();
+            const dbg = stdio.stderr();
             dbg.print("[deepseek] request: {d} bytes (~{d}k tokens est)\n", .{ body.len, body.len / 3000 }) catch {};
         }
 
@@ -142,7 +143,7 @@ pub const DeepSeekClient = struct {
             const result = curl_easy_perform(handle);
             if (result != .ok) {
                 const err_msg = curl_easy_strerror(result);
-                const stderr = std.fs.File.stderr().deprecatedWriter();
+                const stderr = stdio.stderr();
                 stderr.print("\n[deepseek curl error] {s}\n", .{err_msg}) catch {};
                 return error.CurlRequestFailed;
             }
@@ -155,14 +156,14 @@ pub const DeepSeekClient = struct {
             if (http_code == 429 and attempt < max_retries) {
                 attempt += 1;
                 const wait_secs: u64 = std.math.shl(u64, 2, @as(u6, @intCast(attempt - 1)));
-                const stderr = std.fs.File.stderr().deprecatedWriter();
+                const stderr = stdio.stderr();
                 stderr.print("\n[deepseek] Rate limited, waiting {d}s ({d}/{d})...\n", .{ wait_secs, attempt, max_retries }) catch {};
                 std.Thread.sleep(wait_secs * 1_000_000_000);
                 parser.reset();
                 continue;
             }
 
-            const stderr = std.fs.File.stderr().deprecatedWriter();
+            const stderr = stdio.stderr();
             const error_body = parser.getAccumulatedText();
             if (error_body.len > 0) {
                 stderr.print("\n[deepseek HTTP {d}] {s}\n", .{ http_code, error_body[0..@min(error_body.len, 500)] }) catch {};
@@ -203,7 +204,7 @@ fn serializeOpenAiRequest(
     tools_defs: []const protocol.ToolDefinition,
     max_tokens: u32,
 ) ![]u8 {
-    var buf: ArrayList(u8) = .{};
+    var buf: ArrayList(u8) = .empty;
     const w = buf.writer(alloc);
 
     try w.writeAll("{\"model\":\"");

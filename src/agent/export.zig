@@ -11,6 +11,7 @@
 // Called from REPL via /export <format> <path>
 
 const std = @import("std");
+const fsio = @import("../fsio.zig");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 const storage_mod = @import("storage.zig");
@@ -28,7 +29,7 @@ pub fn exportHistory(
 
     if (convos.len == 0) return 0;
 
-    var buf: ArrayList(u8) = .{};
+    var buf: ArrayList(u8) = .empty;
     const w = buf.writer(alloc);
     var total: usize = 0;
 
@@ -52,8 +53,8 @@ pub fn exportHistory(
     const jsonl = try buf.toOwnedSlice(alloc);
     defer alloc.free(jsonl);
 
-    const file = try std.fs.cwd().createFile(path, .{});
-    defer file.close();
+    const file = try fsio.createFile(path, .{});
+    defer fsio.close(file);
     try file.writeAll(jsonl);
 
     return total;

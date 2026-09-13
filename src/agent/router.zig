@@ -276,7 +276,7 @@ pub const Router = struct {
             return alloc.dupe(u8, "No routing bindings configured. All messages route to default agent.\nUse /route add <agent> <tier> [platform] [channel] [peer] to add bindings.");
         }
 
-        var buf: ArrayList(u8) = .{};
+        var buf: ArrayList(u8) = .empty;
         const w = buf.writer(alloc);
 
         try w.writeAll("Routing Bindings\n");

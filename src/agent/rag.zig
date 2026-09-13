@@ -24,6 +24,7 @@
 // designed for catch-and-ignore at the call site.
 
 const std = @import("std");
+const stdio = @import("../stdio.zig");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 
@@ -102,7 +103,7 @@ pub const RagClient = struct {
         defer self.alloc.free(url);
 
         // Build request body
-        var body_buf: ArrayList(u8) = .{};
+        var body_buf: ArrayList(u8) = .empty;
         const w = body_buf.writer(self.alloc);
         try w.writeAll("{\"query\":{\"inputs\":{\"text\":");
         try writeJsonQuoted(w, query_text);
@@ -144,7 +145,7 @@ pub const RagClient = struct {
         defer self.alloc.free(record_id);
 
         // Build NDJSON body: flat record (Pinecone records API uses application/x-ndjson)
-        var body_buf: ArrayList(u8) = .{};
+        var body_buf: ArrayList(u8) = .empty;
         const w = body_buf.writer(self.alloc);
         try w.writeAll("{\"_id\":");
         try writeJsonQuoted(w, record_id);
@@ -189,7 +190,7 @@ pub const RagClient = struct {
     pub fn buildRagContext(self: *const RagClient, hits: []const SearchHit) ![]u8 {
         if (hits.len == 0) return self.alloc.dupe(u8, "");
 
-        var buf: ArrayList(u8) = .{};
+        var buf: ArrayList(u8) = .empty;
         const w = buf.writer(self.alloc);
 
         try w.writeAll(
@@ -223,7 +224,7 @@ pub const RagClient = struct {
     pub fn buildKnowledgeContext(self: *const RagClient, hits: []const SearchHit, domain_label: []const u8) ![]u8 {
         if (hits.len == 0) return self.alloc.dupe(u8, "");
 
-        var buf: ArrayList(u8) = .{};
+        var buf: ArrayList(u8) = .empty;
         const w = buf.writer(self.alloc);
 
         try std.fmt.format(w,
@@ -255,7 +256,7 @@ pub const RagClient = struct {
         );
         defer self.alloc.free(url);
 
-        var body_buf: ArrayList(u8) = .{};
+        var body_buf: ArrayList(u8) = .empty;
         const w = body_buf.writer(self.alloc);
         try w.writeAll("{\"query\":{\"inputs\":{\"text\":");
         try writeJsonQuoted(w, query_text);
@@ -345,7 +346,7 @@ pub const RagClient = struct {
         const result = curl_easy_perform(handle);
         if (result != .ok) {
             const err_msg = curl_easy_strerror(result);
-            const stderr = std.fs.File.stderr().deprecatedWriter();
+            const stderr = stdio.stderr();
             stderr.print("[rag] curl error: {s}\n", .{err_msg}) catch {};
             return error.CurlRequestFailed;
         }
@@ -354,7 +355,7 @@ pub const RagClient = struct {
         var http_code: c_long = 0;
         _ = curl_easy_getinfo(handle, CURLINFO_RESPONSE_CODE, &http_code);
         if (http_code < 200 or http_code >= 300) {
-            const stderr = std.fs.File.stderr().deprecatedWriter();
+            const stderr = stdio.stderr();
             stderr.print("[rag] HTTP {d}\n", .{http_code}) catch {};
             // Log first 500 chars of response body for debugging
             if (resp.buf.items.len > 0) {
@@ -377,7 +378,7 @@ pub const RagClient = struct {
     /// Response format:
     ///   {"result":{"hits":[{"_id":"...","fields":{"text":"...","conversation_id":"...","role":"..."},"_score":0.95}]}}
     fn parseSearchResponse(self: *const RagClient, json: []const u8) ![]SearchHit {
-        var hits: ArrayList(SearchHit) = .{};
+        var hits: ArrayList(SearchHit) = .empty;
         errdefer {
             for (hits.items) |hit| {
                 self.alloc.free(hit.id);
@@ -453,7 +454,7 @@ pub const RagClient = struct {
 // ---------------------------------------------------------------------------
 
 const ResponseBuffer = struct {
-    buf: ArrayList(u8) = .{},
+    buf: ArrayList(u8) = .empty,
     alloc: Allocator,
 };
 

@@ -18,6 +18,7 @@
 //   error                — API error
 
 const std = @import("std");
+const stdio = @import("../stdio.zig");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 const protocol = @import("protocol.zig");
@@ -46,11 +47,11 @@ pub const TextCallback = *const fn (text: []const u8) void;
 pub const StreamParser = struct {
     alloc: Allocator,
     /// Accumulated text blocks (full text of each text content block)
-    text_blocks: ArrayList([]u8) = .{},
+    text_blocks: ArrayList([]u8) = .empty,
     /// Accumulated tool_use blocks: each entry is {id, name, accumulated_input_json}
-    tool_ids: ArrayList([]u8) = .{},
-    tool_names: ArrayList([]u8) = .{},
-    tool_inputs: ArrayList(ArrayList(u8)) = .{},
+    tool_ids: ArrayList([]u8) = .empty,
+    tool_names: ArrayList([]u8) = .empty,
+    tool_inputs: ArrayList(ArrayList(u8)) = .empty,
     /// Current block type being accumulated ("text" or "tool_use")
     current_block_type: ?[]const u8 = null,
     current_block_index: ?usize = null,
@@ -59,7 +60,7 @@ pub const StreamParser = struct {
     /// Callback for streaming text to terminal
     text_cb: ?TextCallback = null,
     /// Line buffer for partial lines from curl chunks
-    line_buf: ArrayList(u8) = .{},
+    line_buf: ArrayList(u8) = .empty,
     /// Current event type (set by "event:" line)
     pending_event_type: ?EventType = null,
 
@@ -232,7 +233,7 @@ pub const StreamParser = struct {
     fn handleError(self: *StreamParser, data: []const u8) void {
         _ = self;
         // Print API error to stderr
-        const stderr = std.fs.File.stderr().deprecatedWriter();
+        const stderr = stdio.stderr();
         stderr.print("\n[API Error] {s}\n", .{data}) catch {};
     }
 

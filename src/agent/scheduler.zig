@@ -12,6 +12,7 @@
 //   cron   — standard cron expression ("*/5 * * * *")
 
 const std = @import("std");
+const stdio = @import("../stdio.zig");
 const compat = @import("../compat.zig");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
@@ -182,7 +183,7 @@ pub const Scheduler = struct {
         const stmt = try self.prepare(db, sql);
         defer _ = sqlite3_finalize(stmt);
 
-        var buf: ArrayList(u8) = .{};
+        var buf: ArrayList(u8) = .empty;
         const w = buf.writer(alloc);
 
         try w.writeAll("=== Scheduled Jobs ===\n\n");
@@ -284,7 +285,7 @@ pub const Scheduler = struct {
             target_session: ?[]u8,
         };
 
-        var due_jobs: ArrayList(DueJob) = .{};
+        var due_jobs: ArrayList(DueJob) = .empty;
         defer {
             for (due_jobs.items) |job| {
                 alloc.free(job.id);
@@ -322,7 +323,7 @@ pub const Scheduler = struct {
         if (due_jobs.items.len == 0) return null;
 
         // Execute each due job and build summary
-        var result: ArrayList(u8) = .{};
+        var result: ArrayList(u8) = .empty;
         const w = result.writer(alloc);
 
         try std.fmt.format(w, "[scheduler] {d} job(s) due at {d}:\n\n", .{ due_jobs.items.len, now });
@@ -427,7 +428,7 @@ pub const Scheduler = struct {
                 defer _ = sqlite3_finalize(disable_stmt);
                 self.bindText(db, disable_stmt, 1, job_id) catch return;
                 _ = sqlite3_step(disable_stmt);
-                const stderr = std.fs.File.stderr().deprecatedWriter();
+                const stderr = stdio.stderr();
                 stderr.print("[scheduler] Job {s} auto-disabled after {d} errors (max_retries={d})\n", .{ job_id, err_count, max_retries }) catch {};
             }
         }
@@ -514,7 +515,7 @@ pub const Scheduler = struct {
         const rc = sqlite3_exec(db, schema, null, null, &errmsg);
         if (rc != SQLITE_OK) {
             if (errmsg) |msg| {
-                const stderr = std.fs.File.stderr().deprecatedWriter();
+                const stderr = stdio.stderr();
                 stderr.print("[scheduler] Migration error: {s}\n", .{msg}) catch {};
                 sqlite3_free(@ptrCast(msg));
             }
@@ -528,7 +529,7 @@ pub const Scheduler = struct {
         var stmt: ?*sqlite3_stmt = null;
         const rc = sqlite3_prepare_v2(db, sql, -1, &stmt, null);
         if (rc != SQLITE_OK or stmt == null) {
-            const stderr = std.fs.File.stderr().deprecatedWriter();
+            const stderr = stdio.stderr();
             stderr.print("[scheduler] Prepare error: {s}\n", .{sqlite3_errmsg(db)}) catch {};
             return error.SqlitePrepareFailed;
         }
@@ -540,7 +541,7 @@ pub const Scheduler = struct {
         _ = self;
         const rc = sqlite3_bind_text(stmt, index, value.ptr, @intCast(value.len), SQLITE_TRANSIENT);
         if (rc != SQLITE_OK) {
-            const stderr = std.fs.File.stderr().deprecatedWriter();
+            const stderr = stdio.stderr();
             stderr.print("[scheduler] Bind error: {s}\n", .{sqlite3_errmsg(db)}) catch {};
             return error.SqliteBindFailed;
         }

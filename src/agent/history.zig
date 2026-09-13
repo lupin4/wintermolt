@@ -16,7 +16,7 @@ const protocol = @import("../api/protocol.zig");
 
 pub const History = struct {
     alloc: Allocator,
-    messages: ArrayList(protocol.Message) = .{},
+    messages: ArrayList(protocol.Message) = .empty,
     /// Approximate token count (rough estimate: 1 token ~ 3 chars for JSON-heavy content)
     approx_tokens: usize = 0,
     /// Fixed overhead: system prompt + tool definitions + max output tokens (set by loop.zig)

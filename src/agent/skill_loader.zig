@@ -19,6 +19,8 @@
 //   prompt — Description-only (injected into system prompt, no execution)
 
 const std = @import("std");
+const fsio = @import("../fsio.zig");
+const stdio = @import("../stdio.zig");
 const compat = @import("../compat.zig");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
@@ -91,7 +93,7 @@ pub const SkillRegistry = struct {
         // Build tool definitions from loaded skills
         self.buildToolDefs() catch {};
 
-        const stderr = std.fs.File.stderr().deprecatedWriter();
+        const stderr = stdio.stderr();
         if (self.skills.items.len > 0) {
             stderr.print("[skills] Loaded {d} runtime skill(s)\n", .{self.skills.items.len}) catch {};
         }
@@ -110,20 +112,20 @@ pub const SkillRegistry = struct {
     fn scanDirectory(self: *SkillRegistry, dir_path: []const u8) !void {
         if (dir_path.len == 0) return;
 
-        var dir = std.fs.cwd().openDir(dir_path, .{ .iterate = true }) catch return;
-        defer dir.close();
+        var dir = fsio.openDirCwd(dir_path, .{ .iterate = true }) catch return;
+        defer fsio.closeDir(dir);
 
         var iter = dir.iterate();
-        while (try iter.next()) |entry| {
+        while (try fsio.iterNext(&iter)) |entry| {
             if (entry.kind != .directory) continue;
 
             // Check for skill.json in this subdirectory
             const manifest_path = std.fmt.allocPrint(self.alloc, "{s}/{s}/skill.json", .{ dir_path, entry.name }) catch continue;
 
             const manifest_data = blk: {
-                const file = std.fs.cwd().openFile(manifest_path, .{}) catch continue;
-                defer file.close();
-                const stat = file.stat() catch continue;
+                const file = fsio.openFile(manifest_path, .{}) catch continue;
+                defer fsio.close(file);
+                const stat = fsio.stat(file) catch continue;
                 if (stat.size > 64 * 1024) continue; // Skip manifests > 64KB
                 break :blk file.readToEndAlloc(self.alloc, 64 * 1024) catch continue;
             };
@@ -170,7 +172,7 @@ pub const SkillRegistry = struct {
         ;
 
         // Parse keywords into array
-        var keywords: ArrayList([]const u8) = .{};
+        var keywords: ArrayList([]const u8) = .empty;
         // Simple keyword extraction: look for "keywords" array in JSON
         if (std.mem.indexOf(u8, json, "\"keywords\"")) |kw_start| {
             if (std.mem.indexOfPos(u8, json, kw_start, "[")) |arr_start| {
@@ -305,7 +307,7 @@ pub const SkillRegistry = struct {
 
     /// Get prompt addenda from prompt-type skills (injected into system prompt).
     pub fn getPromptAddenda(self: *SkillRegistry, alloc: Allocator) !?[]u8 {
-        var buf: ArrayList(u8) = .{};
+        var buf: ArrayList(u8) = .empty;
         defer buf.deinit(alloc);
 
         var count: usize = 0;

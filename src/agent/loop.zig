@@ -10,6 +10,7 @@
 // no RL, no council/debate, no compressor, no dreamer, no forKernels.
 
 const std = @import("std");
+const stdio = @import("../stdio.zig");
 const compat = @import("../compat.zig");
 const ArrayList = std.ArrayList;
 const Allocator = std.mem.Allocator;
@@ -79,7 +80,7 @@ pub const AgentLoop = struct {
     web_message_id: ?[]const u8,
 
     pub fn init(alloc: Allocator, config: *config_mod.Config) !AgentLoop {
-        const stderr = std.fs.File.stderr().deprecatedWriter();
+        const stderr = stdio.stderr();
 
         // Initialize backend — Ollama is the default (no API key required)
         const backend: Backend = .{ .ollama = ollama_mod.OllamaClient.initWithOptions(
@@ -107,7 +108,7 @@ pub const AgentLoop = struct {
         if (config.pinecone_api_key) |pk| {
             if (config.pinecone_host) |ph| {
                 rag = rag_mod.RagClient.init(alloc, pk, ph);
-                const log = std.fs.File.stderr().deprecatedWriter();
+                const log = stdio.stderr();
                 log.writeAll("[rag] Pinecone RAG enabled\n") catch {};
             }
         }
@@ -119,7 +120,7 @@ pub const AgentLoop = struct {
             tools.getDefinitions().len,
         ) catch "";
 
-        var system_prompt_buf: ArrayList(u8) = .{};
+        var system_prompt_buf: ArrayList(u8) = .empty;
         system_prompt_buf.appendSlice(alloc, config.system_prompt) catch {};
         if (capabilities.len > 0) {
             system_prompt_buf.appendSlice(alloc, capabilities) catch {};
@@ -225,8 +226,8 @@ pub const AgentLoop = struct {
 
     /// Process a user input message through the agentic loop.
     pub fn processInput(self: *AgentLoop, user_text: []const u8) !void {
-        const stdout = std.fs.File.stdout().deprecatedWriter();
-        const stderr = std.fs.File.stderr().deprecatedWriter();
+        const stdout = stdio.stdout();
+        const stderr = stdio.stderr();
 
         // Re-bind tools-module globals to THIS agent (pool/subagents share them)
         self.bindTools();
@@ -409,7 +410,7 @@ pub const AgentLoop = struct {
         text_cb: ?sse.TextCallback,
         tool_defs: []const protocol.ToolDefinition,
     ) !protocol.Response {
-        const stderr = std.fs.File.stderr().deprecatedWriter();
+        const stderr = stdio.stderr();
 
         // --- Output leak guard: arm a per-reply redactor over text_cb -------
         // Secret set is rebuilt per reply from self.config, so /model and any
@@ -514,7 +515,7 @@ pub const AgentLoop = struct {
 
     /// Switch backend at runtime (/model command).
     pub fn switchBackend(self: *AgentLoop, backend_name: []const u8, model_name_arg: ?[]const u8) void {
-        const stderr = std.fs.File.stderr().deprecatedWriter();
+        const stderr = stdio.stderr();
         // Own the model name — callers pass a slice into a reused input
         // buffer (REPL line_buf), which the next read would overwrite,
         // leaving the backend with a garbage model string.
@@ -656,8 +657,8 @@ pub const AgentLoop = struct {
 
     /// Execute tool calls from the API response.
     pub fn executeTools(self: *AgentLoop, response: *const protocol.Response, stdout: anytype) !void {
-        const stderr = std.fs.File.stderr().deprecatedWriter();
-        var results: std.ArrayList(protocol.ToolResult) = .{};
+        const stderr = stdio.stderr();
+        var results: std.ArrayList(protocol.ToolResult) = .empty;
         defer results.deinit(self.alloc);
 
         // Count tool_use blocks for adaptive truncation
@@ -757,7 +758,7 @@ pub const AgentLoop = struct {
     // -----------------------------------------------------------------------
 
     fn printText(text: []const u8) void {
-        const stdout = std.fs.File.stdout().deprecatedWriter();
+        const stdout = stdio.stdout();
         stdout.writeAll(text) catch {};
     }
 
@@ -822,7 +823,7 @@ pub const AgentLoop = struct {
         const secrets = buildSecretSet(cfg, &secret_buf);
         var r = redact.Redactor.init(alloc, secrets, null) catch return null;
         defer r.deinit();
-        var out: std.ArrayListUnmanaged(u8) = .{};
+        var out: std.ArrayListUnmanaged(u8) = .empty;
         errdefer out.deinit(alloc);
         const safe = r.feed(text) catch return null;
         out.appendSlice(alloc, safe) catch return null;

@@ -10,6 +10,8 @@
 // Returns base64-encoded JPEG data for inclusion as Claude Vision content blocks.
 
 const std = @import("std");
+const fsio = @import("../fsio.zig");
+const stdio = @import("../stdio.zig");
 const compat = @import("../compat.zig");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
@@ -62,10 +64,10 @@ pub fn capture(alloc: Allocator, device: ?[]const u8) !CaptureResult {
 
 /// Read a captured image file and return base64-encoded result.
 fn readAndEncode(alloc: Allocator, tmp_path: []const u8) !CaptureResult {
-    const file = try std.fs.cwd().openFile(tmp_path, .{});
-    defer file.close();
+    const file = try fsio.openFile(tmp_path, .{});
+    defer fsio.close(file);
 
-    const stat = try file.stat();
+    const stat = try fsio.stat(file);
     const file_size = stat.size;
     if (file_size == 0 or file_size > 10 * 1024 * 1024) {
         return error.InvalidCaptureSize;
@@ -74,7 +76,7 @@ fn readAndEncode(alloc: Allocator, tmp_path: []const u8) !CaptureResult {
     const image_bytes = try alloc.alloc(u8, @intCast(file_size));
     defer alloc.free(image_bytes);
 
-    const bytes_read = try file.readAll(image_bytes);
+    const bytes_read = try fsio.readAllAt(file, image_bytes, 0);
     if (bytes_read == 0) return error.EmptyCapture;
 
     // Base64 encode
@@ -107,7 +109,7 @@ fn captureOakd(alloc: Allocator, output_path: []const u8, device: []const u8) !v
 
     var script_path: []const u8 = script_paths[0]; // default
     for (script_paths) |sp| {
-        std.fs.cwd().access(sp, .{}) catch continue;
+        fsio.access(sp, .{}) catch continue;
         script_path = sp;
         break;
     }
@@ -121,7 +123,7 @@ fn captureOakd(alloc: Allocator, output_path: []const u8, device: []const u8) !v
     var python_path: []const u8 = python_paths[0]; // default
     for (python_paths) |pp| {
         // Check if the binary exists on PATH by trying to spawn
-        std.fs.cwd().access(pp, .{}) catch continue;
+        fsio.access(pp, .{}) catch continue;
         python_path = pp;
         break;
     }
@@ -137,9 +139,9 @@ fn captureOakd(alloc: Allocator, output_path: []const u8, device: []const u8) !v
 
     try child.spawn();
 
-    var stdout_list: ArrayList(u8) = .{};
+    var stdout_list: ArrayList(u8) = .empty;
     defer stdout_list.deinit(alloc);
-    var stderr_list: ArrayList(u8) = .{};
+    var stderr_list: ArrayList(u8) = .empty;
     defer stderr_list.deinit(alloc);
 
     child.collectOutput(alloc, &stdout_list, &stderr_list, 4096) catch {};
@@ -148,7 +150,7 @@ fn captureOakd(alloc: Allocator, output_path: []const u8, device: []const u8) !v
     switch (term) {
         .Exited => |code| {
             if (code != 0) {
-                const stderr = std.fs.File.stderr().deprecatedWriter();
+                const stderr = stdio.stderr();
                 stderr.print("[oakd] capture failed: {s}\n", .{stderr_list.items}) catch {};
                 return error.CaptureCommandFailed;
             }
@@ -186,9 +188,9 @@ fn captureImagesnap(alloc: Allocator, output_path: []const u8, device: ?[]const 
 
     try child.spawn();
 
-    var stdout_list: ArrayList(u8) = .{};
+    var stdout_list: ArrayList(u8) = .empty;
     defer stdout_list.deinit(alloc);
-    var stderr_list: ArrayList(u8) = .{};
+    var stderr_list: ArrayList(u8) = .empty;
     defer stderr_list.deinit(alloc);
 
     child.collectOutput(alloc, &stdout_list, &stderr_list, 4096) catch {};
@@ -219,9 +221,9 @@ fn captureFfmpeg(alloc: Allocator, output_path: []const u8, device: ?[]const u8)
 
     try child.spawn();
 
-    var stdout_list: ArrayList(u8) = .{};
+    var stdout_list: ArrayList(u8) = .empty;
     defer stdout_list.deinit(alloc);
-    var stderr_list: ArrayList(u8) = .{};
+    var stderr_list: ArrayList(u8) = .empty;
     defer stderr_list.deinit(alloc);
 
     child.collectOutput(alloc, &stdout_list, &stderr_list, 4096) catch {};
@@ -247,9 +249,9 @@ pub fn listDevices(alloc: Allocator) ![]u8 {
 
         try child.spawn();
 
-        var stdout_list: ArrayList(u8) = .{};
+        var stdout_list: ArrayList(u8) = .empty;
         defer stdout_list.deinit(alloc);
-        var stderr_list: ArrayList(u8) = .{};
+        var stderr_list: ArrayList(u8) = .empty;
         defer stderr_list.deinit(alloc);
 
         child.collectOutput(alloc, &stdout_list, &stderr_list, 4096) catch {};
@@ -279,9 +281,9 @@ pub fn listDevices(alloc: Allocator) ![]u8 {
 
         try child.spawn();
 
-        var stdout_list: ArrayList(u8) = .{};
+        var stdout_list: ArrayList(u8) = .empty;
         defer stdout_list.deinit(alloc);
-        var stderr_list: ArrayList(u8) = .{};
+        var stderr_list: ArrayList(u8) = .empty;
         defer stderr_list.deinit(alloc);
 
         child.collectOutput(alloc, &stdout_list, &stderr_list, 4096) catch {};
@@ -307,9 +309,9 @@ pub fn captureScreenshot(alloc: Allocator) !CaptureResult {
         child.stderr_behavior = .Pipe;
         try child.spawn();
 
-        var stdout_list: ArrayList(u8) = .{};
+        var stdout_list: ArrayList(u8) = .empty;
         defer stdout_list.deinit(alloc);
-        var stderr_list: ArrayList(u8) = .{};
+        var stderr_list: ArrayList(u8) = .empty;
         defer stderr_list.deinit(alloc);
         child.collectOutput(alloc, &stdout_list, &stderr_list, 4096) catch {};
 
@@ -327,9 +329,9 @@ pub fn captureScreenshot(alloc: Allocator) !CaptureResult {
         child.stderr_behavior = .Pipe;
         try child.spawn();
 
-        var stdout_list: ArrayList(u8) = .{};
+        var stdout_list: ArrayList(u8) = .empty;
         defer stdout_list.deinit(alloc);
-        var stderr_list: ArrayList(u8) = .{};
+        var stderr_list: ArrayList(u8) = .empty;
         defer stderr_list.deinit(alloc);
         child.collectOutput(alloc, &stdout_list, &stderr_list, 4096) catch {};
 
@@ -343,10 +345,10 @@ pub fn captureScreenshot(alloc: Allocator) !CaptureResult {
     }
 
     // Read the screenshot file
-    const file = try std.fs.cwd().openFile(tmp_path, .{});
-    defer file.close();
+    const file = try fsio.openFile(tmp_path, .{});
+    defer fsio.close(file);
 
-    const stat = try file.stat();
+    const stat = try fsio.stat(file);
     const file_size = stat.size;
     if (file_size == 0 or file_size > 20 * 1024 * 1024) {
         return error.InvalidCaptureSize;
@@ -355,7 +357,7 @@ pub fn captureScreenshot(alloc: Allocator) !CaptureResult {
     const image_bytes = try alloc.alloc(u8, @intCast(file_size));
     defer alloc.free(image_bytes);
 
-    const bytes_read = try file.readAll(image_bytes);
+    const bytes_read = try fsio.readAllAt(file, image_bytes, 0);
     if (bytes_read == 0) return error.EmptyCapture;
 
     // Base64 encode
@@ -441,9 +443,9 @@ fn objectDetect(alloc: Allocator, input_json: []const u8, device: ?[]const u8) !
     // Write request body to temp file (too large for command line)
     const tmp_req = "/tmp/wintermolt_detect_req.json";
     {
-        const f = std.fs.cwd().createFile(tmp_req, .{}) catch
+        const f = fsio.createFile(tmp_req, .{}) catch
             return std.fmt.allocPrint(alloc, "Object detect: cannot create temp request file", .{});
-        defer f.close();
+        defer fsio.close(f);
         f.writeAll(request_body) catch
             return std.fmt.allocPrint(alloc, "Object detect: cannot write temp request file", .{});
     }
@@ -464,8 +466,8 @@ fn objectDetect(alloc: Allocator, input_json: []const u8, device: ?[]const u8) !
     child.stderr_behavior = .Pipe;
     try child.spawn();
 
-    var stdout_list: std.ArrayListAligned(u8, null) = .{};
-    var stderr_list: std.ArrayListAligned(u8, null) = .{};
+    var stdout_list: std.ArrayListAligned(u8, null) = .empty;
+    var stderr_list: std.ArrayListAligned(u8, null) = .empty;
     child.collectOutput(alloc, &stdout_list, &stderr_list, 1024 * 1024) catch {};
     _ = child.wait() catch {};
     const stdout = stdout_list.items;

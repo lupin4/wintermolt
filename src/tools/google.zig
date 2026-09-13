@@ -11,6 +11,7 @@
 //   drive    — list, search, download, upload metadata
 
 const std = @import("std");
+const fsio = @import("../fsio.zig");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 const sse = @import("../api/sse.zig");
@@ -125,7 +126,7 @@ fn executeGmail(alloc: Allocator, auth: *google_auth.GoogleAuth, input_json: []c
 }
 
 fn formatGmailList(alloc: Allocator, auth: *google_auth.GoogleAuth, list_json: []const u8) ![]u8 {
-    var buf: ArrayList(u8) = .{};
+    var buf: ArrayList(u8) = .empty;
     const w = buf.writer(alloc);
 
     try w.writeAll("=== Gmail Messages ===\n\n");
@@ -185,7 +186,7 @@ fn executeCalendar(alloc: Allocator, auth: *google_auth.GoogleAuth, input_json: 
         const time_max = sse.findJsonString(input_json, "time_max") orelse "";
         const max_results = sse.findJsonString(input_json, "max_results") orelse "10";
 
-        var url_buf: ArrayList(u8) = .{};
+        var url_buf: ArrayList(u8) = .empty;
         const uw = url_buf.writer(alloc);
         try uw.writeAll("https://www.googleapis.com/calendar/v3/calendars/primary/events?singleEvents=true&orderBy=startTime");
         try std.fmt.format(uw, "&timeMin={s}&maxResults={s}", .{ time_min, max_results });
@@ -263,7 +264,7 @@ fn executeDrive(alloc: Allocator, auth: *google_auth.GoogleAuth, input_json: []c
         const query = sse.findJsonString(input_json, "query") orelse "";
         const max_results = sse.findJsonString(input_json, "max_results") orelse "20";
 
-        var url_buf: ArrayList(u8) = .{};
+        var url_buf: ArrayList(u8) = .empty;
         const uw = url_buf.writer(alloc);
         try uw.writeAll("https://www.googleapis.com/drive/v3/files?fields=files(id,name,mimeType,modifiedTime,size)");
         try std.fmt.format(uw, "&pageSize={s}", .{max_results});
@@ -309,9 +310,9 @@ fn executeDrive(alloc: Allocator, auth: *google_auth.GoogleAuth, input_json: []c
         const path_z = try alloc.dupeZ(u8, output_path);
         defer alloc.free(path_z);
 
-        const file = std.fs.createFileAbsolute(path_z, .{}) catch
+        const file = fsio.createFile(path_z, .{}) catch
             return std.fmt.allocPrint(alloc, "Error: Could not create output file.", .{});
-        defer file.close();
+        defer fsio.close(file);
         file.writeAll(data) catch {};
 
         return std.fmt.allocPrint(alloc, "Downloaded to: {s} ({d} bytes)", .{ output_path, data.len });

@@ -7,6 +7,7 @@
 // Results sorted by modification time (most recent first).
 
 const std = @import("std");
+const fsio = @import("../fsio.zig");
 const Allocator = std.mem.Allocator;
 
 const MAX_RESULTS: usize = 500;
@@ -14,22 +15,22 @@ const MAX_RESULTS: usize = 500;
 pub fn search(alloc: Allocator, pattern: []const u8, base_path: ?[]const u8) ![]u8 {
     const root = base_path orelse ".";
 
-    var results: std.ArrayList([]u8) = .{};
+    var results: std.ArrayList([]u8) = .empty;
     defer {
         for (results.items) |r| alloc.free(r);
         results.deinit(alloc);
     }
 
     // Walk directory tree
-    var dir = std.fs.cwd().openDir(root, .{ .iterate = true }) catch |e| {
+    var dir = fsio.openDirCwd(root, .{ .iterate = true }) catch |e| {
         return std.fmt.allocPrint(alloc, "Cannot open directory '{s}': {s}", .{ root, @errorName(e) });
     };
-    defer dir.close();
+    defer fsio.closeDir(dir);
 
     var walker = try dir.walk(alloc);
     defer walker.deinit();
 
-    while (try walker.next()) |entry| {
+    while (try fsio.walkerNext(&walker)) |entry| {
         if (results.items.len >= MAX_RESULTS) break;
 
         if (entry.kind != .file) continue;
@@ -45,7 +46,7 @@ pub fn search(alloc: Allocator, pattern: []const u8, base_path: ?[]const u8) ![]
     }
 
     // Build output
-    var output: std.ArrayList(u8) = .{};
+    var output: std.ArrayList(u8) = .empty;
     const w = output.writer(alloc);
 
     if (results.items.len == 0) {

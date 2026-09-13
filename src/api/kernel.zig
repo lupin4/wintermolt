@@ -18,6 +18,8 @@
 // Spec: docs/superpowers/specs/2026-04-26-wintermolt-kernel-backend.md
 
 const std = @import("std");
+const fsio = @import("../fsio.zig");
+const stdio = @import("../stdio.zig");
 const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
@@ -97,7 +99,7 @@ pub const KernelClient = struct {
         if (!is_supported) return Error.KernelBackendUnavailable;
 
         if (tool_defs.len > 0) {
-            const stderr = std.fs.File.stderr().deprecatedWriter();
+            const stderr = stdio.stderr();
             stderr.writeAll("[kernel] tool_defs ignored — kernel backend is text-only. Use /model claude for tool work.\n") catch {};
         }
 
@@ -113,7 +115,7 @@ pub const KernelClient = struct {
         if (!is_supported) return Error.KernelBackendUnavailable;
         if (self.loaded) return;
 
-        const stderr = std.fs.File.stderr().deprecatedWriter();
+        const stderr = stdio.stderr();
         stderr.print("[kernel] Loading {s} from {s}...\n", .{ self.model_alias, self.model_path }) catch {};
 
         c.llama_backend_init();
@@ -178,7 +180,7 @@ pub const KernelClient = struct {
         defer self.alloc.free(chat);
 
         // Track allocated content strings so we can free them
-        var content_alloc: ArrayList([]u8) = .{};
+        var content_alloc: ArrayList([]u8) = .empty;
         defer {
             for (content_alloc.items) |s| self.alloc.free(s);
             content_alloc.deinit(self.alloc);
@@ -194,7 +196,7 @@ pub const KernelClient = struct {
             idx += 1;
         }
         for (messages) |msg| {
-            var buf: ArrayList(u8) = .{};
+            var buf: ArrayList(u8) = .empty;
             const w = buf.writer(self.alloc);
             for (msg.content.items) |block| {
                 switch (block) {
@@ -269,7 +271,7 @@ pub const KernelClient = struct {
 
         // Streaming generation loop
         var resp = protocol.Response.init(self.alloc);
-        var accumulated: ArrayList(u8) = .{};
+        var accumulated: ArrayList(u8) = .empty;
         defer accumulated.deinit(self.alloc);
 
         var generated: u32 = 0;
@@ -348,7 +350,7 @@ pub fn resolveModelPath(alloc: Allocator, alias: []const u8, model_dir: []const 
     // 2. <model_dir>/<alias>.gguf
     {
         const direct = try std.fmt.allocPrint(alloc, "{s}/{s}.gguf", .{ model_dir, alias });
-        if (std.fs.cwd().access(direct, .{})) |_| {
+        if (fsio.access(direct, .{})) |_| {
             return direct;
         } else |_| {
             alloc.free(direct);
@@ -359,11 +361,11 @@ pub fn resolveModelPath(alloc: Allocator, alias: []const u8, model_dir: []const 
     {
         const subdir = try std.fmt.allocPrint(alloc, "{s}/{s}", .{ model_dir, alias });
         defer alloc.free(subdir);
-        if (std.fs.cwd().openDir(subdir, .{ .iterate = true })) |dir_const| {
+        if (fsio.openDirCwd(subdir, .{ .iterate = true })) |dir_const| {
             var dir = dir_const;
-            defer dir.close();
+            defer fsio.closeDir(dir);
             var it = dir.iterate();
-            while (try it.next()) |entry| {
+            while (try fsio.iterNext(&it)) |entry| {
                 if (entry.kind == .file and std.mem.endsWith(u8, entry.name, ".gguf")) {
                     return try std.fmt.allocPrint(alloc, "{s}/{s}", .{ subdir, entry.name });
                 }
@@ -373,13 +375,13 @@ pub fn resolveModelPath(alloc: Allocator, alias: []const u8, model_dir: []const 
 
     // 4. Alias map → download hint
     if (resolveAlias(alias)) |resolved| {
-        const stderr = std.fs.File.stderr().deprecatedWriter();
+        const stderr = stdio.stderr();
         stderr.print(
             "[kernel] Model '{s}' not found locally.\n  Download with:\n    huggingface-cli download {s} {s} --local-dir {s}/{s}\n",
             .{ alias, resolved.repo, resolved.file, model_dir, alias },
         ) catch {};
     } else {
-        const stderr = std.fs.File.stderr().deprecatedWriter();
+        const stderr = stdio.stderr();
         stderr.print(
             "[kernel] Unknown model alias '{s}'. Drop a GGUF at {s}/{s}.gguf or extend resolveAlias() in src/api/kernel.zig.\n",
             .{ alias, model_dir, alias },

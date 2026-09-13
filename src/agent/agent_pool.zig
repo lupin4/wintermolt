@@ -14,6 +14,7 @@
 //   - Each agent gets its own History, Storage conversation, and session state
 
 const std = @import("std");
+const stdio = @import("../stdio.zig");
 const compat = @import("../compat.zig");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
@@ -86,7 +87,7 @@ pub const AgentPool = struct {
         }
 
         // Create new agent
-        const stderr = std.fs.File.stderr().deprecatedWriter();
+        const stderr = stdio.stderr();
         stderr.print("[pool] Creating agent: {s}\n", .{agent_id}) catch {};
 
         var agent = try loop_mod.AgentLoop.init(self.alloc, self.config);
@@ -135,7 +136,7 @@ pub const AgentPool = struct {
     }
 
     fn evictAt(self: *AgentPool, idx: usize) void {
-        const stderr = std.fs.File.stderr().deprecatedWriter();
+        const stderr = stdio.stderr();
         stderr.print("[pool] Evicting agent: {s}\n", .{self.agents.items[idx].agent_id}) catch {};
 
         self.agents.items[idx].agent.deinit();
@@ -152,7 +153,7 @@ pub const AgentPool = struct {
 
     /// Get pool stats as a formatted string. Caller owns the result.
     pub fn getStats(self: *const AgentPool, alloc: Allocator) ![]u8 {
-        var buf: ArrayList(u8) = .{};
+        var buf: ArrayList(u8) = .empty;
         const w = buf.writer(alloc);
 
         try std.fmt.format(w, "Agent Pool: {d}/{d} agents\n", .{ self.agents.items.len, self.max_agents });

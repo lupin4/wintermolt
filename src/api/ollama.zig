@@ -13,6 +13,7 @@
 //   - Supports tool_use via OpenAI-compatible tool_calls format
 
 const std = @import("std");
+const stdio = @import("../stdio.zig");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 const protocol = @import("protocol.zig");
@@ -89,7 +90,7 @@ pub const OllamaClient = struct {
         const use_model = model_override orelse self.model;
 
         // Build JSON body: {"model":"...","prompt":"...","stream":false}
-        var body_buf: ArrayList(u8) = .{};
+        var body_buf: ArrayList(u8) = .empty;
         defer body_buf.deinit(self.alloc);
         const bw = body_buf.writer(self.alloc);
         try bw.writeAll("{\"model\":\"");
@@ -197,7 +198,7 @@ pub const OllamaClient = struct {
         const result = curl_easy_perform(handle);
         if (result != .ok) {
             const err_msg = curl_easy_strerror(result);
-            const stderr = std.fs.File.stderr().deprecatedWriter();
+            const stderr = stdio.stderr();
             stderr.print("\n[ollama curl error] {s}\n", .{err_msg}) catch {};
             return error.CurlRequestFailed;
         }
@@ -209,12 +210,12 @@ pub const OllamaClient = struct {
             // Model likely doesn't support tools — retry without them
             // Also strip tool_use/tool_result messages from history since
             // models reject tool-related messages when tools aren't declared.
-            const stderr = std.fs.File.stderr().deprecatedWriter();
+            const stderr = stdio.stderr();
             stderr.print("[ollama] Model doesn't support tools, retrying without\n", .{}) catch {};
             return self.sendMessageNoTools(system_prompt, messages, text_cb);
         }
         if (http_code != 200) {
-            const stderr = std.fs.File.stderr().deprecatedWriter();
+            const stderr = stdio.stderr();
             stderr.print("\n[ollama HTTP {d}] Request failed\n", .{http_code}) catch {};
             return error.HttpError;
         }
@@ -231,7 +232,7 @@ pub const OllamaClient = struct {
         text_cb: ?sse.TextCallback,
     ) anyerror!protocol.Response {
         // Build filtered message list: skip messages that contain tool blocks
-        var filtered: ArrayList(protocol.Message) = .{};
+        var filtered: ArrayList(protocol.Message) = .empty;
         defer filtered.deinit(self.alloc);
 
         for (messages) |msg| {
@@ -261,7 +262,7 @@ pub const OllamaClient = struct {
         messages: []const protocol.Message,
         tool_defs: []const protocol.ToolDefinition,
     ) ![]u8 {
-        var buf: ArrayList(u8) = .{};
+        var buf: ArrayList(u8) = .empty;
         const w = buf.writer(self.alloc);
 
         try w.writeAll("{\"model\":\"");

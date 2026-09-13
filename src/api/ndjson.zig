@@ -18,9 +18,9 @@ const sse = @import("sse.zig");
 pub const NdjsonParser = struct {
     alloc: Allocator,
     /// Accumulated full response text
-    text_buf: ArrayList(u8) = .{},
+    text_buf: ArrayList(u8) = .empty,
     /// Buffer for partial lines across curl chunks
-    line_buf: ArrayList(u8) = .{},
+    line_buf: ArrayList(u8) = .empty,
     /// Callback for streaming text to terminal
     text_cb: ?sse.TextCallback = null,
     /// Whether we received a done:true message
@@ -29,7 +29,7 @@ pub const NdjsonParser = struct {
     /// by num_ctx — the silent truncation trap that yields one-token replies)
     done_length: bool = false,
     /// Accumulated tool calls (Ollama sends complete tool_calls in one NDJSON line)
-    tool_calls: ArrayList(ToolCall) = .{},
+    tool_calls: ArrayList(ToolCall) = .empty,
 
     const ToolCall = struct {
         id: []u8,

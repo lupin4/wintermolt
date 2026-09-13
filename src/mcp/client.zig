@@ -18,6 +18,8 @@
 // Tool names are prefixed: "filesystem__read_file", "database__query"
 
 const std = @import("std");
+const fsio = @import("../fsio.zig");
+const stdio = @import("../stdio.zig");
 const compat = @import("../compat.zig");
 const Allocator = std.mem.Allocator;
 const Child = std.process.Child;
@@ -37,8 +39,8 @@ pub const RemoteTool = struct {
 pub const McpServer = struct {
     name: []const u8,
     child: Child,
-    stdin_file: std.fs.File,
-    stdout_file: std.fs.File,
+    stdin_file: fsio.File,
+    stdout_file: fsio.File,
     tools: std.ArrayList(RemoteTool),
     alloc: Allocator,
     next_id: i64 = 1,
@@ -66,7 +68,7 @@ pub const McpServer = struct {
         try writer.writeByte('\n');
 
         // Read response line
-        const reader = self.stdout_file.deprecatedReader();
+        var reader = stdio.readerFor(self.stdout_file);
         const line = try reader.readUntilDelimiter(&self.line_buf, '\n');
         return try self.alloc.dupe(u8, std.mem.trim(u8, line, " \t\r"));
     }
@@ -85,7 +87,7 @@ pub const McpServer = struct {
 
     /// Perform the 3-step MCP handshake: initialize → response → initialized notification.
     pub fn handshake(self: *McpServer) !void {
-        const stderr = std.fs.File.stderr().deprecatedWriter();
+        const stderr = stdio.stderr();
 
         // Step 1: Send initialize request
         const init_params =
@@ -108,7 +110,7 @@ pub const McpServer = struct {
         const response = try self.call(mcp.Method.tools_list, "{}");
         defer self.alloc.free(response);
 
-        const stderr = std.fs.File.stderr().deprecatedWriter();
+        const stderr = stdio.stderr();
 
         // Parse the tools array from the result
         // Find "result":{"tools":[...]}
@@ -208,7 +210,7 @@ pub const McpServer = struct {
         self.tools.deinit(self.alloc);
 
         // Close pipes and terminate
-        self.stdin_file.close();
+        fsio.close(self.stdin_file);
         _ = self.child.kill() catch {};
         _ = self.child.wait() catch {};
     }
@@ -228,7 +230,7 @@ pub const McpClientManager = struct {
 
     /// Load and connect to all servers from ~/.wintermolt/mcp.json
     pub fn loadFromConfig(self: *McpClientManager) !void {
-        const stderr = std.fs.File.stderr().deprecatedWriter();
+        const stderr = stdio.stderr();
 
         // Check env override first
         const config_path = compat.getenv("WINTERMOLT_MCP_CONFIG") orelse blk: {
@@ -239,7 +241,7 @@ pub const McpClientManager = struct {
         };
 
         // Read config file
-        const file = std.fs.cwd().openFile(config_path, .{}) catch |e| {
+        const file = fsio.openFile(config_path, .{}) catch |e| {
             if (e == error.FileNotFound) {
                 try stderr.print("[mcp-client] No config at {s}\n", .{config_path});
                 return;
@@ -247,13 +249,13 @@ pub const McpClientManager = struct {
             try stderr.print("[mcp-client] Error reading {s}: {s}\n", .{ config_path, @errorName(e) });
             return;
         };
-        defer file.close();
+        defer fsio.close(file);
 
-        const stat = file.stat() catch return;
+        const stat = fsio.stat(file) catch return;
         if (stat.size > 64 * 1024) return; // Max 64KB config
         const content = self.alloc.alloc(u8, @intCast(stat.size)) catch return;
         defer self.alloc.free(content);
-        const n = file.readAll(content) catch return;
+        const n = fsio.readAllAt(file, content, 0) catch return;
         const json = content[0..n];
 
         try stderr.print("[mcp-client] Loaded config: {s} ({d} bytes)\n", .{ config_path, n });
@@ -314,10 +316,10 @@ pub const McpClientManager = struct {
     }
 
     fn spawnServer(self: *McpClientManager, name: []const u8, command: []const u8, config_json: []const u8) !void {
-        const stderr = std.fs.File.stderr().deprecatedWriter();
+        const stderr = stdio.stderr();
 
         // Build argv: [command, ...args]
-        var argv_list: std.ArrayList([]const u8) = .{};
+        var argv_list: std.ArrayList([]const u8) = .empty;
         const cmd_copy = try self.alloc.dupe(u8, command);
         try argv_list.append(self.alloc, cmd_copy);
 

@@ -23,6 +23,7 @@
 //   - Falls back gracefully when Chrome is not running
 
 const std = @import("std");
+const fsio = @import("../fsio.zig");
 const compat = @import("../compat.zig");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
@@ -198,7 +199,7 @@ fn listTabs(alloc: Allocator) ![]u8 {
         return alloc.dupe(u8, response);
     }
 
-    var output: ArrayList(u8) = .{};
+    var output: ArrayList(u8) = .empty;
     const w = output.writer(alloc);
 
     try std.fmt.format(w, "Open tabs ({d}):\n", .{parsed.value.array.items.len});
@@ -240,7 +241,7 @@ fn newTab(alloc: Allocator, input_json: []const u8) ![]u8 {
     const url = sse.findJsonString(input_json, "url") orelse "about:blank";
 
     // URL-encode the target URL for the query parameter
-    var path: ArrayList(u8) = .{};
+    var path: ArrayList(u8) = .empty;
     defer path.deinit(alloc);
     const pw = path.writer(alloc);
     try std.fmt.format(pw, "/json/new?{s}", .{url});
@@ -263,7 +264,7 @@ fn closeTab(alloc: Allocator, input_json: []const u8) ![]u8 {
     const tab_id = sse.findJsonString(input_json, "tab_id") orelse
         return std.fmt.allocPrint(alloc, "Error: missing 'tab_id' field. Use list_tabs to see available tab IDs.", .{});
 
-    var path: ArrayList(u8) = .{};
+    var path: ArrayList(u8) = .empty;
     defer path.deinit(alloc);
     const pw = path.writer(alloc);
     try std.fmt.format(pw, "/json/close/{s}", .{tab_id});
@@ -358,7 +359,7 @@ fn cdpCommand(alloc: Allocator, ws_url: []const u8, method: []const u8, params_j
     // We try websocat first because it's simpler and faster.
 
     // Escape single quotes in the CDP message for shell embedding
-    var escaped_msg: ArrayList(u8) = .{};
+    var escaped_msg: ArrayList(u8) = .empty;
     defer escaped_msg.deinit(alloc);
     const ew = escaped_msg.writer(alloc);
     for (cdp_msg) |ch| {
@@ -370,7 +371,7 @@ fn cdpCommand(alloc: Allocator, ws_url: []const u8, method: []const u8, params_j
     }
 
     // Escape single quotes in the WS URL too
-    var escaped_url: ArrayList(u8) = .{};
+    var escaped_url: ArrayList(u8) = .empty;
     defer escaped_url.deinit(alloc);
     const uw = escaped_url.writer(alloc);
     for (ws_url) |ch| {
@@ -419,9 +420,9 @@ fn cdpCommand(alloc: Allocator, ws_url: []const u8, method: []const u8, params_j
 
     try child.spawn();
 
-    var stdout_buf: ArrayList(u8) = .{};
+    var stdout_buf: ArrayList(u8) = .empty;
     defer stdout_buf.deinit(alloc);
-    var stderr_buf: ArrayList(u8) = .{};
+    var stderr_buf: ArrayList(u8) = .empty;
     defer stderr_buf.deinit(alloc);
 
     child.collectOutput(alloc, &stdout_buf, &stderr_buf, MAX_CDP_RESPONSE) catch |e| {
@@ -484,7 +485,7 @@ fn navigate(alloc: Allocator, input_json: []const u8) ![]u8 {
         return std.fmt.allocPrint(alloc, "Error: missing 'url' field for navigate operation", .{});
 
     // Build CDP params — escape the URL for JSON embedding
-    var params: ArrayList(u8) = .{};
+    var params: ArrayList(u8) = .empty;
     defer params.deinit(alloc);
     const pw = params.writer(alloc);
     try pw.writeAll("{\"url\":\"");
@@ -520,7 +521,7 @@ fn snapshot(alloc: Allocator, input_json: []const u8) ![]u8 {
         \\})()
     ;
 
-    var params: ArrayList(u8) = .{};
+    var params: ArrayList(u8) = .empty;
     defer params.deinit(alloc);
     const pw = params.writer(alloc);
     try pw.writeAll("{\"expression\":\"");
@@ -541,7 +542,7 @@ fn click(alloc: Allocator, input_json: []const u8) ![]u8 {
         return std.fmt.allocPrint(alloc, "Error: missing 'selector' field for click operation", .{});
 
     // Build a JS expression that finds and clicks the element
-    var js: ArrayList(u8) = .{};
+    var js: ArrayList(u8) = .empty;
     defer js.deinit(alloc);
     const jw = js.writer(alloc);
     try jw.writeAll(
@@ -581,7 +582,7 @@ fn click(alloc: Allocator, input_json: []const u8) ![]u8 {
         \\})()
     );
 
-    var params: ArrayList(u8) = .{};
+    var params: ArrayList(u8) = .empty;
     defer params.deinit(alloc);
     const pw = params.writer(alloc);
     try pw.writeAll("{\"expression\":\"");
@@ -603,7 +604,7 @@ fn typeText(alloc: Allocator, input_json: []const u8) ![]u8 {
         return std.fmt.allocPrint(alloc, "Error: missing 'text' field for type_text operation", .{});
 
     // Build JS that sets the value and dispatches events
-    var js: ArrayList(u8) = .{};
+    var js: ArrayList(u8) = .empty;
     defer js.deinit(alloc);
     const jw = js.writer(alloc);
     try jw.writeAll("(function() { var el = document.querySelector('");
@@ -668,7 +669,7 @@ fn typeText(alloc: Allocator, input_json: []const u8) ![]u8 {
     try std.fmt.format(jw, "{d}", .{text.len});
     try jw.writeAll("' + ' characters into ' + el.tagName.toLowerCase(); })()");
 
-    var params: ArrayList(u8) = .{};
+    var params: ArrayList(u8) = .empty;
     defer params.deinit(alloc);
     const pw = params.writer(alloc);
     try pw.writeAll("{\"expression\":\"");
@@ -686,7 +687,7 @@ fn evaluate(alloc: Allocator, input_json: []const u8) ![]u8 {
     const expression = sse.findJsonString(input_json, "expression") orelse
         return std.fmt.allocPrint(alloc, "Error: missing 'expression' field for evaluate operation", .{});
 
-    var params: ArrayList(u8) = .{};
+    var params: ArrayList(u8) = .empty;
     defer params.deinit(alloc);
     const pw = params.writer(alloc);
     try pw.writeAll("{\"expression\":\"");
@@ -716,10 +717,10 @@ fn screenshot(alloc: Allocator, input_json: []const u8) ![]u8 {
                 };
                 defer alloc.free(decoded);
 
-                const file = std.fs.cwd().createFile(path, .{}) catch |e| {
+                const file = fsio.createFile(path, .{}) catch |e| {
                     return std.fmt.allocPrint(alloc, "Screenshot captured but failed to write to '{s}': {s}", .{ path, @errorName(e) });
                 };
-                defer file.close();
+                defer fsio.close(file);
                 file.writeAll(decoded) catch |e| {
                     return std.fmt.allocPrint(alloc, "Screenshot write error: {s}", .{@errorName(e)});
                 };
@@ -800,7 +801,7 @@ fn extractEvalResult(alloc: Allocator, response: []const u8) ![]u8 {
                 if (sse.findJsonString(inner_result, "value")) |value| {
                     // Truncate very large results
                     if (value.len > MAX_CDP_RESPONSE) {
-                        var output: ArrayList(u8) = .{};
+                        var output: ArrayList(u8) = .empty;
                         const w = output.writer(alloc);
                         try w.writeAll(value[0..MAX_CDP_RESPONSE]);
                         try std.fmt.format(w, "\n\n[truncated: {d} chars total, showing first {d}]", .{ value.len, MAX_CDP_RESPONSE });

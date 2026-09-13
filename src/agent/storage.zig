@@ -14,6 +14,8 @@
 // for planned RAG vector search and MongoDB cloud sync.
 
 const std = @import("std");
+const fsio = @import("../fsio.zig");
+const stdio = @import("../stdio.zig");
 const compat = @import("../compat.zig");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
@@ -261,7 +263,7 @@ pub const Storage = struct {
 
         _ = sqlite3_bind_int64(stmt, 1, @intCast(limit));
 
-        var results: ArrayList(ConversationSummary) = .{};
+        var results: ArrayList(ConversationSummary) = .empty;
         errdefer {
             for (results.items) |item| {
                 self.alloc.free(item.id);
@@ -299,7 +301,7 @@ pub const Storage = struct {
 
         try self.bindText(stmt, 1, conv_id);
 
-        var results: ArrayList(SavedMessage) = .{};
+        var results: ArrayList(SavedMessage) = .empty;
         errdefer {
             for (results.items) |item| {
                 self.alloc.free(item.role);
@@ -369,7 +371,7 @@ pub const Storage = struct {
 
         try self.bindText(stmt, 1, pattern);
 
-        var results: ArrayList(ConversationSummary) = .{};
+        var results: ArrayList(ConversationSummary) = .empty;
         errdefer {
             for (results.items) |item| {
                 self.alloc.free(item.id);
@@ -420,11 +422,11 @@ pub const Storage = struct {
         var stats = DatabaseStats{};
 
         // File size
-        const file = std.fs.cwd().openFile(self.db_path, .{}) catch {
+        const file = fsio.openFile(self.db_path, .{}) catch {
             return stats;
         };
-        defer file.close();
-        const file_stat = file.stat() catch {
+        defer fsio.close(file);
+        const file_stat = fsio.stat(file) catch {
             return stats;
         };
         stats.file_size = file_stat.size;
@@ -468,12 +470,12 @@ pub const Storage = struct {
     /// Run VACUUM and PRAGMA optimize to reclaim space and optimize indexes.
     pub fn compact(self: *Storage) !CompactResult {
         // Get size before
-        const file_before = std.fs.cwd().openFile(self.db_path, .{}) catch return CompactResult{};
-        const stat_before = file_before.stat() catch {
-            file_before.close();
+        const file_before = fsio.openFile(self.db_path, .{}) catch return CompactResult{};
+        const stat_before = fsio.stat(file_before) catch {
+            fsio.close(file_before);
             return CompactResult{};
         };
-        file_before.close();
+        fsio.close(file_before);
         const size_before = stat_before.size;
 
         // Run PRAGMA optimize + VACUUM
@@ -490,12 +492,12 @@ pub const Storage = struct {
         if (rc != SQLITE_OK) return error.VacuumFailed;
 
         // Get size after
-        const file_after = std.fs.cwd().openFile(self.db_path, .{}) catch return CompactResult{ .size_before = size_before };
-        const stat_after = file_after.stat() catch {
-            file_after.close();
+        const file_after = fsio.openFile(self.db_path, .{}) catch return CompactResult{ .size_before = size_before };
+        const stat_after = fsio.stat(file_after) catch {
+            fsio.close(file_after);
             return CompactResult{ .size_before = size_before };
         };
-        file_after.close();
+        fsio.close(file_after);
 
         return .{
             .size_before = size_before,
@@ -532,7 +534,7 @@ pub const Storage = struct {
         defer self.freeMessages(messages);
 
         // Build markdown
-        var buf: ArrayList(u8) = .{};
+        var buf: ArrayList(u8) = .empty;
         const w = buf.writer(alloc);
 
         try std.fmt.format(w, "# {s}\n\n", .{title});
@@ -603,7 +605,7 @@ pub const Storage = struct {
         const rc = sqlite3_exec(self.db, schema, null, null, &errmsg);
         if (rc != SQLITE_OK) {
             if (errmsg) |msg| {
-                const stderr = std.fs.File.stderr().deprecatedWriter();
+                const stderr = stdio.stderr();
                 stderr.print("[storage] Migration error: {s}\n", .{msg}) catch {};
                 sqlite3_free(@ptrCast(msg));
             }
@@ -615,7 +617,7 @@ pub const Storage = struct {
         var stmt: ?*sqlite3_stmt = null;
         const rc = sqlite3_prepare_v2(self.db, sql, -1, &stmt, null);
         if (rc != SQLITE_OK or stmt == null) {
-            const stderr = std.fs.File.stderr().deprecatedWriter();
+            const stderr = stdio.stderr();
             stderr.print("[storage] Prepare error: {s}\n", .{sqlite3_errmsg(self.db)}) catch {};
             return error.SqlitePrepareFailed;
         }
@@ -625,7 +627,7 @@ pub const Storage = struct {
     fn bindText(self: *Storage, stmt: *sqlite3_stmt, index: c_int, value: []const u8) !void {
         const rc = sqlite3_bind_text(stmt, index, value.ptr, @intCast(value.len), SQLITE_TRANSIENT);
         if (rc != SQLITE_OK) {
-            const stderr = std.fs.File.stderr().deprecatedWriter();
+            const stderr = stdio.stderr();
             stderr.print("[storage] Bind error: {s}\n", .{sqlite3_errmsg(self.db)}) catch {};
             return error.SqliteBindFailed;
         }
@@ -688,7 +690,7 @@ fn generateUuid() [36]u8 {
 /// Serialize content blocks to a JSON array string for storage.
 /// Caller owns returned slice.
 fn serializeContentBlocks(alloc: Allocator, blocks: []const protocol.ContentBlock) ![]u8 {
-    var buf: ArrayList(u8) = .{};
+    var buf: ArrayList(u8) = .empty;
     const w = buf.writer(alloc);
 
     try w.writeByte('[');

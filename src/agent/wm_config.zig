@@ -9,6 +9,8 @@
 //! Within the JSON, an agent layers over models, which layer over `defaults`.
 
 const std = @import("std");
+const fsio = @import("../fsio.zig");
+const stdio = @import("../stdio.zig");
 const compat = @import("../compat.zig");
 
 pub const Sampling = struct {
@@ -185,7 +187,7 @@ fn applySampling(p: *Profile, sm: Sampling) void {
 /// (the caller then falls back to .env / defaults). Logs on both success and
 /// parse failure so a typo isn't silently ignored.
 pub fn load(alloc: std.mem.Allocator) ?Loaded {
-    const stderr = std.fs.File.stderr().deprecatedWriter();
+    const stderr = stdio.stderr();
 
     var path_buf: [512]u8 = undefined;
     const path: []const u8 = blk: {
@@ -196,14 +198,14 @@ pub fn load(alloc: std.mem.Allocator) ?Loaded {
         break :blk std.fmt.bufPrint(&path_buf, "{s}/.wintermolt/wintermolt.json", .{home}) catch return null;
     };
 
-    const file = std.fs.cwd().openFile(path, .{}) catch return null; // absent = silent
-    defer file.close();
-    const stat = file.stat() catch return null;
+    const file = fsio.openFile(path, .{}) catch return null; // absent = silent
+    defer fsio.close(file);
+    const stat = fsio.stat(file) catch return null;
     if (stat.size == 0 or stat.size > 256 * 1024) return null;
 
     const bytes = alloc.alloc(u8, @intCast(stat.size)) catch return null;
     defer alloc.free(bytes);
-    const n = file.readAll(bytes) catch return null;
+    const n = fsio.readAllAt(file, bytes, 0) catch return null;
 
     const parsed = std.json.parseFromSlice(Schema, alloc, bytes[0..n], .{
         .ignore_unknown_fields = true,

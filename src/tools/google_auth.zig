@@ -116,7 +116,7 @@ pub const GoogleAuth = struct {
         const handle = curl_easy_init() orelse return error.CurlInitFailed;
         defer curl_easy_cleanup(handle);
 
-        var response = ResponseBuffer{ .data = .{}, .alloc = self.alloc };
+        var response = ResponseBuffer{ .data = .empty, .alloc = self.alloc };
 
         _ = curl_easy_setopt(handle, CURLOPT_URL, "https://oauth2.googleapis.com/token");
         _ = curl_easy_setopt(handle, CURLOPT_POST, @as(c_long, 1));
@@ -165,7 +165,7 @@ pub fn googleGet(alloc: Allocator, auth: *GoogleAuth, url: []const u8) ![]u8 {
     const handle = curl_easy_init() orelse return error.CurlInitFailed;
     defer curl_easy_cleanup(handle);
 
-    var response = ResponseBuffer{ .data = .{}, .alloc = alloc };
+    var response = ResponseBuffer{ .data = .empty, .alloc = alloc };
 
     _ = curl_easy_setopt(handle, CURLOPT_URL, url_z.ptr);
     _ = curl_easy_setopt(handle, CURLOPT_WRITEFUNCTION, &writeCallback);
@@ -201,7 +201,7 @@ pub fn googlePost(alloc: Allocator, auth: *GoogleAuth, url: []const u8, body: []
     const handle = curl_easy_init() orelse return error.CurlInitFailed;
     defer curl_easy_cleanup(handle);
 
-    var response = ResponseBuffer{ .data = .{}, .alloc = alloc };
+    var response = ResponseBuffer{ .data = .empty, .alloc = alloc };
 
     _ = curl_easy_setopt(handle, CURLOPT_URL, url_z.ptr);
     _ = curl_easy_setopt(handle, CURLOPT_POST, @as(c_long, 1));

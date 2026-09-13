@@ -10,8 +10,9 @@
 //
 // WHY THIS EXISTS
 // ---------------
-// Wintermute wrote to the console through `std.fs.File.stderr().deprecatedWriter()`
-// in 186 places and the stdout twin in 14 more. Zig 0.16 removed both halves:
+// wintermolt wrote to the console through
+// `std.fs.File.stderr().deprecatedWriter()` in 68 places and the stdout twin in
+// 3 more. Zig 0.16 removed both halves:
 // std.fs no longer has `File`, and the writer it returned is gone.
 //
 // The 0.16 replacement is File.writer(io, buffer) -- an explicit Io AND a

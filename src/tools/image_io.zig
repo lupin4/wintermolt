@@ -11,6 +11,7 @@
 // and raw pixel buffers (what the kernels need).
 
 const std = @import("std");
+const fsio = @import("../fsio.zig");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 const Child = std.process.Child;
@@ -41,7 +42,7 @@ pub fn readImage(alloc: Allocator, path: []const u8) !Image {
     // Convert to BMP via system tools, then parse BMP
     const tmp_path = "/tmp/wintermolt_img_input.bmp";
     try convertToBmp(alloc, path, tmp_path);
-    defer std.fs.cwd().deleteFile(tmp_path) catch {};
+    defer fsio.deleteFile(tmp_path) catch {};
 
     return readBmp(alloc, tmp_path);
 }
@@ -56,7 +57,7 @@ pub fn writeImage(alloc: Allocator, image: *const Image, path: []const u8) !void
     // Write as BMP first, then convert to target format
     const tmp_path = "/tmp/wintermolt_img_output.bmp";
     try writeBmp(image, tmp_path);
-    defer std.fs.cwd().deleteFile(tmp_path) catch {};
+    defer fsio.deleteFile(tmp_path) catch {};
 
     try convertFromBmp(alloc, tmp_path, path);
 }
@@ -71,12 +72,12 @@ fn hasBmpExtension(path: []const u8) bool {
 // ---------------------------------------------------------------------------
 
 fn readBmp(alloc: Allocator, path: []const u8) !Image {
-    const file = try std.fs.cwd().openFile(path, .{});
-    defer file.close();
+    const file = try fsio.openFile(path, .{});
+    defer fsio.close(file);
 
     // File header (14 bytes)
     var fh: [14]u8 = undefined;
-    const fh_n = try file.readAll(&fh);
+    const fh_n = try fsio.readAllAt(file, &fh, 0);
     if (fh_n != 14) return error.InvalidBmp;
     if (fh[0] != 'B' or fh[1] != 'M') return error.InvalidBmp;
 
@@ -84,7 +85,7 @@ fn readBmp(alloc: Allocator, path: []const u8) !Image {
 
     // DIB header (BITMAPINFOHEADER, 40 bytes minimum)
     var dib: [40]u8 = undefined;
-    const dib_n = try file.readAll(&dib);
+    const dib_n = try fsio.readAllAt(file, &dib, 0);
     if (dib_n < 40) return error.InvalidBmp;
 
     const width: u32 = @bitCast(std.mem.readInt(i32, dib[4..8], .little));
@@ -111,7 +112,7 @@ fn readBmp(alloc: Allocator, path: []const u8) !Image {
     const pixel_data_size: usize = padded_row * height;
     const raw = try alloc.alloc(u8, pixel_data_size);
     defer alloc.free(raw);
-    const n = try file.readAll(raw);
+    const n = try fsio.readAllAt(file, raw, 0);
     if (n < pixel_data_size) return error.TruncatedBmp;
 
     // Convert BGR(A) → RGB, handle bottom-up orientation
@@ -148,8 +149,8 @@ fn readBmp(alloc: Allocator, path: []const u8) !Image {
 // ---------------------------------------------------------------------------
 
 fn writeBmp(image: *const Image, path: []const u8) !void {
-    const file = try std.fs.cwd().createFile(path, .{});
-    defer file.close();
+    const file = try fsio.createFile(path, .{});
+    defer fsio.close(file);
 
     const w = image.width;
     const h = image.height;
@@ -261,9 +262,9 @@ fn runCommand(alloc: Allocator, argv: []const []const u8) !void {
 
     try child.spawn();
 
-    var stdout_list: ArrayList(u8) = .{};
+    var stdout_list: ArrayList(u8) = .empty;
     defer stdout_list.deinit(alloc);
-    var stderr_list: ArrayList(u8) = .{};
+    var stderr_list: ArrayList(u8) = .empty;
     defer stderr_list.deinit(alloc);
 
     child.collectOutput(alloc, &stdout_list, &stderr_list, 64 * 1024) catch {};

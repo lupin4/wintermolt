@@ -24,6 +24,8 @@
 // On non-macOS platforms, init() returns an error.
 
 const std = @import("std");
+const fsio = @import("../fsio.zig");
+const stdio = @import("../stdio.zig");
 const compat = @import("../compat.zig");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
@@ -33,14 +35,14 @@ const sse = @import("../api/sse.zig");
 const loop_mod = @import("../agent/loop.zig");
 
 /// State shared with streaming callbacks via threadlocal.
-threadlocal var menubar_stdin: ?std.fs.File = null;
+threadlocal var menubar_stdin: ?fsio.File = null;
 threadlocal var menubar_alloc: ?Allocator = null;
 
 pub const MenuBarBridge = struct {
     alloc: Allocator,
     child: Child,
-    stdout_file: std.fs.File,
-    stdin_file: std.fs.File,
+    stdout_file: fsio.File,
+    stdin_file: fsio.File,
     line_buf: []u8,
     agent: *loop_mod.AgentLoop,
     argv: []const []const u8,
@@ -48,12 +50,12 @@ pub const MenuBarBridge = struct {
     pub fn init(alloc: Allocator, agent: *loop_mod.AgentLoop) !MenuBarBridge {
         // Only supported on macOS
         if (builtin.os.tag != .macos) {
-            const stderr = std.fs.File.stderr().deprecatedWriter();
+            const stderr = stdio.stderr();
             try stderr.writeAll("[menubar] Menu bar mode requires macOS.\n");
             return error.UnsupportedPlatform;
         }
 
-        const stderr = std.fs.File.stderr().deprecatedWriter();
+        const stderr = stdio.stderr();
 
         const binary_path = getMenuBarBinary();
         const argv = try allocMenuBarArgs(alloc, binary_path);
@@ -90,13 +92,13 @@ pub const MenuBarBridge = struct {
 
     /// Main run loop — read from Swift sidecar, dispatch to agent.
     pub fn run(self: *MenuBarBridge) void {
-        const stderr = std.fs.File.stderr().deprecatedWriter();
+        const stderr = stdio.stderr();
 
         // Send initial status
         self.sendStatus() catch {};
         self.sendIcon("idle") catch {};
 
-        const reader = self.stdout_file.deprecatedReader();
+        var reader = stdio.readerFor(self.stdout_file);
         while (true) {
             const line = reader.readUntilDelimiter(self.line_buf, '\n') catch |e| {
                 if (e == error.EndOfStream) break;
@@ -128,7 +130,7 @@ pub const MenuBarBridge = struct {
     }
 
     fn handleMessage(self: *MenuBarBridge, line: []const u8) !void {
-        const stderr = std.fs.File.stderr().deprecatedWriter();
+        const stderr = stdio.stderr();
         const text = extractJsonString(line, "text") orelse return;
 
         try stderr.print("[menubar] Input: {s}\n", .{text});
@@ -154,7 +156,7 @@ pub const MenuBarBridge = struct {
         self.sendIcon("working") catch {};
 
         // Capture agent output for the response
-        var response_buf: ArrayList(u8) = .{};
+        var response_buf: ArrayList(u8) = .empty;
         defer response_buf.deinit(self.alloc);
 
         self.agent.processInputCapture(text, &response_buf) catch |e| {

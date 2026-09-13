@@ -18,6 +18,7 @@
 //   - Subagents do NOT inherit parent's conversation context
 
 const std = @import("std");
+const stdio = @import("../stdio.zig");
 const compat = @import("../compat.zig");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
@@ -100,7 +101,7 @@ pub const SubagentManager = struct {
         task: []const u8,
         model_override: ?[]const u8,
     ) ![]u8 {
-        const stderr = std.fs.File.stderr().deprecatedWriter();
+        const stderr = stdio.stderr();
         const child_depth = parent_depth + 1;
 
         // Safety checks
@@ -153,7 +154,7 @@ pub const SubagentManager = struct {
 
     /// Get info about active and completed subagents.
     pub fn getStats(self: *const SubagentManager, alloc: Allocator) ![]u8 {
-        var buf: ArrayList(u8) = .{};
+        var buf: ArrayList(u8) = .empty;
         const w = buf.writer(alloc);
 
         try std.fmt.format(w, "Subagents: {d} active, {d} total (max depth: {d}, max concurrent: {d})\n", .{

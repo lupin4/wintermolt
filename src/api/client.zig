@@ -10,6 +10,7 @@
 // to the stream parser in real-time, enabling live text output.
 
 const std = @import("std");
+const stdio = @import("../stdio.zig");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 const protocol = @import("protocol.zig");
@@ -103,7 +104,7 @@ pub const Client = struct {
 
         // Debug: log request size (visible only on stderr)
         {
-            const dbg = std.fs.File.stderr().deprecatedWriter();
+            const dbg = stdio.stderr();
             dbg.print("[api] request: {d} bytes (~{d}k tokens est)\n", .{ body.len, body.len / 3000 }) catch {};
         }
 
@@ -159,7 +160,7 @@ pub const Client = struct {
             if (result != .ok) {
                 // curl-level failure (network, DNS, etc.) — not retryable
                 const err_msg = curl_easy_strerror(result);
-                const stderr = std.fs.File.stderr().deprecatedWriter();
+                const stderr = stdio.stderr();
                 stderr.print("\n[curl error] {s}\n", .{err_msg}) catch {};
                 return error.CurlRequestFailed;
             }
@@ -173,7 +174,7 @@ pub const Client = struct {
                 attempt += 1;
                 // Exponential backoff: 2s, 4s
                 const wait_secs: u64 = std.math.shl(u64, 2, @as(u6, @intCast(attempt - 1)));
-                const stderr = std.fs.File.stderr().deprecatedWriter();
+                const stderr = stdio.stderr();
                 stderr.print("\n[Rate limited] Waiting {d}s before retry ({d}/{d})...\n", .{ wait_secs, attempt, max_retries }) catch {};
                 std.Thread.sleep(wait_secs * 1_000_000_000);
                 // Reset SSE parser state for clean retry
@@ -182,7 +183,7 @@ pub const Client = struct {
             }
 
             // Print error details from response body (parser captured it as raw text)
-            const stderr = std.fs.File.stderr().deprecatedWriter();
+            const stderr = stdio.stderr();
             const error_body = parser.getAccumulatedText();
             if (error_body.len > 0) {
                 stderr.print("\n[HTTP {d}] {s}\n", .{ http_code, error_body[0..@min(error_body.len, 500)] }) catch {};

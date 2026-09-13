@@ -29,11 +29,11 @@ pub const OpenAiStreamParser = struct {
     alloc: Allocator,
     text_cb: ?TextCallback,
     /// Accumulated text content
-    text_buf: ArrayList(u8) = .{},
+    text_buf: ArrayList(u8) = .empty,
     /// Line buffer for SSE parsing
-    line_buf: ArrayList(u8) = .{},
+    line_buf: ArrayList(u8) = .empty,
     /// Accumulated tool call JSON fragments
-    tool_calls: ArrayList(ToolCallAccum) = .{},
+    tool_calls: ArrayList(ToolCallAccum) = .empty,
     /// Final stop reason
     stop_reason: protocol.StopReason = .unknown,
     /// Whether we've received the [DONE] signal

@@ -12,6 +12,7 @@
 // Inline directives allow per-utterance overrides: [[voice:alloy]] [[speed:1.2]]
 
 const std = @import("std");
+const fsio = @import("../fsio.zig");
 const compat = @import("../compat.zig");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
@@ -166,8 +167,8 @@ pub const TtsClient = struct {
         const path_z = try self.alloc.dupeZ(u8, path);
         defer self.alloc.free(path_z);
 
-        const file = try std.fs.createFileAbsolute(path_z, .{});
-        defer file.close();
+        const file = try fsio.createFile(path_z, .{});
+        defer fsio.close(file);
         try file.writeAll(result.audio_data);
 
         return path;
@@ -253,7 +254,7 @@ pub const TtsClient = struct {
         child.stderr_behavior = .Ignore;
         try child.spawn();
 
-        var audio_data: ArrayList(u8) = .{};
+        var audio_data: ArrayList(u8) = .empty;
         const stdout = child.stdout.?;
         while (true) {
             var buf: [4096]u8 = undefined;
@@ -303,16 +304,16 @@ pub const TtsClient = struct {
         const tmp_path_z = try self.alloc.dupeZ(u8, tmp_path);
         defer self.alloc.free(tmp_path_z);
 
-        const file = std.fs.openFileAbsolute(tmp_path_z, .{}) catch
+        const file = fsio.openFile(tmp_path_z, .{}) catch
             return error.TtsFailed;
-        defer file.close();
+        defer fsio.close(file);
 
-        const stat = try file.stat();
+        const stat = try fsio.stat(file);
         const audio_data = try self.alloc.alloc(u8, stat.size);
-        _ = try file.readAll(audio_data);
+        _ = try fsio.readAllAt(file, audio_data, 0);
 
         // Clean up temp file
-        std.fs.deleteFileAbsolute(tmp_path_z) catch {};
+        fsio.deleteFile(tmp_path_z) catch {};
 
         return TtsResult{
             .audio_data = audio_data,
@@ -384,7 +385,7 @@ pub fn parseDirectives(alloc: Allocator, text: []const u8) !TtsDirectives {
         .clean_text = text,
     };
 
-    var clean: ArrayList(u8) = .{};
+    var clean: ArrayList(u8) = .empty;
     var i: usize = 0;
 
     while (i < text.len) {

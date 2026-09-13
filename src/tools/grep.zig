@@ -7,6 +7,7 @@
 // Returns matching lines with file paths and line numbers.
 
 const std = @import("std");
+const fsio = @import("../fsio.zig");
 const Allocator = std.mem.Allocator;
 
 const MAX_FILE_SIZE: usize = 1_000_000;
@@ -20,27 +21,27 @@ pub fn search(
 ) ![]u8 {
     const root = path orelse ".";
 
-    var results: std.ArrayList(u8) = .{};
+    var results: std.ArrayList(u8) = .empty;
     const w = results.writer(alloc);
     var match_count: usize = 0;
 
     // Check if root is a file or directory
-    const stat = std.fs.cwd().statFile(root) catch {
+    const stat = fsio.statFileCwd(root) catch {
         return std.fmt.allocPrint(alloc, "Cannot access '{s}'", .{root});
     };
 
     if (stat.kind == .file) {
         try searchFile(alloc, root, pattern, case_insensitive, w, &match_count);
     } else {
-        var dir = std.fs.cwd().openDir(root, .{ .iterate = true }) catch |e| {
+        var dir = fsio.openDirCwd(root, .{ .iterate = true }) catch |e| {
             return std.fmt.allocPrint(alloc, "Cannot open directory '{s}': {s}", .{ root, @errorName(e) });
         };
-        defer dir.close();
+        defer fsio.closeDir(dir);
 
         var walker = try dir.walk(alloc);
         defer walker.deinit();
 
-        while (try walker.next()) |entry| {
+        while (try fsio.walkerNext(&walker)) |entry| {
             if (match_count >= MAX_RESULTS) break;
             if (entry.kind != .file) continue;
 
@@ -81,8 +82,8 @@ fn searchFile(
     w: anytype,
     match_count: *usize,
 ) !void {
-    const file = std.fs.cwd().openFile(file_path, .{}) catch return;
-    defer file.close();
+    const file = fsio.openFile(file_path, .{}) catch return;
+    defer fsio.close(file);
 
     const contents = file.readToEndAlloc(alloc, MAX_FILE_SIZE) catch return;
     defer alloc.free(contents);

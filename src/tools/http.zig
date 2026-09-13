@@ -11,6 +11,7 @@
 // to prevent context overflow.
 
 const std = @import("std");
+const fsio = @import("../fsio.zig");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 const sse = @import("../api/sse.zig");
@@ -163,7 +164,7 @@ pub fn httpRequest(
 
     // Response buffer
     var resp_buf = ResponseBuffer{
-        .data = .{},
+        .data = .empty,
         .alloc = alloc,
     };
     defer resp_buf.data.deinit(alloc);
@@ -187,7 +188,7 @@ pub fn httpRequest(
     const content_type = if (content_type_ptr) |ct| std.mem.span(ct) else "unknown";
 
     // Build response
-    var output: ArrayList(u8) = .{};
+    var output: ArrayList(u8) = .empty;
     const w = output.writer(alloc);
 
     try std.fmt.format(w, "HTTP {d} {s}\nContent-Type: {s}\nSize: {d} bytes\n\n", .{
@@ -227,7 +228,7 @@ pub fn downloadFile(alloc: Allocator, url: []const u8, output_path: []const u8) 
     _ = curl_easy_setopt(handle, CURLOPT_USERAGENT, "Wintermolt/0.1");
 
     var resp_buf = ResponseBuffer{
-        .data = .{},
+        .data = .empty,
         .alloc = alloc,
     };
     defer resp_buf.data.deinit(alloc);
@@ -249,10 +250,10 @@ pub fn downloadFile(alloc: Allocator, url: []const u8, output_path: []const u8) 
     }
 
     // Write to file
-    const file = std.fs.cwd().createFile(output_path, .{}) catch |e| {
+    const file = fsio.createFile(output_path, .{}) catch |e| {
         return std.fmt.allocPrint(alloc, "Failed to create file '{s}': {s}", .{ output_path, @errorName(e) });
     };
-    defer file.close();
+    defer fsio.close(file);
 
     file.writeAll(resp_buf.data.items) catch |e| {
         return std.fmt.allocPrint(alloc, "Failed to write file: {s}", .{@errorName(e)});

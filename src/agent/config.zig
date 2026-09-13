@@ -79,6 +79,8 @@
 //   ELEVENLABS_VOICE_ID      — Optional. ElevenLabs voice ID
 
 const std = @import("std");
+const fsio = @import("../fsio.zig");
+const stdio = @import("../stdio.zig");
 const compat = @import("../compat.zig");
 const wm_config = @import("wm_config.zig");
 
@@ -92,7 +94,7 @@ pub fn migrateConfig() void {
 
     if (version >= CONFIG_VERSION) return;
 
-    const stderr = std.fs.File.stderr().deprecatedWriter();
+    const stderr = stdio.stderr();
 
     if (version < 1) {
         stderr.writeAll("[config] No keys needed — the default backend is free local Ollama. Optional: 'wintermolt --setup' for cloud API keys. Set WINTERMOLT_CONFIG_VERSION=1 in .env to hide this.\n") catch {};
@@ -108,16 +110,13 @@ pub fn loadDotEnv() void {
     var path_buf: [512]u8 = undefined;
     const path = std.fmt.bufPrint(&path_buf, "{s}/.wintermolt/.env", .{home}) catch return;
 
-    const file = std.fs.cwd().openFile(path, .{}) catch return;
-    defer file.close();
+    const file = fsio.openFile(path, .{}) catch return;
+    defer fsio.close(file);
 
+    // 0.16's File has no bare read(); readAllAt already loops internally until
+    // the buffer is full or the file ends, so the hand-rolled loop goes with it.
     var buf: [8192]u8 = undefined;
-    var total: usize = 0;
-    while (total < buf.len) {
-        const n = file.read(buf[total..]) catch break;
-        if (n == 0) break;
-        total += n;
-    }
+    const total = fsio.readAllAt(file, &buf, 0) catch 0;
 
     var loaded: usize = 0;
     var iter = std.mem.splitScalar(u8, buf[0..total], '\n');
@@ -158,7 +157,7 @@ pub fn loadDotEnv() void {
     }
 
     if (loaded > 0) {
-        const stderr = std.fs.File.stderr().deprecatedWriter();
+        const stderr = stdio.stderr();
         stderr.print("[config] Loaded {d} vars from ~/.wintermolt/.env\n", .{loaded}) catch {};
     }
 }
@@ -384,12 +383,12 @@ pub const Config = struct {
 fn loadConstitution(alloc: std.mem.Allocator) struct { ?[]u8, []const u8 } {
     if (compat.getenv("WINTERMOLT_CONSTITUTION")) |custom_path| {
         if (custom_path.len > 0) {
-            const file = std.fs.cwd().openFile(custom_path, .{}) catch {
-                const stderr = std.fs.File.stderr().deprecatedWriter();
+            const file = fsio.openFile(custom_path, .{}) catch {
+                const stderr = stdio.stderr();
                 stderr.print("[config] Warning: WINTERMOLT_CONSTITUTION={s} not found, using default\n", .{custom_path}) catch {};
                 return loadConstitutionFromHome(alloc);
             };
-            defer file.close();
+            defer fsio.close(file);
             return readConstitutionFile(alloc, file, custom_path);
         }
     }
@@ -403,21 +402,21 @@ fn loadConstitutionFromHome(alloc: std.mem.Allocator) struct { ?[]u8, []const u8
     const path = std.fmt.bufPrint(&path_buf, "{s}/.wintermolt/constitution.md", .{home}) catch
         return .{ null, default_constitution };
 
-    const file = std.fs.cwd().openFile(path, .{}) catch
+    const file = fsio.openFile(path, .{}) catch
         return .{ null, default_constitution };
-    defer file.close();
+    defer fsio.close(file);
     return readConstitutionFile(alloc, file, path);
 }
 
-fn readConstitutionFile(alloc: std.mem.Allocator, file: std.fs.File, path: []const u8) struct { ?[]u8, []const u8 } {
-    const stat = file.stat() catch return .{ null, default_constitution };
+fn readConstitutionFile(alloc: std.mem.Allocator, file: fsio.File, path: []const u8) struct { ?[]u8, []const u8 } {
+    const stat = fsio.stat(file) catch return .{ null, default_constitution };
     if (stat.size == 0 or stat.size > 64 * 1024)
         return .{ null, default_constitution };
 
     const buf = alloc.alloc(u8, @intCast(stat.size)) catch
         return .{ null, default_constitution };
 
-    const n = file.readAll(buf) catch {
+    const n = fsio.readAllAt(file, buf, 0) catch {
         alloc.free(buf);
         return .{ null, default_constitution };
     };
@@ -427,7 +426,7 @@ fn readConstitutionFile(alloc: std.mem.Allocator, file: std.fs.File, path: []con
         return .{ null, default_constitution };
     }
 
-    const stderr = std.fs.File.stderr().deprecatedWriter();
+    const stderr = stdio.stderr();
     stderr.print("[config] Loaded constitution from {s} ({d} bytes)\n", .{ path, n }) catch {};
     return .{ buf, buf[0..n] };
 }
@@ -436,13 +435,13 @@ pub fn getConstitutionPath() ?[]const u8 {
     const home = compat.getenv("HOME") orelse return null;
     var buf: [512]u8 = undefined;
     const path = std.fmt.bufPrint(&buf, "{s}/.wintermolt/constitution.md", .{home}) catch return null;
-    std.fs.cwd().access(path, .{}) catch return null;
+    fsio.access(path, .{}) catch return null;
     return "~/.wintermolt/constitution.md";
 }
 
 /// Build dynamic capabilities section from runtime config.
 pub fn buildCapabilities(config: *const Config, alloc: std.mem.Allocator, tool_count: usize) ![]u8 {
-    var buf: std.ArrayListAligned(u8, null) = .{};
+    var buf: std.ArrayListAligned(u8, null) = .empty;
     const w = buf.writer(alloc);
 
     try w.writeAll("\n\n## Active System Status (auto-generated)\n\n");

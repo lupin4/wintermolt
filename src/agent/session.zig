@@ -235,7 +235,7 @@ pub const SessionManager = struct {
         defer _ = sqlite3_finalize(stmt);
         _ = sqlite3_bind_int64(stmt, 1, @intCast(limit));
 
-        var buf: ArrayList(u8) = .{};
+        var buf: ArrayList(u8) = .empty;
         const w = buf.writer(alloc);
 
         try w.writeAll("=== Active Sessions ===\n\n");

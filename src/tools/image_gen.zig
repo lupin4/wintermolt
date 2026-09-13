@@ -7,6 +7,7 @@
 // and optionally base64 data for vision feedback loops.
 
 const std = @import("std");
+const fsio = @import("../fsio.zig");
 const compat = @import("../compat.zig");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
@@ -153,8 +154,8 @@ fn downloadImage(alloc: Allocator, url: []const u8, output_path: []const u8) !bo
     const path_z = try alloc.dupeZ(u8, output_path);
     defer alloc.free(path_z);
 
-    const file = std.fs.createFileAbsolute(path_z, .{}) catch return false;
-    defer file.close();
+    const file = fsio.createFile(path_z, .{}) catch return false;
+    defer fsio.close(file);
     file.writeAll(response.data.items) catch return false;
 
     return true;

@@ -120,7 +120,7 @@ pub const skills = [_]SkillEntry{
 
 /// List all skills with short descriptions (for the `list` operation).
 pub fn listSkills(alloc: Allocator) ![]u8 {
-    var buf: std.ArrayList(u8) = .{};
+    var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(alloc);
 
     const writer = buf.writer(alloc);
@@ -143,7 +143,7 @@ pub fn listSkills(alloc: Allocator) ![]u8 {
 pub fn getSkillDetail(alloc: Allocator, name: []const u8) ![]u8 {
     for (&skills) |*s| {
         if (std.mem.eql(u8, s.name, name)) {
-            var buf: std.ArrayList(u8) = .{};
+            var buf: std.ArrayList(u8) = .empty;
             defer buf.deinit(alloc);
 
             const writer = buf.writer(alloc);

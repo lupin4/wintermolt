@@ -8,6 +8,8 @@
 // Secrets are redacted before returning output to the API context.
 
 const std = @import("std");
+const fsio = @import("../fsio.zig");
+const stdio = @import("../stdio.zig");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 const Child = std.process.Child;
@@ -45,9 +47,9 @@ fn executeHost(alloc: Allocator, command: []const u8) ![]u8 {
     try child.spawn();
 
     // Collect stdout and stderr using the 0.15.2 poll-based API
-    var stdout_list: ArrayList(u8) = .{};
+    var stdout_list: ArrayList(u8) = .empty;
     defer stdout_list.deinit(alloc);
-    var stderr_list: ArrayList(u8) = .{};
+    var stderr_list: ArrayList(u8) = .empty;
     defer stderr_list.deinit(alloc);
 
     child.collectOutput(alloc, &stdout_list, &stderr_list, MAX_OUTPUT) catch |e| {
@@ -64,7 +66,7 @@ fn executeHost(alloc: Allocator, command: []const u8) ![]u8 {
     const stderr_out = stderr_list.items;
 
     // Build output: combine stdout + stderr + exit code
-    var result: ArrayList(u8) = .{};
+    var result: ArrayList(u8) = .empty;
     const w = result.writer(alloc);
 
     if (stdout.len > 0) {
@@ -101,9 +103,12 @@ fn executeSandboxed(alloc: Allocator, command: []const u8) ![]u8 {
     var timeout_buf: [16]u8 = undefined;
     const timeout_str = std.fmt.bufPrint(&timeout_buf, "{d}", .{sandbox_timeout}) catch "30";
 
-    // Get CWD for volume mount
-    var cwd_buf: [4096]u8 = undefined;
-    const cwd = std.fs.cwd().realpath(".", &cwd_buf) catch "/tmp";
+    // Get CWD for volume mount. 0.16 has no buffer-filling realpath -- only
+    // realPathFileAlloc -- so this allocates and frees, falling back to "/tmp"
+    // exactly as before. The optional keeps the fallback out of the free path.
+    const cwd_owned: ?[]u8 = fsio.realpathAlloc(alloc, ".") catch null;
+    defer if (cwd_owned) |c| alloc.free(c);
+    const cwd: []const u8 = cwd_owned orelse "/tmp";
 
     // Build docker run command args
     var vol_buf: [4200]u8 = undefined;
@@ -134,14 +139,14 @@ fn executeSandboxed(alloc: Allocator, command: []const u8) ![]u8 {
 
     child.spawn() catch |e| {
         // Docker not available — fall back to host if sandbox not strictly required
-        const stderr = std.fs.File.stderr().deprecatedWriter();
+        const stderr = stdio.stderr();
         stderr.print("[sandbox] Docker unavailable ({s}), falling back to host execution\n", .{@errorName(e)}) catch {};
         return executeHost(alloc, command);
     };
 
-    var stdout_list: ArrayList(u8) = .{};
+    var stdout_list: ArrayList(u8) = .empty;
     defer stdout_list.deinit(alloc);
-    var stderr_list: ArrayList(u8) = .{};
+    var stderr_list: ArrayList(u8) = .empty;
     defer stderr_list.deinit(alloc);
 
     child.collectOutput(alloc, &stdout_list, &stderr_list, MAX_OUTPUT) catch |e| {
@@ -153,7 +158,7 @@ fn executeSandboxed(alloc: Allocator, command: []const u8) ![]u8 {
 
     const term = try child.wait();
 
-    var result: ArrayList(u8) = .{};
+    var result: ArrayList(u8) = .empty;
     const w = result.writer(alloc);
 
     if (stdout_list.items.len > 0) try w.writeAll(stdout_list.items);
@@ -217,7 +222,7 @@ fn redactSecrets(alloc: Allocator, raw: []u8) ![]u8 {
     // Fast path: short output unlikely to contain secrets
     if (raw.len < 10) return raw;
 
-    var output: ArrayList(u8) = .{};
+    var output: ArrayList(u8) = .empty;
     const w = output.writer(alloc);
 
     var line_iter = std.mem.splitScalar(u8, raw, '\n');

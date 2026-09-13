@@ -19,6 +19,8 @@
 // Zero tool duplication — reuses existing tools.zig dispatch + definitions.
 
 const std = @import("std");
+const fsio = @import("../fsio.zig");
+const stdio = @import("../stdio.zig");
 const Allocator = std.mem.Allocator;
 const mcp = @import("protocol.zig");
 const json_rpc = @import("json_rpc.zig");
@@ -31,14 +33,13 @@ const SERVER_VERSION = "1.0.0";
 /// Run the MCP server loop on stdin/stdout.
 /// This function does not return until stdin is closed (client disconnects).
 pub fn run(alloc: Allocator) !void {
-    const stdin = std.fs.File.stdin();
-    const stdout_file = std.fs.File.stdout();
-    const stderr = std.fs.File.stderr().deprecatedWriter();
+    const stdout_file = fsio.File.stdout();
+    const stderr = stdio.stderr();
 
     try stderr.print("[mcp] Wintermolt MCP server starting (protocol {s})\n", .{mcp.PROTOCOL_VERSION});
 
     var line_buf: [65536]u8 = undefined;
-    const reader = stdin.deprecatedReader();
+    var reader = stdio.stdinReader();
 
     while (true) {
         // Read one JSON line from stdin
@@ -126,7 +127,7 @@ fn handleToolsList(alloc: Allocator, id: mcp.JsonRpcId) ![]u8 {
     const defs = tools.getDefinitions();
 
     // Build JSON array of MCP tool definitions
-    var buf: std.ArrayList(u8) = .{};
+    var buf: std.ArrayList(u8) = .empty;
     const w = buf.writer(alloc);
     try w.writeAll("{\"tools\":[");
 
@@ -162,7 +163,7 @@ fn handleToolsCall(alloc: Allocator, id: mcp.JsonRpcId, params_json: ?[]const u8
     // Get the arguments object
     const arguments_json = json_rpc.findJsonObject(params, "arguments") orelse "{}";
 
-    const stderr = std.fs.File.stderr().deprecatedWriter();
+    const stderr = stdio.stderr();
     try stderr.print("[mcp] Calling tool: {s}\n", .{tool_name});
 
     // Execute the tool via Wintermolt's existing dispatch
@@ -207,8 +208,8 @@ fn formatToolResult(alloc: Allocator, id: mcp.JsonRpcId, text: []const u8, is_er
 }
 
 /// Write a JSON line to stdout (with newline delimiter).
-fn writeLine(file: std.fs.File, data: []const u8) !void {
-    const writer = file.deprecatedWriter();
+fn writeLine(file: fsio.File, data: []const u8) !void {
+    const writer = stdio.writerFor(file);
     try writer.writeAll(data);
     try writer.writeByte('\n');
 }
