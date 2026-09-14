@@ -49,6 +49,14 @@ pub fn stdHandle(which: u32) ?HANDLE {
     return h;
 }
 
+/// True when `handle` is a console. GetConsoleMode fails on a pipe or a file,
+/// which is how a redirected standard handle is told apart from a terminal.
+pub fn isConsole(handle: ?HANDLE) bool {
+    const h = handle orelse return false;
+    var mode: u32 = 0;
+    return GetConsoleMode(h, &mode) != 0;
+}
+
 pub const IoError = error{IoFailed};
 
 /// WriteFile until every byte is gone. A single call may write a short count to

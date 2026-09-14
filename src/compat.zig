@@ -120,6 +120,24 @@ pub fn restoreConsole() void {
 }
 
 // =============================================================================
+// stdioIsTerminal — are stdin AND stdout both an interactive terminal?
+//
+// Decides between the full-screen TUI and the plain REPL. Both ends, because
+// the TUI reads raw keys from stdin and draws on stdout: `printf ... | wintermolt`
+// (stdin a pipe) and `wintermolt > log` (stdout a file) must stay line-oriented.
+// Windows: GetConsoleMode succeeds only on a console handle, so pipes, files and
+// mintty's pty pipes all read as "not a terminal". POSIX: isatty.
+// =============================================================================
+
+pub fn stdioIsTerminal() bool {
+    if (comptime builtin.os.tag == .windows) {
+        return win32.isConsole(win32.stdHandle(win32.STD_INPUT_HANDLE)) and
+            win32.isConsole(win32.stdHandle(win32.STD_OUTPUT_HANDLE));
+    }
+    return std.c.isatty(std.posix.STDIN_FILENO) != 0 and std.c.isatty(std.posix.STDOUT_FILENO) != 0;
+}
+
+// =============================================================================
 // stdinReadyToRead — non-blocking "is there input on stdin?" check.
 //
 // On POSIX this is poll() with a 0ms timeout. On Windows we use

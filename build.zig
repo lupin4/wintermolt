@@ -239,6 +239,18 @@ pub fn build(b: *std.Build) void {
     });
     exe_mod.addImport("llama_c", llama_c_mod);
 
+    // --- zortui: the full-screen TUI (src/tui.zig) ---
+    // A plain vendored copy (vendor/zortui, see VENDORED.md) imported as a
+    // module -- not a package fetched over the network. zortui needs Zig 0.16,
+    // which wintermolt already does: main takes a std.process.Init, and 0.15.2
+    // has no such type.
+    const zortui_mod = b.createModule(.{
+        .root_source_file = b.path("vendor/zortui/src/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    exe_mod.addImport("zortui", zortui_mod);
+
     const exe = b.addExecutable(.{
         .name = "wintermolt",
         .root_module = exe_mod,
@@ -283,11 +295,29 @@ pub fn build(b: *std.Build) void {
     // prebuilt archives, so `zig build test` remains narrower than it looks --
     // a pre-existing gap, flagged not silently widened.
     test_mod.addImport("llama_c", llama_c_mod);
+    test_mod.addImport("zortui", zortui_mod);
     const unit_tests = b.addTest(.{ .root_module = test_mod });
 
     const run_unit_tests = b.addRunArtifact(unit_tests);
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_unit_tests.step);
+
+    // The TUI, headless: zortui's testing module renders to cells, so these run
+    // without a terminal and with a fake agent instead of a model. Its own
+    // binary, for the reason the compat files below have theirs. Also runnable
+    // alone as `zig build test-tui`.
+    const tui_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/tui.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+            .imports = &.{.{ .name = "zortui", .module = zortui_mod }},
+        }),
+    });
+    const run_tui_tests = b.addRunArtifact(tui_tests);
+    test_step.dependOn(&run_tui_tests.step);
+    b.step("test-tui", "Run the headless TUI tests").dependOn(&run_tui_tests.step);
 
     // The 0.16 compatibility layer is tested per FILE.
     //

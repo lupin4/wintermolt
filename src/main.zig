@@ -6,7 +6,9 @@
 // Open-core: MIT. No forKernels, no proprietary subsystems.
 //
 // Usage:
-//   wintermolt              — interactive REPL
+//   wintermolt              — interactive: full-screen TUI in a terminal,
+//                             plain REPL when stdin/stdout are not a terminal
+//   wintermolt --plain      — plain REPL even in a terminal (or WINTERMOLT_PLAIN=1)
 //   wintermolt --help       — show help
 //   wintermolt -e "prompt"  — single-shot execution
 //   wintermolt --keys       — configure API keys
@@ -38,8 +40,21 @@ const http_tool = @import("tools/http.zig");
 const protocol = @import("api/protocol.zig");
 const setup = @import("setup.zig");
 const export_mod = @import("agent/export.zig");
+const tui = @import("tui.zig");
+const zortui = @import("zortui");
 
 const VERSION = "0.5.0";
+
+/// A panic while the TUI owns the terminal would leave the shell in raw mode on
+/// the alternate screen, with the panic message drawn somewhere invisible. Put
+/// the terminal back first; everything else is the default handler. No-op
+/// unless the TUI is up.
+pub const panic = std.debug.FullPanic(panicRestoringTerminal);
+
+fn panicRestoringTerminal(msg: []const u8, first_trace_addr: ?usize) noreturn {
+    tui.emergencyRestore();
+    std.debug.defaultPanic(msg, first_trace_addr);
+}
 
 // 0.16/0.17 hand main a `std.process.Init`: it carries the args, the environment
 // and a properly configured Io, replacing the positionless std.process helpers
@@ -96,7 +111,11 @@ pub fn main(init: std.process.Init) !void {
     var extension_cmd: ?[]const u8 = null;
     var extension_arg: ?[]const u8 = null;
     var run_setup = false;
+    var plain_mode = false;
     while (args.next()) |arg| {
+        if (std.mem.eql(u8, arg, "--plain")) {
+            plain_mode = true;
+        }
         if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             try printHelp(stdout);
             return;
@@ -407,6 +426,18 @@ pub fn main(init: std.process.Init) !void {
         return;
     }
 
+    // Interactive. In a real terminal that is the full-screen TUI. Piped stdin, a
+    // redirected stdout, --plain or WINTERMOLT_PLAIN=1 keep the plain REPL below,
+    // unchanged.
+    if (!plain_mode and !plainRequestedByEnv() and compat.stdioIsTerminal()) {
+        if (runTui(init, alloc, &agent, &session_mgr)) |_| {
+            return;
+        } else |e| {
+            if (e != error.TuiUnavailable) return e;
+            try stderr.writeAll("[tui] Could not take over the terminal; using the plain REPL (--plain skips this).\n");
+        }
+    }
+
     // Interactive REPL
     try printBanner(stdout);
 
@@ -435,107 +466,13 @@ pub fn main(init: std.process.Init) !void {
         if (trimmed.len == 0) continue;
 
         // REPL commands
-        if (std.mem.eql(u8, trimmed, "/quit") or std.mem.eql(u8, trimmed, "/exit")) {
-            try stdout.writeAll("Goodbye.\n");
-            return;
-        }
-        if (std.mem.eql(u8, trimmed, "/clear") or std.mem.eql(u8, trimmed, "/new")) {
-            agent.archiveAndReset();
-            try stdout.writeAll("Conversation cleared.\n");
-            continue;
-        }
-        if (std.mem.eql(u8, trimmed, "/help")) {
-            try printHelp(stdout);
-            continue;
-        }
-        if (std.mem.startsWith(u8, trimmed, "/model")) {
-            const arg = std.mem.trim(u8, trimmed[6..], " \t");
-            try handleModel(&agent, stdout, if (arg.len > 0) arg else null);
-            continue;
-        }
-        if (std.mem.startsWith(u8, trimmed, "/keys")) {
-            const arg = std.mem.trim(u8, trimmed[5..], " \t");
-            try handleKeysCmd(alloc, stdout, stdin, if (arg.len > 0) arg else null);
-            continue;
-        }
-        if (std.mem.eql(u8, trimmed, "/look")) {
-            try handleLook(&agent, alloc, stdout, stderr, null);
-            continue;
-        }
-        if (std.mem.startsWith(u8, trimmed, "/look ")) {
-            const prompt = std.mem.trim(u8, trimmed[6..], " \t");
-            try handleLook(&agent, alloc, stdout, stderr, if (prompt.len > 0) prompt else null);
-            continue;
-        }
-        if (std.mem.startsWith(u8, trimmed, "/screenshot")) {
-            const prompt = blk: {
-                if (trimmed.len > 11) {
-                    const p = std.mem.trim(u8, trimmed[11..], " \t");
-                    break :blk if (p.len > 0) p else null;
-                }
-                break :blk null;
-            };
-            try handleScreenshot(&agent, alloc, stdout, stderr, prompt);
-            continue;
-        }
-        if (std.mem.eql(u8, trimmed, "/stats")) {
-            try handleStats(&agent, stdout);
-            continue;
-        }
-        if (std.mem.eql(u8, trimmed, "/compact")) {
-            agent.history.emergencyCompact();
-            try stdout.writeAll("History compacted.\n");
-            continue;
-        }
-        if (std.mem.startsWith(u8, trimmed, "/constitution")) {
-            const arg = std.mem.trim(u8, trimmed[13..], " \t");
-            try handleConstitution(&agent, alloc, stdout, stderr, arg);
-            continue;
-        }
-        if (std.mem.startsWith(u8, trimmed, "/export")) {
-            const arg = std.mem.trim(u8, trimmed[7..], " \t");
-            try handleExport(&agent, alloc, stdout, stderr, if (arg.len > 0) arg else null);
-            continue;
-        }
-        if (std.mem.startsWith(u8, trimmed, "/download ")) {
-            const args_str = std.mem.trim(u8, trimmed[10..], " \t");
-            if (args_str.len > 0) {
-                try handleDownload(alloc, stdout, stderr, args_str);
-            } else {
-                try stdout.writeAll("Usage: /download <url> [output_path]\n");
-            }
-            continue;
-        }
-        if (std.mem.startsWith(u8, trimmed, "/schedule")) {
-            const arg = std.mem.trim(u8, trimmed[9..], " \t");
-            try handleScheduleCmd(alloc, stdout, stderr, arg);
-            continue;
-        }
-        if (std.mem.eql(u8, trimmed, "/tailscale")) {
-            try handleTailscale(alloc, stdout, stderr);
-            continue;
-        }
-        if (std.mem.startsWith(u8, trimmed, "/route")) {
-            const arg = std.mem.trim(u8, trimmed[6..], " \t");
-            try handleRouteCmd(alloc, stdout, stderr, arg);
-            continue;
-        }
-        if (std.mem.eql(u8, trimmed, "/agents")) {
-            try handleAgentsCmd(alloc, stdout);
-            continue;
-        }
-        if (std.mem.startsWith(u8, trimmed, "/tts ")) {
-            try handleTtsCmd(alloc, stdout, stderr, trimmed[5..]);
-            continue;
-        }
-        if (std.mem.eql(u8, trimmed, "/tts")) {
-            try handleTtsCmd(alloc, stdout, stderr, "");
-            continue;
-        }
-        if (std.mem.startsWith(u8, trimmed, "/session")) {
-            const arg = std.mem.trim(u8, trimmed[8..], " \t");
-            try handleSessionCmd(&session_mgr, alloc, stdout, arg);
-            continue;
+        switch (try dispatchCommand(&agent, alloc, &session_mgr, stdout, stderr, stdin, trimmed)) {
+            .quit => {
+                try stdout.writeAll("Goodbye.\n");
+                return;
+            },
+            .handled => continue,
+            .prompt => {},
         }
 
         // Process through agentic loop
@@ -544,6 +481,256 @@ pub fn main(init: std.process.Init) !void {
         };
 
         try stdout.writeByte('\n');
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Slash-command dispatch (shared by the plain REPL and the TUI)
+// ---------------------------------------------------------------------------
+
+const CommandOutcome = enum { quit, handled, prompt };
+
+/// Run `trimmed` if it is a slash command. `.prompt` means it is not one and
+/// goes to the model; `.quit` is left to the caller. This is the REPL's command
+/// chain moved out of the loop as-is, so the REPL and the TUI run the very same
+/// handlers. `stdout`/`stderr` are anything with writeAll/print/writeByte;
+/// `stdin` is anything with readUntilDelimiter (only /keys reads it).
+fn dispatchCommand(
+    agent: *loop_mod.AgentLoop,
+    alloc: std.mem.Allocator,
+    session_mgr: *session_mod.SessionManager,
+    stdout: anytype,
+    stderr: anytype,
+    stdin: anytype,
+    trimmed: []const u8,
+) !CommandOutcome {
+    if (std.mem.eql(u8, trimmed, "/quit") or std.mem.eql(u8, trimmed, "/exit")) {
+        return .quit;
+    }
+    if (std.mem.eql(u8, trimmed, "/clear") or std.mem.eql(u8, trimmed, "/new")) {
+        agent.archiveAndReset();
+        try stdout.writeAll("Conversation cleared.\n");
+        return .handled;
+    }
+    if (std.mem.eql(u8, trimmed, "/help")) {
+        try printHelp(stdout);
+        return .handled;
+    }
+    if (std.mem.startsWith(u8, trimmed, "/model")) {
+        const arg = std.mem.trim(u8, trimmed[6..], " \t");
+        try handleModel(agent, stdout, if (arg.len > 0) arg else null);
+        return .handled;
+    }
+    if (std.mem.startsWith(u8, trimmed, "/keys")) {
+        const arg = std.mem.trim(u8, trimmed[5..], " \t");
+        try handleKeysCmd(alloc, stdout, stdin, if (arg.len > 0) arg else null);
+        return .handled;
+    }
+    if (std.mem.eql(u8, trimmed, "/look")) {
+        try handleLook(agent, alloc, stdout, stderr, null);
+        return .handled;
+    }
+    if (std.mem.startsWith(u8, trimmed, "/look ")) {
+        const prompt = std.mem.trim(u8, trimmed[6..], " \t");
+        try handleLook(agent, alloc, stdout, stderr, if (prompt.len > 0) prompt else null);
+        return .handled;
+    }
+    if (std.mem.startsWith(u8, trimmed, "/screenshot")) {
+        const prompt = blk: {
+            if (trimmed.len > 11) {
+                const p = std.mem.trim(u8, trimmed[11..], " \t");
+                break :blk if (p.len > 0) p else null;
+            }
+            break :blk null;
+        };
+        try handleScreenshot(agent, alloc, stdout, stderr, prompt);
+        return .handled;
+    }
+    if (std.mem.eql(u8, trimmed, "/stats")) {
+        try handleStats(agent, stdout);
+        return .handled;
+    }
+    if (std.mem.eql(u8, trimmed, "/compact")) {
+        agent.history.emergencyCompact();
+        try stdout.writeAll("History compacted.\n");
+        return .handled;
+    }
+    if (std.mem.startsWith(u8, trimmed, "/constitution")) {
+        const arg = std.mem.trim(u8, trimmed[13..], " \t");
+        try handleConstitution(agent, alloc, stdout, stderr, arg);
+        return .handled;
+    }
+    if (std.mem.startsWith(u8, trimmed, "/export")) {
+        const arg = std.mem.trim(u8, trimmed[7..], " \t");
+        try handleExport(agent, alloc, stdout, stderr, if (arg.len > 0) arg else null);
+        return .handled;
+    }
+    if (std.mem.startsWith(u8, trimmed, "/download ")) {
+        const args_str = std.mem.trim(u8, trimmed[10..], " \t");
+        if (args_str.len > 0) {
+            try handleDownload(alloc, stdout, stderr, args_str);
+        } else {
+            try stdout.writeAll("Usage: /download <url> [output_path]\n");
+        }
+        return .handled;
+    }
+    if (std.mem.startsWith(u8, trimmed, "/schedule")) {
+        const arg = std.mem.trim(u8, trimmed[9..], " \t");
+        try handleScheduleCmd(alloc, stdout, stderr, arg);
+        return .handled;
+    }
+    if (std.mem.eql(u8, trimmed, "/tailscale")) {
+        try handleTailscale(alloc, stdout, stderr);
+        return .handled;
+    }
+    if (std.mem.startsWith(u8, trimmed, "/route")) {
+        const arg = std.mem.trim(u8, trimmed[6..], " \t");
+        try handleRouteCmd(alloc, stdout, stderr, arg);
+        return .handled;
+    }
+    if (std.mem.eql(u8, trimmed, "/agents")) {
+        try handleAgentsCmd(alloc, stdout);
+        return .handled;
+    }
+    if (std.mem.startsWith(u8, trimmed, "/tts ")) {
+        try handleTtsCmd(alloc, stdout, stderr, trimmed[5..]);
+        return .handled;
+    }
+    if (std.mem.eql(u8, trimmed, "/tts")) {
+        try handleTtsCmd(alloc, stdout, stderr, "");
+        return .handled;
+    }
+    if (std.mem.startsWith(u8, trimmed, "/session")) {
+        const arg = std.mem.trim(u8, trimmed[8..], " \t");
+        try handleSessionCmd(session_mgr, alloc, stdout, arg);
+        return .handled;
+    }
+    return .prompt;
+}
+
+// ---------------------------------------------------------------------------
+// Full-screen TUI glue (the screen itself is src/tui.zig)
+// ---------------------------------------------------------------------------
+
+/// WINTERMOLT_PLAIN=1 -- any value except empty or "0" -- keeps the plain REPL.
+fn plainRequestedByEnv() bool {
+    const v = compat.getenv("WINTERMOLT_PLAIN") orelse return false;
+    return v.len > 0 and !std.mem.eql(u8, v, "0");
+}
+
+/// What the TUI drives: the REPL's own dispatch, on the TUI's worker thread.
+/// Handlers and the agent write through stdio.stdout()/stderr(), which the
+/// session's sink routes into the transcript.
+const TuiRunner = struct {
+    agent: *loop_mod.AgentLoop,
+    alloc: std.mem.Allocator,
+    session_mgr: *session_mod.SessionManager,
+
+    fn runner(self: *TuiRunner) tui.Runner {
+        return .{ .ctx = self, .run = run, .info = info };
+    }
+
+    fn run(ctx: *anyopaque, line: []const u8, _: *tui.Inbox) void {
+        const self: *TuiRunner = @ptrCast(@alignCast(ctx));
+        const err = stdio.stderr();
+        self.runLine(line, stdio.stdout(), err) catch |e| {
+            err.print("[Error] {s}\n", .{@errorName(e)}) catch {};
+        };
+        // The REPL runs due jobs before every prompt.
+        _ = self.agent.tickScheduler();
+    }
+
+    fn runLine(self: *TuiRunner, line: []const u8, out: stdio.FileWriter, err: stdio.FileWriter) !void {
+        if (keysCommandPrompts(line)) {
+            try out.writeAll("/keys asks for a value on stdin, which the full-screen view owns. " ++
+                "Use /keys list here, or run `wintermolt --keys` (or --plain).\n");
+            return;
+        }
+        var no_stdin: NoStdin = .{};
+        switch (try dispatchCommand(self.agent, self.alloc, self.session_mgr, out, err, &no_stdin, line)) {
+            .quit, .handled => {},
+            .prompt => self.agent.processInput(line) catch |e| {
+                try err.print("[Error] {s}\n", .{@errorName(e)});
+            },
+        }
+    }
+
+    /// UI thread, between jobs only.
+    fn info(ctx: *anyopaque) tui.Info {
+        const self: *TuiRunner = @ptrCast(@alignCast(ctx));
+        const b = self.agent.getBackendInfo();
+        return .{ .backend = b.name, .model = b.model };
+    }
+};
+
+/// stdin for handlers run inside the TUI, which owns the real one: end of input.
+const NoStdin = struct {
+    fn readUntilDelimiter(_: *NoStdin, _: []u8, _: u8) error{EndOfStream}![]u8 {
+        return error.EndOfStream;
+    }
+};
+
+/// /keys prompts on stdin unless it is `/keys list` or `/keys status`.
+fn keysCommandPrompts(line: []const u8) bool {
+    if (!std.mem.startsWith(u8, line, "/keys")) return false;
+    const arg = std.mem.trim(u8, line[5..], " \t");
+    return !(std.mem.eql(u8, arg, "list") or std.mem.eql(u8, arg, "status"));
+}
+
+/// Run the TUI until the user quits. error.TuiUnavailable means the terminal
+/// could not be taken over and nothing was changed, so the caller can fall back
+/// to the plain REPL.
+fn runTui(
+    init: std.process.Init,
+    alloc: std.mem.Allocator,
+    agent: *loop_mod.AgentLoop,
+    session_mgr: *session_mod.SessionManager,
+) !void {
+    const gpa = init.gpa;
+    var runner: TuiRunner = .{ .agent = agent, .alloc = alloc, .session_mgr = session_mgr };
+    var session = tui.Session.init(gpa, runner.runner(), VERSION);
+    defer session.deinit();
+
+    // Due jobs, as the REPL runs them before its first prompt -- before the
+    // screen is taken, so anything they print reaches the normal console.
+    _ = agent.tickScheduler();
+
+    var app = zortui.App.init(gpa, .{
+        .terminal = .{ .env = .fromEnviron(&init.minimal.environ), .title = "wintermolt" },
+        // Quitting is ours: `q` has to be typeable; Esc, Ctrl+C and /quit quit.
+        .quit_keys = &.{},
+        .focus_navigation = false,
+    }) catch return error.TuiUnavailable;
+
+    tui.active.store(true, .release);
+    session.installSink();
+    const result = tuiLoop(&app, &session);
+    tui.active.store(false, .release);
+    app.deinit(); // alternate screen off, console modes and code pages back
+
+    if (session.busy) {
+        // A request is still running on the worker. It cannot be cancelled in
+        // the middle of an HTTP call, and joining would hang until the model
+        // finished, so the process ends here. The sink stays installed so the
+        // worker's remaining output cannot land on the restored shell.
+        compat.restoreConsole();
+        const direct: stdio.FileWriter = .{ .fd = stdio.stdout().fd };
+        direct.writeAll("Interrupted.\n") catch {};
+        std.process.exit(if (result) |_| 0 else |_| 1);
+    }
+    session.uninstallSink();
+    try result;
+    stdio.stdout().writeAll("Goodbye.\n") catch {};
+}
+
+fn tuiLoop(app: *zortui.App, session: *tui.Session) !void {
+    while (app.running() and !session.quit_requested) {
+        for (try app.poll()) |event| session.handleEvent(event);
+        // A finished job repaints the whole screen: a child process with an
+        // inherited stderr (an MCP server) can write to the console behind the
+        // sink's back. Ctrl+L does the same on demand.
+        if (session.pump() or session.takeRedraw()) app.redraw();
+        _ = try app.draw(zortui.Body.with(session, tui.Session.view));
     }
 }
 
@@ -1202,7 +1389,9 @@ fn printHelp(w: anytype) !void {
         \\  /tailscale     — Show Tailscale network status
         \\
         \\Modes:
-        \\  wintermolt              — Interactive REPL
+        \\  wintermolt              — Interactive chat: full-screen in a terminal,
+        \\                            plain REPL when stdin or stdout is not a terminal
+        \\  wintermolt --plain      — Plain line-by-line REPL, even in a terminal
         \\  wintermolt -e "prompt"  — Single-shot execution
         \\  wintermolt --keys       — Configure API keys
         \\  wintermolt --setup      — Alias for --keys
@@ -1241,6 +1430,7 @@ fn printHelp(w: anytype) !void {
         \\  DEEPSEEK_API_KEY     — DeepSeek API key
         \\  QWEN_API_KEY         — Qwen API key
         \\  TAILSCALE_API_KEY    — Tailscale API key (optional, for device list)
+        \\  WINTERMOLT_PLAIN=1   — Same as --plain: never open the full-screen view
         \\
     );
 }
