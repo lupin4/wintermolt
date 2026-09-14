@@ -12,6 +12,7 @@
 // Tokens are cached in memory and auto-refreshed when expired.
 
 const std = @import("std");
+const curl_tls = @import("../curl_tls.zig");
 const fsio = @import("../fsio.zig");
 const compat = @import("../compat.zig");
 const Allocator = std.mem.Allocator;
@@ -115,6 +116,7 @@ pub const GoogleAuth = struct {
         defer self.alloc.free(body);
 
         const handle = curl_easy_init() orelse return error.CurlInitFailed;
+        curl_tls.configure(handle);
         defer curl_easy_cleanup(handle);
 
         var response = ResponseBuffer{ .data = .empty, .alloc = self.alloc };
@@ -164,6 +166,7 @@ pub fn googleGet(alloc: Allocator, auth: *GoogleAuth, url: []const u8) ![]u8 {
     defer alloc.free(url_z);
 
     const handle = curl_easy_init() orelse return error.CurlInitFailed;
+    curl_tls.configure(handle);
     defer curl_easy_cleanup(handle);
 
     var response = ResponseBuffer{ .data = .empty, .alloc = alloc };
@@ -200,6 +203,7 @@ pub fn googlePost(alloc: Allocator, auth: *GoogleAuth, url: []const u8, body: []
     defer alloc.free(url_z);
 
     const handle = curl_easy_init() orelse return error.CurlInitFailed;
+    curl_tls.configure(handle);
     defer curl_easy_cleanup(handle);
 
     var response = ResponseBuffer{ .data = .empty, .alloc = alloc };

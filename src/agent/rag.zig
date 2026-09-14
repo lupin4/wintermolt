@@ -24,6 +24,7 @@
 // designed for catch-and-ignore at the call site.
 
 const std = @import("std");
+const curl_tls = @import("../curl_tls.zig");
 const stdio = @import("../stdio.zig");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
@@ -301,6 +302,7 @@ pub const RagClient = struct {
 
     fn doPost(self: *const RagClient, url: []const u8, body: []const u8, content_type: []const u8) ![]u8 {
         const handle = curl_easy_init() orelse return error.CurlInitFailed;
+        curl_tls.configure(handle);
         defer curl_easy_cleanup(handle);
 
         // URL (null-terminate for curl)

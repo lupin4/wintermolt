@@ -7,6 +7,7 @@
 // and optionally base64 data for vision feedback loops.
 
 const std = @import("std");
+const curl_tls = @import("../curl_tls.zig");
 const fsio = @import("../fsio.zig");
 const compat = @import("../compat.zig");
 const Allocator = std.mem.Allocator;
@@ -67,6 +68,7 @@ pub fn executeTool(alloc: Allocator, input_json: []const u8) ![]u8 {
     // Call OpenAI API
     const handle = curl_easy_init() orelse
         return alloc.dupe(u8, "Error: Failed to initialize HTTP client.");
+    curl_tls.configure(handle);
     defer curl_easy_cleanup(handle);
 
     var response = ResponseBuffer{ .data = .empty, .alloc = alloc };
@@ -132,6 +134,7 @@ pub fn executeTool(alloc: Allocator, input_json: []const u8) ![]u8 {
 
 fn downloadImage(alloc: Allocator, url: []const u8, output_path: []const u8) !bool {
     const handle = curl_easy_init() orelse return false;
+    curl_tls.configure(handle);
     defer curl_easy_cleanup(handle);
 
     var response = ResponseBuffer{ .data = .empty, .alloc = alloc };

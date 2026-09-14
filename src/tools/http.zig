@@ -11,6 +11,7 @@
 // to prevent context overflow.
 
 const std = @import("std");
+const curl_tls = @import("../curl_tls.zig");
 const fsio = @import("../fsio.zig");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
@@ -95,6 +96,7 @@ pub fn httpRequest(
 ) ![]u8 {
     const handle = curl_easy_init() orelse
         return std.fmt.allocPrint(alloc, "Error: failed to initialize HTTP client", .{});
+    curl_tls.configure(handle);
     defer curl_easy_cleanup(handle);
 
     // Set URL (null-terminated)
@@ -217,6 +219,7 @@ pub fn httpRequest(
 pub fn downloadFile(alloc: Allocator, url: []const u8, output_path: []const u8) ![]u8 {
     const handle = curl_easy_init() orelse
         return std.fmt.allocPrint(alloc, "Error: failed to initialize HTTP client", .{});
+    curl_tls.configure(handle);
     defer curl_easy_cleanup(handle);
 
     const url_z = try alloc.dupeZ(u8, url);

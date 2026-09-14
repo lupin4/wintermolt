@@ -10,6 +10,7 @@
 // to the stream parser in real-time, enabling live text output.
 
 const std = @import("std");
+const curl_tls = @import("../curl_tls.zig");
 const fsio = @import("../fsio.zig");
 const stdio = @import("../stdio.zig");
 const Allocator = std.mem.Allocator;
@@ -111,6 +112,7 @@ pub const Client = struct {
 
         // Initialize curl
         const handle = curl_easy_init() orelse return error.CurlInitFailed;
+        curl_tls.configure(handle);
         defer curl_easy_cleanup(handle);
 
         // Set URL

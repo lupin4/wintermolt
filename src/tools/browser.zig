@@ -23,6 +23,7 @@
 //   - Falls back gracefully when Chrome is not running
 
 const std = @import("std");
+const curl_tls = @import("../curl_tls.zig");
 const fsio = @import("../fsio.zig");
 const compat = @import("../compat.zig");
 const Allocator = std.mem.Allocator;
@@ -148,6 +149,7 @@ fn cdpHttpGet(alloc: Allocator, path: []const u8) ![]u8 {
 
     const handle = curl_easy_init() orelse
         return error.CurlInitFailed;
+    curl_tls.configure(handle);
     defer curl_easy_cleanup(handle);
 
     _ = curl_easy_setopt(handle, CURLOPT_URL, url_z.ptr);

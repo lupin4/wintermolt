@@ -13,6 +13,7 @@
 //   - Supports tool_use via OpenAI-compatible tool_calls format
 
 const std = @import("std");
+const curl_tls = @import("../curl_tls.zig");
 const stdio = @import("../stdio.zig");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
@@ -85,6 +86,7 @@ pub const OllamaClient = struct {
     /// Short timeout (default 5s) — if Ollama is slow or down, caller should fail open.
     pub fn quickCheck(self: *const OllamaClient, prompt: []const u8, model_override: ?[]const u8, timeout_secs: u32) ![]u8 {
         const handle = curl_easy_init() orelse return error.CurlInitFailed;
+        curl_tls.configure(handle);
         defer curl_easy_cleanup(handle);
 
         const use_model = model_override orelse self.model;
@@ -161,6 +163,7 @@ pub const OllamaClient = struct {
 
         // Initialize curl
         const handle = curl_easy_init() orelse return error.CurlInitFailed;
+        curl_tls.configure(handle);
         defer curl_easy_cleanup(handle);
 
         // Build URL: {base_url}/api/chat

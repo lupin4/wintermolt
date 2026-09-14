@@ -80,6 +80,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   rejected with HTTP 400 because `arguments` was sent as a JSON string;
   Ollama's `/api/chat` takes an object. The 400 handler no longer claims the
   model lacks tool support.
+- **HTTPS on Windows.** Every HTTPS request failed with "Problem with the SSL
+  CA cert (path? access rights?)": web_search, http_request, `/download`, cloud
+  backends and OAuth. The MSYS2 libcurl wintermolt links looks for its CA
+  bundle at a path that exists only inside MSYS2. Every curl handle now sets
+  `CURLSSLOPT_NATIVE_CA` (`src/curl_tls.zig`), so the Windows certificate
+  store is used. Certificate verification stays on, and other platforms are
+  unchanged. Plain-HTTP Ollama was never affected.
 
 ## [0.5.0] — 2026-06-04
 

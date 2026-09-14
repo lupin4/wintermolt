@@ -12,6 +12,7 @@
 //   cron   — standard cron expression ("*/5 * * * *")
 
 const std = @import("std");
+const curl_tls = @import("../curl_tls.zig");
 const fsio = @import("../fsio.zig");
 const stdio = @import("../stdio.zig");
 const compat = @import("../compat.zig");
@@ -457,6 +458,7 @@ pub const Scheduler = struct {
         const curl_slist_fa = @extern(*const fn (*CurlSlist) callconv(.c) void, .{ .name = "curl_slist_free_all" });
 
         const handle = curl_init() orelse return;
+        curl_tls.configure(handle);
         defer curl_cleanup(handle);
 
         const url_z = try alloc.dupeZ(u8, url);

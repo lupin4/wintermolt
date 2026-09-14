@@ -12,6 +12,7 @@
 // Inline directives allow per-utterance overrides: [[voice:alloy]] [[speed:1.2]]
 
 const std = @import("std");
+const curl_tls = @import("../curl_tls.zig");
 const fsio = @import("../fsio.zig");
 const compat = @import("../compat.zig");
 const Allocator = std.mem.Allocator;
@@ -320,6 +321,7 @@ pub const TtsClient = struct {
 
     fn curlPost(self: *const TtsClient, url: []const u8, body: []const u8, auth_header_z: [*:0]const u8, format: []const u8) !TtsResult {
         const handle = curl_easy_init() orelse return error.CurlInitFailed;
+        curl_tls.configure(handle);
         defer curl_easy_cleanup(handle);
 
         const url_z = try self.alloc.dupeZ(u8, url);

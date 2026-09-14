@@ -17,6 +17,7 @@
 //                    "url": "...", "checksum": "..."}]}
 
 const std = @import("std");
+const curl_tls = @import("../curl_tls.zig");
 const compat = @import("../compat.zig");
 const stdio = @import("../stdio.zig");
 
@@ -260,6 +261,7 @@ pub const ExtensionManager = struct {
 
     fn fetchRegistry(self: *ExtensionManager, alloc: Allocator) ![]u8 {
         const handle = curl_easy_init() orelse return error.CurlInitFailed;
+        curl_tls.configure(handle);
         defer curl_easy_cleanup(handle);
 
         // ArrayList lost its `.{}` zero value; `.empty` is the named one.
