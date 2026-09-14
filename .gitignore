@@ -13,7 +13,9 @@ CLAUDE.md
 *.pem
 
 # vendor checkouts are script-managed (scripts/build-llama-cpp-macos.sh)
-vendor/
+vendor/*
+# ...except zortui, which is a committed plain copy (see vendor/zortui/VENDORED.md)
+!vendor/zortui/
 
 # prebuilt kernel binaries ARE checked in (exceptions to the rules above).
 # Binary redistribution is permitted; dep source stays closed in the
