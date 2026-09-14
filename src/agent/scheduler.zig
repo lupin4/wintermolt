@@ -480,9 +480,10 @@ pub const Scheduler = struct {
 
         var headers: ?*CurlSlist = null;
         headers = curl_slist_ap(headers, "Content-Type: application/json");
+        // Freed after curl_perform: libcurl reads the list during the transfer.
+        defer if (headers) |h| curl_slist_fa(h);
         if (headers) |h| {
             _ = curl_setopt(handle, @as(c_int, 10023), h); // CURLOPT_HTTPHEADER
-            defer curl_slist_fa(h);
         }
 
         _ = curl_perform(handle);

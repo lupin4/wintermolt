@@ -89,9 +89,10 @@ pub fn executeTool(alloc: Allocator, input_json: []const u8) ![]u8 {
     var headers: ?*CurlSlist = null;
     headers = curl_slist_append(headers, "Content-Type: application/json");
     headers = curl_slist_append(headers, auth_z.ptr);
+    // Freed after curl_easy_perform: libcurl reads the list during the transfer.
+    defer if (headers) |h| curl_slist_free_all(h);
     if (headers) |h| {
         _ = curl_easy_setopt(handle, CURLOPT_HTTPHEADER, h);
-        defer curl_slist_free_all(h);
     }
 
     const result = curl_easy_perform(handle);
