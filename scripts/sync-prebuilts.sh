@@ -9,7 +9,8 @@
 # target branch, e.g. winX86) — this copies whatever the checkout holds.
 #
 # Targets (org short names, no hyphenated triples): macos | thor | linX86 | winX86
-# Each machine syncs only its OWN target:  SYNC_TARGETS=winX86 scripts/sync-prebuilts.sh
+# Each machine syncs only its OWN target:  scripts/sync-prebuilts.sh winX86
+# (SYNC_TARGETS=winX86 still works; with neither, the script refuses to run.)
 # Matrix:
 #   forAgent forLearn forMCP forAI forNLP  → every target
 #   forTime forNet                         → every target (forTime owns the clocks)
@@ -20,8 +21,31 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SIBLINGS="$(cd "$ROOT/.." && pwd)"
-# shellcheck disable=SC2206
-TARGETS=(${SYNC_TARGETS:-macos thor linX86 winX86})
+# TARGETS: positional arguments win, then SYNC_TARGETS. With neither, REFUSE.
+#
+# It used to default to all four targets. On Windows, an env var set in one
+# shell does not reliably reach the bash that runs this script, and twice on
+# 2026-09-13 SYNC_TARGETS=winX86 was silently ignored: the run copied every
+# target's archives out of local checkouts and overwrote other machines'
+# committed prebuilts. Naming the target is now required, and an argument
+# cannot get lost between shells.
+if [[ $# -gt 0 ]]; then
+    TARGETS=("$@")
+elif [[ -n "${SYNC_TARGETS:-}" ]]; then
+    # shellcheck disable=SC2206
+    TARGETS=(${SYNC_TARGETS})
+else
+    echo "usage: scripts/sync-prebuilts.sh <target>...   (targets: macos thor linX86 winX86)" >&2
+    echo "refusing to sync every target by default: name the one this machine builds" >&2
+    exit 2
+fi
+for t in "${TARGETS[@]}"; do
+    case "$t" in
+        macos|thor|linX86|winX86) ;;
+        *) echo "unknown target '$t' (targets: macos thor linX86 winX86)" >&2; exit 2 ;;
+    esac
+done
+echo "[sync] targets: ${TARGETS[*]}"
 ALL_DEPS=(forAgent forLearn forMCP forAI forNLP forTime forNet)
 
 copied=0
