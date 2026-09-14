@@ -75,16 +75,44 @@ fn writeAllFd(fd: Fd, bytes: []const u8) Error!void {
     }
 }
 
-/// std.Io.Writer over a bare fd. Lives on the caller's stack for the duration
-/// of one print(); `@fieldParentPtr` in drain only needs the Writer to be
-/// embedded in it, not to outlive the call.
+// ── output sink ────────────────────────────────────────────────────────────
+//
+// The full-screen TUI owns the terminal while it is up, and a raw write to
+// stdout or stderr from anywhere in the agent -- a streamed token, a tool
+// notice, a fallback warning -- would land in the middle of its alternate
+// screen. So while a sink is installed, writes through stdout() and stderr()
+// go to it instead of the fd. Everything else is untouched: writerFor() over a
+// child pipe has no stream and always writes its fd, and with no sink installed
+// (the REPL, -e, every other mode) stdout() and stderr() write exactly as
+// before.
+
+/// Which process stream a writer stands for.
+pub const Stream = enum { stdout, stderr };
+
+pub const Sink = struct {
+    ctx: *anyopaque,
+    /// Called from whichever thread is writing. Must be thread-safe.
+    write: *const fn (ctx: *anyopaque, stream: Stream, bytes: []const u8) void,
+};
+
+var sink_slot = std.atomic.Value(?*const Sink).init(null);
+
+/// Route stdout()/stderr() writes to `sink`, or back to the fds with null.
+/// The sink must outlive its installation.
+pub fn setSink(sink: ?*const Sink) void {
+    sink_slot.store(sink, .release);
+}
+
+/// std.Io.Writer over a FileWriter. Lives on the caller's stack for the
+/// duration of one print(); `@fieldParentPtr` in drain only needs the Writer to
+/// be embedded in it, not to outlive the call.
 const FdSink = struct {
-    fd: Fd,
+    out: FileWriter,
     writer: std.Io.Writer,
 
-    fn init(fd: Fd) FdSink {
+    fn init(out: FileWriter) FdSink {
         return .{
-            .fd = fd,
+            .out = out,
             // Zero-length buffer: see the header. Every byte goes to drain.
             .writer = .{ .vtable = &.{ .drain = FdSink.drain }, .buffer = &.{} },
         };
@@ -98,20 +126,20 @@ const FdSink = struct {
     fn drain(w: *std.Io.Writer, data: []const []const u8, splat: usize) std.Io.Writer.Error!usize {
         const self: *FdSink = @alignCast(@fieldParentPtr("writer", w));
 
-        try writeAllFd(self.fd, w.buffer[0..w.end]);
+        try self.out.writeAll(w.buffer[0..w.end]);
         w.end = 0;
 
         var written: usize = 0;
         const head = data[0 .. data.len - 1];
         for (head) |bytes| {
-            try writeAllFd(self.fd, bytes);
+            try self.out.writeAll(bytes);
             written += bytes.len;
         }
 
         const pattern = data[data.len - 1];
         if (pattern.len != 0) {
             var i: usize = 0;
-            while (i < splat) : (i += 1) try writeAllFd(self.fd, pattern);
+            while (i < splat) : (i += 1) try self.out.writeAll(pattern);
         }
         written += pattern.len * splat;
 
@@ -124,8 +152,16 @@ const FdSink = struct {
 /// exactly as it did with deprecatedWriter().
 pub const FileWriter = struct {
     fd: Fd,
+    /// Set by stdout() and stderr() only: marks the writes an installed Sink
+    /// takes over. Null for child pipes and anything else, which always write
+    /// their fd.
+    stream: ?Stream = null,
 
     pub fn writeAll(self: FileWriter, bytes: []const u8) Error!void {
+        if (self.stream) |stream| if (sink_slot.load(.acquire)) |sink| {
+            sink.write(sink.ctx, stream, bytes);
+            return;
+        };
         return writeAllFd(self.fd, bytes);
     }
 
@@ -134,7 +170,7 @@ pub const FileWriter = struct {
     }
 
     pub fn print(self: FileWriter, comptime fmt: []const u8, args: anytype) Error!void {
-        var sink = FdSink.init(self.fd);
+        var sink = FdSink.init(self);
         sink.writer.print(fmt, args) catch return Error.WriteFailed;
         // No flush: the zero-length buffer means nothing was ever held back.
         return;
@@ -260,11 +296,11 @@ pub fn readerFor(file: File) FileReader {
 }
 
 pub fn stdout() FileWriter {
-    return .{ .fd = if (comptime is_windows) win32.stdHandle(win32.STD_OUTPUT_HANDLE) else STDOUT };
+    return .{ .fd = if (comptime is_windows) win32.stdHandle(win32.STD_OUTPUT_HANDLE) else STDOUT, .stream = .stdout };
 }
 
 pub fn stderr() FileWriter {
-    return .{ .fd = if (comptime is_windows) win32.stdHandle(win32.STD_ERROR_HANDLE) else STDERR };
+    return .{ .fd = if (comptime is_windows) win32.stdHandle(win32.STD_ERROR_HANDLE) else STDERR, .stream = .stderr };
 }
 
 /// A buffered reader on the process stdin.
@@ -326,7 +362,41 @@ fn pipeRoundTrip(comptime body: fn (FileWriter) anyerror!void) ![]u8 {
     return std.testing.allocator.dupe(u8, buf[0..off]);
 }
 
+test "an installed sink takes stdout/stderr writes; child-pipe writers bypass it" {
+    const Capture = struct {
+        var bytes: [256]u8 = undefined;
+        var len: usize = 0;
+        var last: ?Stream = null;
+        fn write(_: *anyopaque, stream: Stream, data: []const u8) void {
+            @memcpy(bytes[len..][0..data.len], data);
+            len += data.len;
+            last = stream;
+        }
+    };
+    var dummy: u8 = 0;
+    const sink: Sink = .{ .ctx = &dummy, .write = Capture.write };
+    setSink(&sink);
+    defer setSink(null);
+
+    try stdout().print("n={d} ", .{7});
+    try std.testing.expectEqual(@as(?Stream, .stdout), Capture.last);
+    try stderr().writeAll("err");
+    try std.testing.expectEqual(@as(?Stream, .stderr), Capture.last);
+    try stdout().writeByte('!');
+    try std.testing.expectEqualStrings("n=7 err!", Capture.bytes[0..Capture.len]);
+
+    // A writer with no stream (writerFor a child pipe) never reaches the sink.
+    // Its fd is invalid on purpose, so the write fails rather than landing.
+    const bypass: FileWriter = .{ .fd = if (comptime is_windows) null else -1 };
+    try std.testing.expectError(Error.WriteFailed, bypass.writeAll("x"));
+    try std.testing.expectEqual(@as(usize, 8), Capture.len);
+}
+
+// The pipe tests below are POSIX-only: std.c.pipe takes HANDLEs on Windows, so
+// they are skipped there at comptime rather than failing to compile.
+
 test "print formats and reaches the fd in order" {
+    if (comptime is_windows) return error.SkipZigTest;
     const out = try pipeRoundTrip(struct {
         fn f(w: FileWriter) anyerror!void {
             try w.print("a={d} b={s}\n", .{ 42, "xy" });
@@ -339,6 +409,7 @@ test "print formats and reaches the fd in order" {
 }
 
 test "splat repeats the pattern exactly once per count" {
+    if (comptime is_windows) return error.SkipZigTest;
     // {s:*>5} and friends drive `splat`; a drain that returns the wrong count
     // or repeats the pattern the wrong number of times shows up HERE and
     // nowhere else. The control is the exact expected string, not a length.
@@ -353,6 +424,7 @@ test "splat repeats the pattern exactly once per count" {
 }
 
 test "a write larger than any internal buffer is not truncated" {
+    if (comptime is_windows) return error.SkipZigTest;
     // `big` lives INSIDE the struct: Zig's nested functions do not capture
     // enclosing locals, so the previous form failed with "'big' not accessible
     // from inner function" and this test never compiled, let alone ran.
@@ -369,6 +441,7 @@ test "a write larger than any internal buffer is not truncated" {
 }
 
 test "readUntilDelimiter splits lines and consumes the delimiter" {
+    if (comptime is_windows) return error.SkipZigTest;
     var fds: [2]c_int = undefined;
     try std.testing.expect(std.c.pipe(&fds) == 0);
     defer _ = std.c.close(fds[0]);
@@ -386,6 +459,7 @@ test "readUntilDelimiter splits lines and consumes the delimiter" {
 }
 
 test "readUntilDelimiter spans multiple refills" {
+    if (comptime is_windows) return error.SkipZigTest;
     // The bug this guards: a line longer than one read(2) chunk, where a naive
     // implementation returns only the first chunk. 100KB exceeds both the
     // 64KB internal buffer and a typical pipe buffer.
