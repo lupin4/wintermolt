@@ -257,7 +257,11 @@ pub const Transcript = struct {
 /// turn and plain output during a command.
 pub fn classify(stream: Stream, text: []const u8, job: JobKind) Kind {
     const trimmed = std.mem.trimStart(u8, text, " ");
-    if (std.mem.startsWith(u8, trimmed, "[tool:")) return .tool;
+    if (std.mem.startsWith(u8, trimmed, "[tool:")) {
+        // "[tool: web_search] [error]": the call failed (agent/tool_status.zig).
+        const status = std.mem.trimEnd(u8, trimmed, " ");
+        return if (std.mem.endsWith(u8, status, "[error]")) .err else .tool;
+    }
     return switch (stream) {
         .stderr => if (looksLikeError(trimmed)) .err else .info,
         .stdout => if (job == .agent) .assistant else .info,
@@ -1029,4 +1033,21 @@ test "the app runs on the clock it is handed" {
     try testing.expectEqual(@as(usize, 0), opts.quit_keys.len);
     try testing.expect(!opts.focus_navigation);
     try testing.expectEqualStrings("wintermolt", opts.terminal.title.?);
+}
+
+test "a failed tool call is drawn as an error, a successful one as a tool line" {
+    try testing.expectEqual(Kind.err, classify(.stdout, "[tool: web_search] [error]", .agent));
+    try testing.expectEqual(Kind.err, classify(.stdout, "[tool: web_search] [error] ", .agent));
+    try testing.expectEqual(Kind.tool, classify(.stdout, "[tool: web_search] [ok]", .agent));
+    try testing.expectEqual(Kind.tool, classify(.stdout, "[tool: camera_capture] [captured]", .agent));
+
+    var fake: FakeAgent = .{ .alloc = testing.allocator };
+    defer fake.received.deinit(testing.allocator);
+    var session = Session.init(testing.allocator, fake.runner(), "0.5.0");
+    defer session.deinit();
+    // What loop.zig writes for a failed call: the name, then a red [error].
+    session.transcript.ingest(.stdout, "\x1b[90m[tool: web_search]\x1b[0m \x1b[31m[error]\x1b[0m\n", .agent);
+    const last = session.transcript.lines.items[session.transcript.lines.items.len - 1];
+    try testing.expectEqualStrings("[tool: web_search] [error]", last.text);
+    try testing.expectEqual(Kind.err, last.kind);
 }

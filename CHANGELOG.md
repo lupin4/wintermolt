@@ -87,6 +87,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `CURLSSLOPT_NATIVE_CA` (`src/curl_tls.zig`), so the Windows certificate
   store is used. Certificate verification stays on, and other platforms are
   unchanged. Plain-HTTP Ollama was never affected.
+- **Tool status told the truth only on a crash.** A tool call that failed
+  still printed a green `[ok]`, because most tools report failure as a result
+  string (`Search error: ...`, `HTTP error: ...`) rather than an error. Those
+  now print a red `[error]`, in the REPL and in the full-screen transcript,
+  decided from each tool's own failure prefixes (`src/agent/tool_status.zig`).
+  What the model receives is unchanged.
 
 ## [0.5.0] — 2026-06-04
 

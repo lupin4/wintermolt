@@ -361,6 +361,18 @@ pub fn build(b: *std.Build) void {
     });
     tui_test.root_module.addImport("zortui", zortui_mod);
     test_step.dependOn(&b.addRunArtifact(tui_test).step);
+
+    // The [ok] / [error] printed after a tool call. A pure file, rooted on its
+    // own for the reason the compat files above are: tests in a file main.zig
+    // merely imports are not collected.
+    const tool_status_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/agent/tool_status.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    test_step.dependOn(&b.addRunArtifact(tool_status_test).step);
 }
 
 fn getShortTargetName(t: std.Target) []const u8 {
