@@ -57,9 +57,17 @@ pub fn build(b: *std.Build) void {
     // Jetson — and the same mistake put 76k AVX-512 instructions in the Windows
     // release exe.
     //
-    // SO: BUILD THE PUBLISHED BINARY WITH AN EXPLICIT BASELINE CPU:
+    // SO: BUILD THE PUBLISHED BINARY WITH AN EXPLICIT CPU FLOOR:
     //
-    //     zig build -Doptimize=ReleaseFast -Dcpu=baseline
+    //     aarch64:  zig build -Doptimize=ReleaseFast -Dcpu=baseline
+    //     x86_64:   zig build -Doptimize=ReleaseFast -Dcpu=x86_64_v3
+    //
+    // THE FLOOR IS PER-ARCH, not one value. `baseline` is the aarch64 answer
+    // only because the ARM floor is still undecided — the fleet currently
+    // carries four different -mcpu answers (native, cortex-a78, cortex-a78ae,
+    // cortex-a72/apple-m1), so baseline is what is safe until the user picks
+    // one. On x86 the floor IS decided: x86_64_v3. Building Windows at generic
+    // x86-64 would be a needless downgrade, not a safety measure.
     //
     // and verify it before publishing — on aarch64 this must print 0:
     //
