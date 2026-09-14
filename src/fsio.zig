@@ -1074,8 +1074,12 @@ pub fn kevent(
 // Both compiled cleanly and failed only when run, which is why they survived a
 // port that built and ran the binary successfully.
 
+// Both spawn /bin/sh, and the second names std.posix.SIG.KILL, which Windows
+// does not have: skipped there, so that any test binary importing this file
+// (zig build test, test-env) compiles on Windows at all.
 test "spawnPiped actually spawns (the failing-allocator regression)" {
     if (comptime !zig16) return;
+    if (comptime @import("builtin").os.tag == .windows) return error.SkipZigTest;
     const gpa = std.testing.allocator;
     var child = try spawnPiped(gpa, &.{ "/bin/sh", "-c", "exit 0" });
     _ = try waitChild(&child);
@@ -1083,6 +1087,7 @@ test "spawnPiped actually spawns (the failing-allocator regression)" {
 
 test "killChild then waitChild does not abort (the double-reap regression)" {
     if (comptime !zig16) return;
+    if (comptime @import("builtin").os.tag == .windows) return error.SkipZigTest;
     const gpa = std.testing.allocator;
     var child = try spawnPiped(gpa, &.{ "/bin/sh", "-c", "sleep 30" });
     killChild(&child);

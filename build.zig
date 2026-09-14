@@ -373,6 +373,22 @@ pub fn build(b: *std.Build) void {
         }),
     });
     test_step.dependOn(&b.addRunArtifact(tool_status_test).step);
+
+    // The environment, end to end: a value setenv puts there at runtime (every
+    // ~/.wintermolt/.env key does) must reach getenv and each child spawned
+    // afterwards. Its own root for the reason the compat files have theirs; also
+    // runnable alone as `zig build test-env`.
+    const env_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/env_tests.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+    });
+    const run_env_tests = b.addRunArtifact(env_tests);
+    test_step.dependOn(&run_env_tests.step);
+    b.step("test-env", "Run the environment tests (setenv, .env, child processes)").dependOn(&run_env_tests.step);
 }
 
 fn getShortTargetName(t: std.Target) []const u8 {

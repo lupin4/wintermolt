@@ -84,6 +84,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `/bin/sh -l` hid it for the shell tool but not for MCP servers. fsio now
   passes the real process environment (`.global` on Windows, libc `environ`
   elsewhere), and `currentEnvMap` works on Windows.
+- **`~/.wintermolt/.env` did nothing on Windows.** Its keys were read, and
+  "[config] Loaded N vars" printed, but the `setenv` wintermolt exports for
+  Windows (mingw's CRT has none) was a no-op, so no key reached the
+  environment: `WINTERMOLT_CONFIG_VERSION=1` never hid the setup notice, API
+  keys kept only in `.env` were missing, and the bash tool's children saw
+  `%KEY%` unexpanded. It now calls `SetEnvironmentVariableW`. A variable
+  already in the environment still wins over `.env` (overwrite=0), and every
+  child spawned afterwards inherits the values, because fsio spawns with the
+  live process environment. `zig build test-env` checks both ends (getenv and a
+  child shell). fsio's two `/bin/sh` spawn tests now skip on Windows, where
+  one could not compile, so `zig build test` runs there too.
 - **Ollama tool calls.** Follow-up requests carrying a tool call were
   rejected with HTTP 400 because `arguments` was sent as a JSON string;
   Ollama's `/api/chat` takes an object. The 400 handler no longer claims the

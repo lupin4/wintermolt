@@ -40,6 +40,7 @@ extern "kernel32" fn SetConsoleOutputCP(wCodePageID: u32) callconv(.winapi) c_in
 extern "kernel32" fn GetConsoleCP() callconv(.winapi) u32;
 extern "kernel32" fn SetConsoleCP(wCodePageID: u32) callconv(.winapi) c_int;
 extern "kernel32" fn GetEnvironmentVariableW(lpName: [*:0]const u16, lpBuffer: ?[*]u16, nSize: u32) callconv(.winapi) u32;
+extern "kernel32" fn SetEnvironmentVariableW(lpName: [*:0]const u16, lpValue: ?[*:0]const u16) callconv(.winapi) c_int;
 
 /// The process's standard handle, or null when it has none (a GUI-subsystem
 /// launch, or a handle the parent closed).
@@ -101,6 +102,26 @@ pub fn getenvOwned(alloc: std.mem.Allocator, name: []const u8) ?[]u8 {
         if (n < cap) return std.unicode.utf16LeToUtf8Alloc(alloc, buf[0..n]) catch null;
         cap = n; // too small: n is the size needed, terminator included
     }
+}
+
+/// Set a variable in this process's environment block. False when either
+/// string is not valid UTF-8 or Windows refuses it. Children spawned afterwards
+/// inherit it: fsio spawns with the `.global` environ, which copies this block.
+pub fn setenv(alloc: std.mem.Allocator, name: []const u8, value: []const u8) bool {
+    const name_w = std.unicode.utf8ToUtf16LeAllocZ(alloc, name) catch return false;
+    defer alloc.free(name_w);
+    const value_w = std.unicode.utf8ToUtf16LeAllocZ(alloc, value) catch return false;
+    defer alloc.free(value_w);
+    return SetEnvironmentVariableW(name_w.ptr, value_w.ptr) != 0;
+}
+
+/// True when `name` is set, INCLUDING set to the empty string, which
+/// getenvOwned cannot tell from unset. Asked with no buffer, the call returns
+/// the size the value needs, terminator included, so any set variable gives >= 1.
+pub fn envExists(alloc: std.mem.Allocator, name: []const u8) bool {
+    const name_w = std.unicode.utf8ToUtf16LeAllocZ(alloc, name) catch return false;
+    defer alloc.free(name_w);
+    return GetEnvironmentVariableW(name_w.ptr, null, 0) != 0;
 }
 
 var saved_out_cp: u32 = 0;
