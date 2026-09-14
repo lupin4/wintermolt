@@ -498,9 +498,20 @@ model and whether a request is running.
 |:----|:-------|
 | Enter | Send the line (slash commands work as in the REPL) |
 | ← → Home End, Backspace, Delete | Edit the input line |
-| PgUp PgDn, ↑ ↓, mouse wheel | Scroll the transcript |
+| PgUp PgDn, ↑ ↓, Ctrl+↑ Ctrl+↓ | Scroll the transcript |
+| Mouse wheel | Scroll, where the terminal turns the wheel into ↑ ↓ (see below) |
 | Ctrl+L | Repaint the screen |
 | Esc, Ctrl+C, `/quit` | Exit and restore the terminal |
+
+**Selecting text.** The full-screen view leaves the mouse to your terminal, so
+click-and-drag selection and copy work as they do in any other program:
+Windows Terminal, the classic Windows console (Quick Edit stays on) and POSIX
+terminals. Windows Terminal turns the wheel into ↑ ↓ on a full-screen view by
+default, which scrolls the transcript; other terminals may need their
+"alternate scroll" setting. To give the view the mouse instead, set
+`WINTERMOLT_TUI_MOUSE=1`: the wheel then scrolls the transcript everywhere,
+and the terminal can no longer select (many terminals still select with
+Shift+drag).
 
 The plain REPL is still there, unchanged:
 

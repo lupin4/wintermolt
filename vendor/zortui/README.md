@@ -200,6 +200,15 @@ back are the ones a Unix tty carries, and the encoder and input parser are
 shared unchanged. Both console modes and both code pages are saved on entry and
 handed back on exit, on Ctrl+Break, and when the window closes.
 
+Mouse reporting and text selection are either-or in a terminal: while an app
+receives clicks, the terminal cannot use them to select. `mouse` in the
+terminal options defaults to what the terminal supports. Set
+`.terminal = .{ .mouse = false }` to leave selection and copy to the terminal:
+no mouse-tracking sequence is sent, and on Windows the console keeps Quick Edit,
+which is conhost's click-and-drag selection and is otherwise turned off for as
+long as the app runs. With mouse reporting off, Windows Terminal and conhost
+turn the wheel on the alternate screen into Up and Down keys by default.
+
 Waiting for input is the one real difference. A console input handle also
 wakes for focus, menu and key-release records, and a read after such a wake
 blocks until a character comes, so those records are drained before a wake

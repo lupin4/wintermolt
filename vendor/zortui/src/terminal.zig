@@ -121,8 +121,11 @@ fn windowSize() ?TerminalSize {
     return .{ .columns = ws.col, .rows = ws.row };
 }
 
-fn enterRawMode() bool {
-    if (!is_posix) return windows_console.enter();
+/// `mouse` is whether mouse reporting is being turned on. Only Windows needs
+/// to know: Quick Edit has to be off for mouse reports to reach the app, and
+/// on for the console's own click-and-drag selection to work.
+fn enterRawMode(mouse: bool) bool {
+    if (!is_posix) return windows_console.enter(mouse);
     const original = posix.tcgetattr(0) catch return false;
     saved_mode = original;
 
@@ -297,18 +300,39 @@ pub const Terminal = struct {
         if (self.entered) return;
         self.entered = true;
 
-        const mouse = self.options.mouse orelse self.capabilities.mouse;
-        const paste = self.options.bracketed_paste orelse self.capabilities.bracketed_paste;
-        const focus = self.options.focus_events orelse self.capabilities.focus_events;
-
         var setup: std.ArrayList(u8) = .empty;
         defer setup.deinit(self.allocator);
+        try self.appendSetup(&setup);
+        const mouse_reports = self.mouseReports();
+
+        // A Windows console prints escape sequences as literal text until VT
+        // processing is on, and turning it on is part of entering raw mode
+        // there, so on Windows that has to come first. A POSIX tty interprets
+        // the sequences either way and keeps its original order.
+        if (!is_posix and self.capabilities.tty) self.raw_was_set = enterRawMode(mouse_reports);
+        self.write(setup.items);
+
+        if (is_posix and self.capabilities.tty) self.raw_was_set = enterRawMode(mouse_reports);
+        if (self.options.install_exit_handlers) installExitHandlers();
+    }
+
+    /// Whether `enter` turns mouse reporting on: `options.mouse`, which defaults
+    /// to the capability, and only where the terminal has it.
+    fn mouseReports(self: *const Terminal) bool {
+        const mouse = self.options.mouse orelse self.capabilities.mouse;
+        return mouse and self.capabilities.mouse;
+    }
+
+    /// The escape sequences `enter` writes, in order.
+    fn appendSetup(self: *const Terminal, setup: *std.ArrayList(u8)) !void {
+        const paste = self.options.bracketed_paste orelse self.capabilities.bracketed_paste;
+        const focus = self.options.focus_events orelse self.capabilities.focus_events;
 
         if (self.options.alternate_screen) {
             try setup.appendSlice(self.allocator, ansi.alternate_screen_on);
         }
         if (self.options.hide_cursor) try setup.appendSlice(self.allocator, ansi.cursor_hide);
-        if (mouse and self.capabilities.mouse) {
+        if (self.mouseReports()) {
             try setup.appendSlice(self.allocator, ansi.mouse_on);
         }
         if (paste) try setup.appendSlice(self.allocator, ansi.bracketed_paste_on);
@@ -320,16 +344,6 @@ pub const Terminal = struct {
         }
         try setup.appendSlice(self.allocator, ansi.clear_screen);
         try setup.appendSlice(self.allocator, ansi.cursor_home);
-
-        // A Windows console prints escape sequences as literal text until VT
-        // processing is on, and turning it on is part of entering raw mode
-        // there, so on Windows that has to come first. A POSIX tty interprets
-        // the sequences either way and keeps its original order.
-        if (!is_posix and self.capabilities.tty) self.raw_was_set = enterRawMode();
-        self.write(setup.items);
-
-        if (is_posix and self.capabilities.tty) self.raw_was_set = enterRawMode();
-        if (self.options.install_exit_handlers) installExitHandlers();
     }
 
     /// Put the terminal back exactly as it was found. Safe to call twice.
@@ -523,7 +537,30 @@ const windows_console = struct {
         return true;
     }
 
-    fn enter() bool {
+    /// The console input mode raw mode runs in, derived from the mode found on
+    /// entry. `mouse` is whether mouse reporting is being turned on.
+    fn rawInputMode(mode: u32, mouse: bool) u32 {
+        // Line input and echo off are ICANON and ECHO off. Processed
+        // input off is ISIG off: Ctrl+C arrives as the byte 0x03,
+        // because quitting is the application's decision.
+        var raw = mode & ~(win32.ENABLE_LINE_INPUT | win32.ENABLE_ECHO_INPUT |
+            win32.ENABLE_PROCESSED_INPUT);
+        // VT input makes the console encode keys, and mouse reports
+        // once the app asks for them, as the byte sequences a Unix tty
+        // sends, so `InputParser` needs no Windows dialect. Window
+        // input adds a record on resize, which stands in for SIGWINCH.
+        raw |= win32.ENABLE_VIRTUAL_TERMINAL_INPUT | win32.ENABLE_WINDOW_INPUT;
+        // Quick Edit keeps mouse clicks in conhost for its own click-and-drag
+        // selection, so mouse reports would never reach the app. It is turned
+        // off only when the app asked for mouse reports: an app that did not
+        // keeps the console's selection, and with it copy. The bit only
+        // means anything when the console reports extended flags, and
+        // only then can the saved mode put it back exactly.
+        if (mouse and mode & win32.ENABLE_EXTENDED_FLAGS != 0) raw &= ~win32.ENABLE_QUICK_EDIT_MODE;
+        return raw;
+    }
+
+    fn enter(mouse: bool) bool {
         var changed = false;
 
         if (stdout()) |out| {
@@ -551,21 +588,7 @@ const windows_console = struct {
         if (stdin()) |in| {
             var mode: u32 = 0;
             if (win32.GetConsoleMode(in, &mode) != 0) {
-                // Line input and echo off are ICANON and ECHO off. Processed
-                // input off is ISIG off: Ctrl+C arrives as the byte 0x03,
-                // because quitting is the application's decision.
-                var raw = mode & ~(win32.ENABLE_LINE_INPUT | win32.ENABLE_ECHO_INPUT |
-                    win32.ENABLE_PROCESSED_INPUT);
-                // VT input makes the console encode keys, and mouse reports
-                // once the app asks for them, as the byte sequences a Unix tty
-                // sends, so `InputParser` needs no Windows dialect. Window
-                // input adds a record on resize, which stands in for SIGWINCH.
-                raw |= win32.ENABLE_VIRTUAL_TERMINAL_INPUT | win32.ENABLE_WINDOW_INPUT;
-                // Quick Edit keeps mouse clicks in conhost for text selection,
-                // so mouse reports would never reach the app. The bit only
-                // means anything when the console reports extended flags, and
-                // only then can the saved mode put it back exactly.
-                if (mode & win32.ENABLE_EXTENDED_FLAGS != 0) raw &= ~win32.ENABLE_QUICK_EDIT_MODE;
+                const raw = rawInputMode(mode, mouse);
                 // tcsetattr(.FLUSH) drops unread input; so does this.
                 _ = win32.FlushConsoleInputBuffer(in);
                 if (win32.SetConsoleMode(in, raw) != 0) {
@@ -811,4 +834,42 @@ fn pipeWaitFollowsClock() !void {
     var written: u32 = 0;
     try std.testing.expect(win32.WriteFile(write_end, "x", 1, &written, null) != 0);
     try std.testing.expect(windows_console.pipeReady(read_end, three_hours_ms, hourPerRead));
+}
+
+test "mouse reporting off: no tracking sequence, and Windows keeps Quick Edit" {
+    const gpa = std.testing.allocator;
+    const supported: capabilities_mod.Overrides = .{ .mouse = true };
+
+    // The default follows the capability, as before.
+    var default = Terminal.init(gpa, .{ .capabilities = supported });
+    defer default.deinit();
+    var default_seq: std.ArrayList(u8) = .empty;
+    defer default_seq.deinit(gpa);
+    try default.appendSetup(&default_seq);
+    try std.testing.expect(default.mouseReports());
+    try std.testing.expect(std.mem.indexOf(u8, default_seq.items, ansi.mouse_on) != null);
+
+    // Turned off, none of the four tracking modes is requested.
+    var off = Terminal.init(gpa, .{ .capabilities = supported, .mouse = false });
+    defer off.deinit();
+    var off_seq: std.ArrayList(u8) = .empty;
+    defer off_seq.deinit(gpa);
+    try off.appendSetup(&off_seq);
+    try std.testing.expect(!off.mouseReports());
+    for ([_][]const u8{ "\x1b[?1000h", "\x1b[?1002h", "\x1b[?1003h", "\x1b[?1006h" }) |mode| {
+        try std.testing.expect(std.mem.indexOf(u8, off_seq.items, mode) == null);
+    }
+
+    // The console input mode, checked as arithmetic so it runs on every OS.
+    // 0x1F7 is a fresh conhost: Quick Edit, insert, extended flags, mouse,
+    // window, echo, line and processed input.
+    const found: u32 = 0x1F7;
+    const quick_edit = win32.ENABLE_QUICK_EDIT_MODE;
+    try std.testing.expect(windows_console.rawInputMode(found, false) & quick_edit != 0);
+    try std.testing.expect(windows_console.rawInputMode(found, true) & quick_edit == 0);
+    // Quick Edit is the only difference.
+    try std.testing.expectEqual(
+        windows_console.rawInputMode(found, false) & ~quick_edit,
+        windows_console.rawInputMode(found, true) & ~quick_edit,
+    );
 }

@@ -84,9 +84,16 @@ pub fn emergencyRestore() void {
 /// input-wait deadlines. wintermolt reads time only through forTime, so
 /// main.zig passes fsio.monoNs (ftim_mono_ns). This file cannot name forTime
 /// itself: its headless tests link no prebuilt archives.
-pub fn appOptions(env: zortui.capabilities.Env, clock: zortui.Clock) zortui.AppOptions {
+///
+/// `mouse` is false unless the user asked for it (WINTERMOLT_TUI_MOUSE=1).
+/// Mouse reporting and the terminal's own text selection are either-or, and
+/// selecting and copying a reply matters more than clicking: with it off, no
+/// mouse-tracking sequence is sent, and on Windows the console keeps Quick
+/// Edit. The keyboard scrolls either way, and Windows Terminal turns the wheel
+/// into Up/Down on the alternate screen, which scroll too.
+pub fn appOptions(env: zortui.capabilities.Env, clock: zortui.Clock, mouse: bool) zortui.AppOptions {
     return .{
-        .terminal = .{ .env = env, .title = "wintermolt" },
+        .terminal = .{ .env = env, .title = "wintermolt", .mouse = mouse },
         // Quitting is ours: `q` has to be typeable; Esc, Ctrl+C and /quit quit.
         .quit_keys = &.{},
         .focus_navigation = false,
@@ -511,9 +518,9 @@ pub const Session = struct {
             self.editor.home();
         } else if (is(k, "end")) {
             self.editor.end();
-        } else if (is(k, "up")) {
+        } else if (is(k, "up") or zortui.matchKey(k, "ctrl+up")) {
             self.scrollUp(1);
-        } else if (is(k, "down")) {
+        } else if (is(k, "down") or zortui.matchKey(k, "ctrl+down")) {
             self.scrollDown(1);
         } else if (is(k, "pageup")) {
             self.scrollUp(@max(1, self.view_rows -| 1));
@@ -627,7 +634,7 @@ pub const Session = struct {
         const alloc = ui.ctx.allocator;
         const items = try alloc.alloc(zortui.widgets.StatusItem, 3);
         items[0] = .{ .key = "Enter", .label = "send" };
-        items[1] = .{ .key = "PgUp/PgDn", .label = "scroll" };
+        items[1] = .{ .key = "↑↓ PgUp/PgDn", .label = "scroll" };
         items[2] = .{ .key = "Esc", .label = "quit" };
         const theme = ui.theme();
         const right = try alloc.alloc(zortui.widgets.StatusItem, 2);
@@ -1019,8 +1026,36 @@ fn fakeClock() u64 {
     return 4_242_000_000;
 }
 
+test "the view leaves the mouse to the terminal unless asked" {
+    // Default: no mouse reporting, so the terminal keeps click-and-drag
+    // selection (and Windows its Quick Edit).
+    const default = appOptions(zortui.capabilities.Env.empty, fakeClock, false);
+    try testing.expectEqual(@as(?bool, false), default.terminal.mouse);
+    // WINTERMOLT_TUI_MOUSE=1.
+    const opted_in = appOptions(zortui.capabilities.Env.empty, fakeClock, true);
+    try testing.expectEqual(@as(?bool, true), opted_in.terminal.mouse);
+}
+
+test "Ctrl+Up and Ctrl+Down scroll like Up and Down" {
+    var fake: FakeAgent = .{ .alloc = testing.allocator };
+    defer fake.received.deinit(testing.allocator);
+    var session = Session.init(testing.allocator, fake.runner(), "0.5.0");
+    defer session.deinit();
+
+    const ctrl_up: zortui.InputEvent = .{ .key = .{ .name = "up", .key = "ctrl+up", .ctrl = true } };
+    const ctrl_down: zortui.InputEvent = .{ .key = .{ .name = "down", .key = "ctrl+down", .ctrl = true } };
+    session.handleEvent(ctrl_up);
+    session.handleEvent(ctrl_up);
+    try testing.expectEqual(@as(usize, 2), session.scroll);
+    session.handleEvent(ctrl_down);
+    try testing.expectEqual(@as(usize, 1), session.scroll);
+    session.handleEvent(keyNamed("up"));
+    try testing.expectEqual(@as(usize, 2), session.scroll);
+    try testing.expectEqualStrings("", session.editor.text());
+}
+
 test "the app runs on the clock it is handed" {
-    const opts = appOptions(zortui.capabilities.Env.empty, fakeClock);
+    const opts = appOptions(zortui.capabilities.Env.empty, fakeClock, false);
     try testing.expect(opts.clock.? == @as(zortui.Clock, fakeClock));
 
     // zortui reads time only through clock.nowNs; with these options that is

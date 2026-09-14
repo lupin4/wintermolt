@@ -1,9 +1,10 @@
 # Vendored: zortui
 
 - Upstream: https://github.com/lupin4/zortui
-- Commit: `9261fe1f5496edae1b98568f662e424b9698551b` (9261fe1, "zortui: optional
-  clock hook in App options"), v0.1.0 plus the clock hook. Previously f601d1e.
-- Copied with `git archive 9261fe1 build.zig build.zig.zon src LICENSE NOTICE README.md`.
+- Commit: `c47945c37ab499b8c0d7c532f989964486602e5b` (c47945c, "zortui: an app
+  without mouse reporting keeps Windows Quick Edit"), v0.1.0 plus the clock
+  hook (9261fe1) and that fix. Previously 9261fe1, before that f601d1e.
+- Copied with `git archive c47945c build.zig build.zig.zon src LICENSE NOTICE README.md`.
 - wintermolt sets the hook: `src/tui.zig` `appOptions` takes the clock, and
   `src/main.zig` passes `fsio.monoNs` (forTime's `ftim_mono_ns`).
 - License: MIT (derived from hqtui, MIT). `LICENSE` and `NOTICE` are carried

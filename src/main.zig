@@ -618,6 +618,14 @@ fn plainRequestedByEnv() bool {
     return v.len > 0 and !std.mem.eql(u8, v, "0");
 }
 
+/// WINTERMOLT_TUI_MOUSE=1 -- any value except empty or "0" -- gives the
+/// full-screen view the mouse. Off by default so the terminal keeps its own
+/// click-and-drag selection and copy.
+fn tuiMouseRequestedByEnv() bool {
+    const v = compat.getenv("WINTERMOLT_TUI_MOUSE") orelse return false;
+    return v.len > 0 and !std.mem.eql(u8, v, "0");
+}
+
 /// What the TUI drives: the REPL's own dispatch, on the TUI's worker thread.
 /// Handlers and the agent write through stdio.stdout()/stderr(), which the
 /// session's sink routes into the transcript.
@@ -699,7 +707,7 @@ fn runTui(
     // forTime's monotonic clock (ftim_mono_ns), never a clock of its own.
     var app = zortui.App.init(
         gpa,
-        tui.appOptions(.fromEnviron(&init.minimal.environ), fsio.monoNs),
+        tui.appOptions(.fromEnviron(&init.minimal.environ), fsio.monoNs, tuiMouseRequestedByEnv()),
     ) catch return error.TuiUnavailable;
 
     tui.active.store(true, .release);
@@ -1431,6 +1439,8 @@ fn printHelp(w: anytype) !void {
         \\  QWEN_API_KEY         — Qwen API key
         \\  TAILSCALE_API_KEY    — Tailscale API key (optional, for device list)
         \\  WINTERMOLT_PLAIN=1   — Same as --plain: never open the full-screen view
+        \\  WINTERMOLT_TUI_MOUSE=1 — Full-screen view takes the mouse (wheel, clicks);
+        \\                         the terminal can then no longer select text
         \\
     );
 }

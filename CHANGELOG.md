@@ -93,6 +93,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   now print a red `[error]`, in the REPL and in the full-screen transcript,
   decided from each tool's own failure prefixes (`src/agent/tool_status.zig`).
   What the model receives is unchanged.
+- **Text selection in the full-screen view.** It captured the mouse, so the
+  terminal could not select or copy text; on Windows it also turned off Quick
+  Edit, the console's own selection. The view now leaves the mouse to the
+  terminal by default: no mouse-tracking sequence, and Quick Edit stays on
+  (vendored zortui c47945c). Scrolling stays on the keyboard (PgUp/PgDn, ↑ ↓,
+  and now Ctrl+↑ Ctrl+↓), and Windows Terminal still scrolls with the wheel.
+  `WINTERMOLT_TUI_MOUSE=1` gives the view the mouse back.
 
 ## [0.5.0] — 2026-06-04
 
