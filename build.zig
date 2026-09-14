@@ -345,6 +345,22 @@ pub fn build(b: *std.Build) void {
         });
         test_step.dependOn(&b.addRunArtifact(compat_test).step);
     }
+
+    // The A2UI renderer, separately because it needs the zortui import that the
+    // loop above deliberately does not give anything. Same reason as the loop:
+    // its tests assert on RENDERED output — that a row stays on one line, that
+    // a table prints its cells, that a wide-character title does not shift the
+    // border — and none of that is observable from a build that only compiles.
+    const tui_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/canvas_tui_tests.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+    });
+    tui_test.root_module.addImport("zortui", zortui_mod);
+    test_step.dependOn(&b.addRunArtifact(tui_test).step);
 }
 
 fn getShortTargetName(t: std.Target) []const u8 {
