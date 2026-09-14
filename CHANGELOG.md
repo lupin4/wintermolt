@@ -6,7 +6,39 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Full-screen chat is the default interactive mode in a terminal.** When
+  stdin and stdout are both a terminal (GetConsoleMode on Windows, isatty
+  elsewhere), `wintermolt` opens a TUI built on zortui. It has a scrolling
+  transcript (keys and mouse wheel) that colors user, assistant and tool lines
+  differently, a line editor, and a status bar with backend, model and a busy
+  indicator. Slash commands run exactly as in the REPL, and their output goes
+  to the transcript. Requests run on a worker thread, so the screen stays
+  responsive while a model streams. Esc, Ctrl+C and `/quit` exit and restore
+  the terminal, including after a panic.
+- **`--plain` and `WINTERMOLT_PLAIN=1`** keep the plain line-by-line REPL in a
+  terminal. Piped or redirected stdio still gets the plain REPL automatically,
+  so `printf '/stats\n/quit\n' | wintermolt` behaves as before. `-e`, `--web`,
+  `--gateway`, `--chat` and `--mcp-server` are unchanged.
+- **zortui vendored** at `vendor/zortui` (lupin4/zortui f601d1e, MIT, derived
+  from hqtui). It is a plain copy imported as a module, with its LICENSE and
+  NOTICE kept.
+- `zig build test-tui`: headless TUI tests through zortui's testing module,
+  driven by a fake agent. They are also part of `zig build test`.
+
 ### Changed
+
+- **stdio output sink.** `stdio.stdout()` and `stdio.stderr()` writes go to an
+  installed sink when there is one. Only the TUI installs one; with no sink
+  they write to the fd exactly as before. The Ollama `done_reason=length`
+  warning now goes through `stdio.stderr()` instead of `std.debug.print`, so
+  it cannot draw over the TUI.
+- **Slash-command dispatch** moved out of the REPL loop into
+  `dispatchCommand`, unchanged, so the REPL and the TUI share one command
+  chain.
+- **Build requires Zig 0.16.** 0.15.2 already failed (`std.process.Init` does
+  not exist there); the README now says so.
 
 - **Relicensed from Apache 2.0 to MIT.** `LICENSE` now carries the MIT text;
   the README badge, comparison table and footer, the startup banner and the
