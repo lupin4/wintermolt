@@ -1,9 +1,11 @@
 # Vendored: zortui
 
 - Upstream: https://github.com/lupin4/zortui
-- Commit: `f601d1efee2577d0b3d8fc28d5908724b43bf706` (f601d1e, "zortui: rename the
-  package and module from hqtui to zortui"), v0.1.0
-- Copied with `git archive f601d1e build.zig build.zig.zon src LICENSE NOTICE README.md`.
+- Commit: `9261fe1f5496edae1b98568f662e424b9698551b` (9261fe1, "zortui: optional
+  clock hook in App options"), v0.1.0 plus the clock hook. Previously f601d1e.
+- Copied with `git archive 9261fe1 build.zig build.zig.zon src LICENSE NOTICE README.md`.
+- wintermolt sets the hook: `src/tui.zig` `appOptions` takes the clock, and
+  `src/main.zig` passes `fsio.monoNs` (forTime's `ftim_mono_ns`).
 - License: MIT (derived from hqtui, MIT). `LICENSE` and `NOTICE` are carried
   unchanged. Compatible with wintermolt's MIT license.
 

@@ -42,6 +42,7 @@ const builtin = @import("builtin");
 const ansi = @import("ansi.zig");
 const buffer_mod = @import("buffer.zig");
 const capabilities_mod = @import("capabilities.zig");
+const clock_mod = @import("clock.zig");
 const color_mod = @import("color.zig");
 const diff = @import("diff.zig");
 const input_mod = @import("input.zig");
@@ -81,6 +82,12 @@ pub const Options = struct {
     collapse_borders: bool = false,
     /// Drain color, for accessibility or `NO_COLOR`.
     monochrome: ?bool = null,
+    /// Where time comes from: a function returning monotonic nanoseconds.
+    /// Null keeps zortui's own clock. Every time read the app and its terminal
+    /// make goes through it — `Ctx.elapsed`, `FrameStats.render_ns` and, on
+    /// Windows, the input-wait deadlines — so an application that owns time
+    /// can hand it over. Replaces `terminal.clock` when set. See `clock.zig`.
+    clock: ?clock_mod.Clock = null,
 };
 
 pub const FrameStats = struct {
@@ -118,7 +125,20 @@ pub const App = struct {
     interactions: std.ArrayList(Interaction) = .empty,
 
     pub fn init(allocator: std.mem.Allocator, options: Options) !App {
-        var term = Terminal.init(allocator, options.terminal);
+        var self = try initDetached(allocator, options);
+        errdefer self.deinit();
+        try self.terminal.enter();
+        self.started_at_ns = self.nowNs();
+        return self;
+    }
+
+    /// Everything `init` does except take over the terminal: nothing is written
+    /// and no mode is changed, so a test can build frames with `compose` while
+    /// the test runner keeps stdout.
+    fn initDetached(allocator: std.mem.Allocator, options: Options) !App {
+        var terminal_options = options.terminal;
+        if (options.clock) |hook| terminal_options.clock = hook;
+        var term = Terminal.init(allocator, terminal_options);
         errdefer term.deinit();
 
         const size = term.size();
@@ -133,8 +153,6 @@ pub const App = struct {
             .monochrome = options.monochrome orelse (caps.colors == .none),
         });
 
-        try term.enter();
-
         return .{
             .allocator = allocator,
             .terminal = term,
@@ -146,7 +164,7 @@ pub const App = struct {
             .encoder = encoder,
             .frame_arena = .init(allocator),
             .event_arena = .init(allocator),
-            .started_at_ns = monotonicNs(),
+            .started_at_ns = clock_mod.nowNs(terminal_options.clock),
         };
     }
 
@@ -349,8 +367,50 @@ pub const App = struct {
 
     /// Build one frame and push the difference to the terminal.
     pub fn draw(self: *App, view: ui.Body) !FrameStats {
-        const started = monotonicNs();
+        const started = self.nowNs();
+        try self.compose(view);
 
+        const result = try self.encoder.encode(&self.previous, &self.current, self.force_repaint);
+        self.force_repaint = false;
+
+        var bytes: usize = result.output.len;
+        if (result.output.len > 0) {
+            if (self.capabilities.synchronized_output) {
+                // Wrapped rather than concatenated: the frame is already the
+                // largest allocation of the loop, and copying it again to add
+                // eight bytes at each end would double that for nothing.
+                self.terminal.write(ansi.begin_sync);
+                self.terminal.write(result.output);
+                self.terminal.write(ansi.end_sync);
+                bytes += ansi.begin_sync.len + ansi.end_sync.len;
+            } else {
+                self.terminal.write(result.output);
+            }
+        }
+        self.previous.copyFrom(&self.current);
+
+        const measured: FrameStats = .{
+            .frame = self.frame_count,
+            .render_ns = self.nowNs() -| started,
+            .changed_cells = result.changed_cells,
+            .dirty_rows = result.dirty_rows,
+            .bytes = bytes,
+        };
+        self.frame_count += 1;
+        self.last_stats = measured;
+        return measured;
+    }
+
+    /// Now, in monotonic nanoseconds: `Options.clock` when one was given,
+    /// zortui's own clock otherwise. The terminal holds the resolved hook, so
+    /// the app and its input waits can never read different clocks.
+    fn nowNs(self: *const App) u64 {
+        return clock_mod.nowNs(self.terminal.options.clock);
+    }
+
+    /// Build one frame into `current` — size, clear, the view, overlays — and
+    /// keep its hit regions and focus ids. Writes nothing to the terminal.
+    fn compose(self: *App, view: ui.Body) !void {
         // Resetting here, not at the end of the previous frame, is what keeps
         // the hit regions and focus ids readable during `poll`.
         _ = self.frame_arena.reset(.retain_capacity);
@@ -376,7 +436,7 @@ pub const App = struct {
             self.height(),
         );
         ctx.frame = self.frame_count;
-        ctx.elapsed = (monotonicNs() - self.started_at_ns) / std.time.ns_per_ms;
+        ctx.elapsed = (self.nowNs() -| self.started_at_ns) / std.time.ns_per_ms;
         ctx.focus_index = self.focus_index;
         ctx.collapse_borders = self.options.collapse_borders;
 
@@ -391,36 +451,6 @@ pub const App = struct {
         if (self.focus_ids.len > 0 and self.focus_index >= self.focus_ids.len) {
             self.focus_index = 0;
         }
-
-        const result = try self.encoder.encode(&self.previous, &self.current, self.force_repaint);
-        self.force_repaint = false;
-
-        var bytes: usize = result.output.len;
-        if (result.output.len > 0) {
-            if (self.capabilities.synchronized_output) {
-                // Wrapped rather than concatenated: the frame is already the
-                // largest allocation of the loop, and copying it again to add
-                // eight bytes at each end would double that for nothing.
-                self.terminal.write(ansi.begin_sync);
-                self.terminal.write(result.output);
-                self.terminal.write(ansi.end_sync);
-                bytes += ansi.begin_sync.len + ansi.end_sync.len;
-            } else {
-                self.terminal.write(result.output);
-            }
-        }
-        self.previous.copyFrom(&self.current);
-
-        const measured: FrameStats = .{
-            .frame = self.frame_count,
-            .render_ns = monotonicNs() - started,
-            .changed_cells = result.changed_cells,
-            .dirty_rows = result.dirty_rows,
-            .bytes = bytes,
-        };
-        self.frame_count += 1;
-        self.last_stats = measured;
-        return measured;
     }
 
     /// Run a whole app: poll, then draw, until something calls `quit`.
@@ -437,24 +467,51 @@ pub const App = struct {
     }
 };
 
-/// Monotonic nanoseconds. Zig 0.16 moved the clock behind an `Io` handle, and
-/// threading one through every frame for a timestamp is not worth it, so the
-/// syscall is made directly — the two systems spell it identically apart from
-/// the return type.
-///
-/// Windows has no `clock_gettime` without linking libc, which this package
-/// does not do, so there it is the performance counter instead.
-fn monotonicNs() u64 {
-    if (comptime builtin.os.tag == .windows) return @import("win32.zig").monotonicNs();
-    var ts: std.posix.timespec = undefined;
-    if (std.posix.system.clock_gettime(.MONOTONIC, &ts) != 0) return 0;
-    const sec: u64 = @intCast(@max(0, ts.sec));
-    const nsec: u64 = @intCast(@max(0, ts.nsec));
-    return sec * std.time.ns_per_s + nsec;
+// The clock itself lives in clock.zig, with its own tests.
+
+var test_now_ns: u64 = 0;
+var test_clock_reads: usize = 0;
+
+fn testClock() u64 {
+    test_clock_reads += 1;
+    return test_now_ns;
 }
 
-test "monotonic clock advances" {
-    const first = monotonicNs();
-    try std.testing.expect(first > 0);
-    try std.testing.expect(monotonicNs() >= first);
+const ElapsedProbe = struct {
+    seen: ?u64 = null,
+
+    fn view(self: *ElapsedProbe, container: *ui.Container) anyerror!void {
+        self.seen = container.ctx.elapsed;
+    }
+};
+
+test "an injected clock is the one the app and its terminal read" {
+    test_now_ns = 90 * std.time.ns_per_s;
+    test_clock_reads = 0;
+
+    // Detached, because `enter` would write escape sequences to stdout, which
+    // the test runner owns.
+    var app = try App.initDetached(std.testing.allocator, .{ .clock = testClock });
+    defer app.deinit();
+    try std.testing.expectEqual(test_now_ns, app.started_at_ns);
+    try std.testing.expect(app.terminal.options.clock.? == @as(clock_mod.Clock, testClock));
+
+    // No real time passes between these lines, so a view can only see 2.5 s
+    // of elapsed time if the frame read it from the injected clock.
+    test_now_ns += 2500 * std.time.ns_per_ms;
+    var probe: ElapsedProbe = .{};
+    try app.compose(ui.Body.with(&probe, ElapsedProbe.view));
+    try std.testing.expectEqual(@as(?u64, 2500), probe.seen);
+    try std.testing.expectEqual(@as(usize, 2), test_clock_reads);
+}
+
+test "no clock set: the app reads zortui's own" {
+    var app = try App.initDetached(std.testing.allocator, .{});
+    defer app.deinit();
+    try std.testing.expect(app.terminal.options.clock == null);
+    try std.testing.expect(app.started_at_ns > 0);
+    var probe: ElapsedProbe = .{};
+    try app.compose(ui.Body.with(&probe, ElapsedProbe.view));
+    // Well under a minute has passed since `initDetached`.
+    try std.testing.expect(probe.seen.? < 60_000);
 }

@@ -21,13 +21,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   terminal. Piped or redirected stdio still gets the plain REPL automatically,
   so `printf '/stats\n/quit\n' | wintermolt` behaves as before. `-e`, `--web`,
   `--gateway`, `--chat` and `--mcp-server` are unchanged.
-- **zortui vendored** at `vendor/zortui` (lupin4/zortui f601d1e, MIT, derived
+- **zortui vendored** at `vendor/zortui` (lupin4/zortui 9261fe1, MIT, derived
   from hqtui). It is a plain copy imported as a module, with its LICENSE and
   NOTICE kept.
 - `zig build test-tui`: headless TUI tests through zortui's testing module,
   driven by a fake agent. They are also part of `zig build test`.
 
 ### Changed
+
+- **The TUI reads time through forTime.** zortui timed frames, animation and,
+  on Windows, its input-wait deadlines with its own monotonic clock. The
+  vendored copy is now lupin4/zortui 9261fe1, which adds an optional
+  `App.Options.clock` hook, and wintermolt passes `fsio.monoNs` (forTime's
+  `ftim_mono_ns`), so no clock on the TUI path bypasses forTime. Plain REPL,
+  `-e` and the other modes are unchanged.
 
 - **stdio output sink.** `stdio.stdout()` and `stdio.stderr()` writes go to an
   installed sink when there is one. Only the TUI installs one; with no sink

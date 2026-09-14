@@ -207,6 +207,40 @@ counts as input. A console that accepts VT processing is detected as a
 truecolor, Unicode terminal; `NO_COLOR`, `FORCE_COLOR` and the capability
 overrides still win.
 
+## Where time comes from
+
+zortui reads a monotonic clock for three things: `Ctx.elapsed`, which animates
+widgets; `FrameStats.render_ns`; and, on Windows, the deadlines that bound each
+wait for input. By default that is its own clock — `clock_gettime(MONOTONIC)`
+on POSIX, the performance counter on Windows — so there is nothing to link and
+nothing to set.
+
+An application that already owns time can hand it over. Pass a function that
+returns monotonic nanoseconds:
+
+```zig
+fn hostClock() u64 {
+    return host.monotonicNs();
+}
+
+var app = try zortui.App.init(init.gpa, .{
+    .terminal = .{ .env = .fromEnviron(&init.minimal.environ) },
+    .clock = hostClock,
+});
+```
+
+Every time read in the library then goes through it; there is no second clock
+behind its back. The origin is yours to choose, but the function must not go
+backwards, and while the app is polling a real terminal it must keep pace with
+real time, because the input waits count down against it. `App` hands the
+function to its `Terminal`; set `.terminal.clock` yourself only when you use a
+`Terminal` without an `App`. Neither is ever required: `Terminal.init` and
+`size` read no time at all.
+
+Durations are not time reads and do not use it: the `poll` timeout on POSIX,
+the Escape-key rule built from those timeouts, and the sleeps and waits handed
+to the kernel.
+
 ## License
 
 MIT — see `LICENSE` and `NOTICE`.

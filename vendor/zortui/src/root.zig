@@ -18,6 +18,7 @@ pub const ansi = @import("ansi.zig");
 pub const app = @import("app.zig");
 pub const buffer = @import("buffer.zig");
 pub const capabilities = @import("capabilities.zig");
+pub const clock = @import("clock.zig");
 pub const color = @import("color.zig");
 pub const diff = @import("diff.zig");
 pub const graphics = @import("graphics.zig");
@@ -83,6 +84,8 @@ pub const Span = ui.Span;
 pub const App = app.App;
 pub const AppOptions = app.Options;
 pub const FrameStats = app.FrameStats;
+
+pub const Clock = clock.Clock;
 
 pub const Terminal = terminal.Terminal;
 pub const TerminalOptions = terminal.Options;

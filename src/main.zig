@@ -695,12 +695,12 @@ fn runTui(
     // screen is taken, so anything they print reaches the normal console.
     _ = agent.tickScheduler();
 
-    var app = zortui.App.init(gpa, .{
-        .terminal = .{ .env = .fromEnviron(&init.minimal.environ), .title = "wintermolt" },
-        // Quitting is ours: `q` has to be typeable; Esc, Ctrl+C and /quit quit.
-        .quit_keys = &.{},
-        .focus_navigation = false,
-    }) catch return error.TuiUnavailable;
+    // zortui's frame timing, animation and input-wait deadlines all read
+    // forTime's monotonic clock (ftim_mono_ns), never a clock of its own.
+    var app = zortui.App.init(
+        gpa,
+        tui.appOptions(.fromEnviron(&init.minimal.environ), fsio.monoNs),
+    ) catch return error.TuiUnavailable;
 
     tui.active.store(true, .release);
     session.installSink();

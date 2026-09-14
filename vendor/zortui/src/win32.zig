@@ -37,6 +37,10 @@ pub extern "kernel32" fn ReadFile(hFile: HANDLE, lpBuffer: [*]u8, nNumberOfBytes
 pub extern "kernel32" fn PeekNamedPipe(hNamedPipe: HANDLE, lpBuffer: ?*anyopaque, nBufferSize: u32, lpBytesRead: ?*u32, lpTotalBytesAvail: ?*u32, lpBytesLeftThisMessage: ?*u32) callconv(.winapi) BOOL;
 pub extern "kernel32" fn WaitForSingleObject(hObject: HANDLE, dwMilliseconds: u32) callconv(.winapi) u32;
 pub extern "kernel32" fn Sleep(dwMilliseconds: u32) callconv(.winapi) void;
+/// Only the tests call these two: an anonymous pipe is a real handle the input
+/// wait can be pointed at without a console.
+pub extern "kernel32" fn CreatePipe(hReadPipe: *HANDLE, hWritePipe: *HANDLE, lpPipeAttributes: ?*anyopaque, nSize: u32) callconv(.winapi) BOOL;
+pub extern "kernel32" fn CloseHandle(hObject: HANDLE) callconv(.winapi) BOOL;
 
 /// The process's standard handle, or null when it has none: a GUI-subsystem
 /// launch, or a handle the parent closed.

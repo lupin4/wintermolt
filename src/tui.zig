@@ -79,6 +79,21 @@ pub fn emergencyRestore() void {
     if (active.swap(false, .acquire)) zortui.terminal.emergencyRestore();
 }
 
+/// The zortui App options the TUI runs with. `clock` is not optional: zortui
+/// reads ALL of its time through it -- frame timing, animation, and the Windows
+/// input-wait deadlines. wintermolt reads time only through forTime, so
+/// main.zig passes fsio.monoNs (ftim_mono_ns). This file cannot name forTime
+/// itself: its headless tests link no prebuilt archives.
+pub fn appOptions(env: zortui.capabilities.Env, clock: zortui.Clock) zortui.AppOptions {
+    return .{
+        .terminal = .{ .env = env, .title = "wintermolt" },
+        // Quitting is ours: `q` has to be typeable; Esc, Ctrl+C and /quit quit.
+        .quit_keys = &.{},
+        .focus_navigation = false,
+        .clock = clock,
+    };
+}
+
 // ── inbox ──────────────────────────────────────────────────────────────────
 
 /// Output written by the worker, waiting for the UI thread. Thread-safe.
@@ -990,4 +1005,28 @@ test "a streamed partial line is visible before its newline, and scrolling clamp
     var screen = try render(&session);
     defer screen.deinit();
     try testing.expect(screen.contains("line 99"));
+}
+
+var fake_clock_reads: usize = 0;
+
+/// Stands in for fsio.monoNs, which this test binary cannot link.
+fn fakeClock() u64 {
+    fake_clock_reads += 1;
+    return 4_242_000_000;
+}
+
+test "the app runs on the clock it is handed" {
+    const opts = appOptions(zortui.capabilities.Env.empty, fakeClock);
+    try testing.expect(opts.clock.? == @as(zortui.Clock, fakeClock));
+
+    // zortui reads time only through clock.nowNs; with these options that is
+    // the handed-in function, and zortui's own clock is not consulted.
+    fake_clock_reads = 0;
+    try testing.expectEqual(@as(u64, 4_242_000_000), zortui.clock.nowNs(opts.clock));
+    try testing.expectEqual(@as(usize, 1), fake_clock_reads);
+
+    // The rest is what main.zig passed before the hook existed.
+    try testing.expectEqual(@as(usize, 0), opts.quit_keys.len);
+    try testing.expect(!opts.focus_navigation);
+    try testing.expectEqualStrings("wintermolt", opts.terminal.title.?);
 }

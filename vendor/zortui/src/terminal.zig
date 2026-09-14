@@ -38,9 +38,11 @@ const builtin = @import("builtin");
 
 const ansi = @import("ansi.zig");
 const capabilities_mod = @import("capabilities.zig");
+const clock_mod = @import("clock.zig");
 const input_mod = @import("input.zig");
 
 const Capabilities = capabilities_mod.Capabilities;
+const Clock = clock_mod.Clock;
 const InputEvent = input_mod.InputEvent;
 const InputParser = input_mod.InputParser;
 
@@ -74,6 +76,12 @@ pub const Options = struct {
     install_exit_handlers: bool = true,
     /// How long to wait before a lone ESC counts as the Escape key.
     escape_timeout_ms: u64 = 30,
+    /// Where the input waits read the time: a function returning monotonic
+    /// nanoseconds. Null keeps zortui's own clock, and nothing needs one —
+    /// `init` and `size` read no time at all. `App` fills this in from
+    /// `App.Options.clock`; set it here only to drive a `Terminal` without an
+    /// `App`. See `clock.zig`.
+    clock: ?Clock = null,
 };
 
 // --------------------------------------------------------------- OS plumbing
@@ -366,7 +374,7 @@ pub const Terminal = struct {
     pub fn pollInput(self: *Terminal, timeout_ms: u64) ![]const InputEvent {
         const budget = @min(timeout_ms, std.math.maxInt(i32));
 
-        if (!inputReady(budget)) {
+        if (!inputReady(budget, self.options.clock)) {
             self.waited_ms += budget;
             if (self.parser.hasPending() and self.waited_ms >= self.options.escape_timeout_ms) {
                 self.waited_ms = 0;
@@ -399,9 +407,10 @@ pub const Terminal = struct {
 };
 
 /// Wait up to `budget_ms` for stdin to hold something a read will return
-/// without blocking.
-fn inputReady(budget_ms: u64) bool {
-    if (!is_posix) return windows_console.inputReady(budget_ms);
+/// without blocking. POSIX hands the budget to `poll` as a duration and reads
+/// no clock; Windows counts its deadline down against `clock`.
+fn inputReady(budget_ms: u64, clock: ?Clock) bool {
+    if (!is_posix) return windows_console.inputReady(budget_ms, clock);
     var fds = [_]posix.pollfd{.{ .fd = 0, .events = posix.POLL.IN, .revents = 0 }};
     const ready = posix.poll(&fds, @intCast(budget_ms)) catch 0;
     return ready != 0 and fds[0].revents & posix.POLL.IN != 0;
@@ -473,8 +482,10 @@ const windows_console = struct {
         return win32.stdHandle(win32.STD_OUTPUT_HANDLE);
     }
 
-    fn nowMs() u64 {
-        return win32.monotonicNs() / std.time.ns_per_ms;
+    /// The deadline clock for every wait below: the terminal's `clock` hook
+    /// when set, zortui's own clock otherwise.
+    fn nowMs(clock: ?Clock) u64 {
+        return clock_mod.nowNs(clock) / std.time.ns_per_ms;
     }
 
     /// A wait length for the kernel, which reads 0xFFFFFFFF as INFINITE.
@@ -482,8 +493,8 @@ const windows_console = struct {
         return @intCast(@min(ms, std.math.maxInt(u32) - 1));
     }
 
-    fn sleepUntil(deadline_ms: u64) void {
-        const now = nowMs();
+    fn sleepUntil(deadline_ms: u64, clock: ?Clock) void {
+        const now = nowMs(clock);
         if (now < deadline_ms) win32.Sleep(waitMs(deadline_ms - now));
     }
 
@@ -614,15 +625,15 @@ const windows_console = struct {
         return n;
     }
 
-    fn inputReady(budget_ms: u64) bool {
+    fn inputReady(budget_ms: u64, clock: ?Clock) bool {
         const in = stdin() orelse {
-            sleepUntil(nowMs() + budget_ms);
+            sleepUntil(nowMs(clock) + budget_ms, clock);
             return false;
         };
         var mode: u32 = 0;
-        if (win32.GetConsoleMode(in, &mode) != 0) return consoleReady(in, budget_ms);
+        if (win32.GetConsoleMode(in, &mode) != 0) return consoleReady(in, budget_ms, clock);
         return switch (win32.GetFileType(in)) {
-            win32.FILE_TYPE_PIPE => pipeReady(in, budget_ms),
+            win32.FILE_TYPE_PIPE => pipeReady(in, budget_ms, clock),
             // A file never blocks a read, and at its end the read returns
             // zero — which is what `poll` reports for a file on POSIX too.
             else => true,
@@ -635,24 +646,24 @@ const windows_console = struct {
     /// freeze the render loop for as long as the user is not typing. So
     /// records at the front of the queue that carry no character are taken
     /// off before a wake counts as input.
-    fn consoleReady(in: win32.HANDLE, budget_ms: u64) bool {
-        const deadline = nowMs() + budget_ms;
+    fn consoleReady(in: win32.HANDLE, budget_ms: u64, clock: ?Clock) bool {
+        const deadline = nowMs(clock) + budget_ms;
         while (true) {
             switch (drainToCharacter(in)) {
                 .character => return true,
                 .empty => {},
                 .failed => {
-                    sleepUntil(deadline);
+                    sleepUntil(deadline, clock);
                     return false;
                 },
             }
-            const now = nowMs();
+            const now = nowMs(clock);
             if (now >= deadline) return false;
             const woke = win32.WaitForSingleObject(in, waitMs(deadline - now));
             if (woke != win32.WAIT_OBJECT_0) {
                 // WAIT_TIMEOUT has already spent the budget; WAIT_FAILED has
                 // not, and returning at once would spin the caller.
-                sleepUntil(deadline);
+                sleepUntil(deadline, clock);
                 return false;
             }
         }
@@ -687,19 +698,19 @@ const windows_console = struct {
     /// A pipe handle is always signalled, so waiting on it says nothing; the
     /// queue is asked for its byte count instead, a few milliseconds apart.
     /// This is stdin under mintty and anything else that pipes into the app.
-    fn pipeReady(in: win32.HANDLE, budget_ms: u64) bool {
-        const deadline = nowMs() + budget_ms;
+    fn pipeReady(in: win32.HANDLE, budget_ms: u64, clock: ?Clock) bool {
+        const deadline = nowMs(clock) + budget_ms;
         while (true) {
             var available: u32 = 0;
             if (win32.PeekNamedPipe(in, null, 0, null, &available, null) == 0) {
                 // The writer has gone and nothing will ever arrive. Waiting
                 // out the budget keeps the loop at its frame rate rather than
                 // spinning a core.
-                sleepUntil(deadline);
+                sleepUntil(deadline, clock);
                 return false;
             }
             if (available > 0) return true;
-            const now = nowMs();
+            const now = nowMs(clock);
             if (now >= deadline) return false;
             win32.Sleep(waitMs(@min(deadline - now, pipe_poll_ms)));
         }
@@ -753,4 +764,51 @@ test "validUtf8Prefix holds back a split character" {
     const broken = validUtf8Prefix("\x80");
     try std.testing.expectEqual(@as(usize, 0), broken.len);
     try std.testing.expect(broken.invalid);
+}
+
+test "a terminal needs no clock: init and size on their own" {
+    // The width query a caller makes without an App or a frame loop.
+    var term = Terminal.init(std.testing.allocator, .{});
+    defer term.deinit();
+    try std.testing.expect(term.options.clock == null);
+    const s = term.size();
+    try std.testing.expect(s.columns > 0 and s.rows > 0);
+}
+
+var wait_clock_ms: u64 = 0;
+var wait_clock_reads: usize = 0;
+
+/// Jumps an hour on every read, so a three-hour wait can only end within
+/// milliseconds if its deadline is counted against this clock.
+fn hourPerRead() u64 {
+    defer wait_clock_ms += 3_600_000;
+    wait_clock_reads += 1;
+    return wait_clock_ms * std.time.ns_per_ms;
+}
+
+test "input waits count their deadline down against the injected clock" {
+    if (comptime is_posix) return error.SkipZigTest else try pipeWaitFollowsClock();
+}
+
+/// Windows only: POSIX hands the budget to `poll` and reads no clock. An
+/// anonymous pipe stands in for stdin under mintty, the `pipeReady` path.
+fn pipeWaitFollowsClock() !void {
+    var read_end: win32.HANDLE = undefined;
+    var write_end: win32.HANDLE = undefined;
+    if (win32.CreatePipe(&read_end, &write_end, null, 0) == 0) return error.SkipZigTest;
+    defer _ = win32.CloseHandle(read_end);
+    defer _ = win32.CloseHandle(write_end);
+
+    const three_hours_ms = 3 * 3_600_000;
+    wait_clock_ms = 0;
+    wait_clock_reads = 0;
+    // One read sets the deadline, then one per empty poll until an hour-jumping
+    // clock passes it: 0 h, 1 h, 2 h, 3 h.
+    try std.testing.expect(!windows_console.pipeReady(read_end, three_hours_ms, hourPerRead));
+    try std.testing.expectEqual(@as(usize, 4), wait_clock_reads);
+
+    // Input still ends the wait at once.
+    var written: u32 = 0;
+    try std.testing.expect(win32.WriteFile(write_end, "x", 1, &written, null) != 0);
+    try std.testing.expect(windows_console.pipeReady(read_end, three_hours_ms, hourPerRead));
 }
