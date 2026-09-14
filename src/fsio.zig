@@ -59,6 +59,29 @@ pub const Dir = if (zig16) std.Io.Dir else std.fs.Dir;
 var io_instance: if (zig16) std.Io.Threaded else void = undefined;
 var io_state: std.atomic.Value(u8) = .init(0); // 0 empty, 1 constructing, 2 ready
 
+/// The environment every Threaded in this file hands to the children it spawns.
+///
+/// Threaded.InitOptions.environ defaults to `.empty`, and spawn builds the
+/// child's environment from it whenever no environ_map is passed. So every child
+/// started through a default-initialized Threaded got NO environment at all.
+/// On Windows that meant no PATH: cmd.exe could still run its builtins (`ver`)
+/// but not `systeminfo`, and the bash tool answered "'systeminfo' is not
+/// recognized" to every real command. On POSIX the bash tool hid it, because
+/// `/bin/sh -l` rebuilds PATH from the login profile -- but any other child (an
+/// MCP server, a sidecar) started without HOME, without API keys, without PATH.
+///
+/// Windows: `.global` reads the live process environment through the PEB.
+/// POSIX: libc's `environ`. Threaded.deinit does not free this block, so handing
+/// it libc's own pointer is safe.
+fn processEnviron() if (zig16) std.process.Environ else void {
+    if (comptime !zig16) return {};
+    if (comptime @import("builtin").os.tag == .windows) return .{ .block = .global };
+    const env = std.c.environ;
+    var n: usize = 0;
+    while (env[n] != null) n += 1;
+    return .{ .block = .{ .slice = env[0..n :null] } };
+}
+
 pub inline fn io() if (zig16) std.Io else void {
     if (comptime !zig16) return {};
     // Acquire pairs with the release below: a thread that sees 2 also sees
@@ -67,7 +90,7 @@ pub inline fn io() if (zig16) std.Io else void {
     if (io_state.load(.acquire) == 2) return io_instance.io();
     while (true) {
         if (io_state.cmpxchgStrong(0, 1, .acquire, .monotonic) == null) {
-            io_instance = std.Io.Threaded.init(std.heap.c_allocator, .{});
+            io_instance = std.Io.Threaded.init(std.heap.c_allocator, .{ .environ = processEnviron() });
             io_state.store(2, .release);
             return io_instance.io();
         }
@@ -432,58 +455,56 @@ pub inline fn realpathAlloc(gpa: std.mem.Allocator, path: []const u8) ![]u8 {
     return if (zig16) cwd().realPathFileAlloc(io(), path, gpa) else cwd().realpathAlloc(gpa, path);
 }
 
-// ── clocks and randomness, for a binary with no forTime to lean on ─────────
+// ── clocks: forTime ─────────────────────────────────────────────────────────
 //
 // 0.16 removed the whole std.time timestamp family (timestamp, milliTimestamp,
 // microTimestamp, nanoTimestamp); std.time now holds only the ns_per_* constants.
-// The replacements want an Io threaded from main, which a helper called at
-// arbitrary depth does not have -- so these go straight to libc, the same
-// reasoning that puts getenv on std.c.getenv.
 //
-// WALL CLOCK. Anything measuring an INTERVAL should use monoNs(): the wall clock
-// steps backwards on an NTP correction, so a duration measured with it can come
-// out negative.
+// These used to go straight to libc clock_gettime, which does not exist on
+// Windows. They now come from forTime, the fleet's single owner of time:
+// wintermolt links forTime's PREBUILT archive (build.zig deps list, synced by
+// scripts/sync-prebuilts.sh) and declares only the two C-ABI entry points it
+// calls -- no forTime source is compiled in. Same lean extern Wintermute uses
+// (src/native/fortime_clock.zig).
+//
+// WALL CLOCK vs INTERVAL. ftim_now_unix_ns is the wall clock and steps backwards
+// on an NTP correction; anything measuring a duration must use monoNs().
+
+extern fn ftim_now_unix_ns() i64;
+extern fn ftim_mono_ns() u64;
 
 /// Nanoseconds since the Unix epoch.
 pub fn nanoTimestamp() i128 {
-    var ts: std.c.timespec = undefined;
-    _ = std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts);
-    return @as(i128, @intCast(ts.sec)) * 1_000_000_000 + @as(i128, @intCast(ts.nsec));
+    return ftim_now_unix_ns();
 }
 
 /// Milliseconds since the Unix epoch -- std.time.milliTimestamp's replacement.
 pub fn milliTimestamp() i64 {
-    return @intCast(@divTrunc(nanoTimestamp(), 1_000_000));
+    return @divTrunc(ftim_now_unix_ns(), 1_000_000);
 }
 
 /// Whole seconds since the Unix epoch -- std.time.timestamp's replacement.
 pub fn timestamp() i64 {
-    return @intCast(@divTrunc(nanoTimestamp(), 1_000_000_000));
+    return @divTrunc(ftim_now_unix_ns(), 1_000_000_000);
 }
 
 /// Monotonic nanoseconds, for measuring intervals.
 pub fn monoNs() u64 {
-    var ts: std.c.timespec = undefined;
-    _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts);
-    return @as(u64, @intCast(ts.sec)) * 1_000_000_000 + @as(u64, @intCast(ts.nsec));
+    return ftim_mono_ns();
 }
 
 /// Random bytes -- std.crypto.random's replacement.
 ///
 /// 0.16 removed the global CSPRNG. getentropy is the kernel's own source and
 /// needs no seeding or state, which is what a global was providing. It is capped
-/// at 256 bytes per call, so this loops.
+/// at 256 bytes per call, so this loops. Windows has no getentropy; win32.zig
+/// uses BCryptGenRandom, the system CSPRNG.
 ///
-/// Returns false if the kernel refused, rather than silently leaving the buffer
+/// Returns false if the source refused, rather than silently leaving the buffer
 /// as it was -- a caller generating an ID from unwritten stack memory is the
 /// failure this prevents.
 pub fn randomBytes(buf: []u8) bool {
-    if (comptime @import("builtin").os.tag == .windows) {
-        // BCryptGenRandom is the Windows source; left to winX86, which can test
-        // it. Reporting failure is the honest answer here -- see the note above
-        // about callers building IDs out of unwritten stack memory.
-        return false;
-    }
+    if (comptime @import("builtin").os.tag == .windows) return @import("win32.zig").randomBytes(buf);
     var off: usize = 0;
     while (off < buf.len) {
         const chunk = @min(buf.len - off, 256);
@@ -723,7 +744,7 @@ pub inline fn copyFile(source_path: []const u8, dest_path: []const u8) !void {
 /// Run a command to completion, failing if it exits non-zero.
 pub fn runCommand(gpa: std.mem.Allocator, argv: []const []const u8) !void {
     if (zig16) {
-        var threaded: std.Io.Threaded = .init(gpa, .{});
+        var threaded: std.Io.Threaded = .init(gpa, .{ .environ = processEnviron() });
         defer threaded.deinit();
         const tio = threaded.io();
         var child = try std.process.spawn(tio, .{ .argv = argv });
@@ -761,15 +782,15 @@ pub const EnvMap = if (@hasDecl(std.process, "EnvMap")) std.process.EnvMap else 
 pub fn currentEnvMap(gpa: std.mem.Allocator) !EnvMap {
     if (comptime @hasDecl(std.process, "getEnvMap")) return std.process.getEnvMap(gpa);
 
+    if (comptime @import("builtin").os.tag == .windows) {
+        // The Windows environment block is UTF-16 and reached through the PEB;
+        // Environ.createMap reads it when the block is `.global`. (This used to
+        // refuse rather than return an empty map, because an empty map would
+        // silently hand a child an EMPTY environment instead of an inherited one.)
+        return processEnviron().createMap(gpa);
+    }
     var map: EnvMap = .init(gpa);
     errdefer map.deinit();
-    if (comptime @import("builtin").os.tag == .windows) {
-        // The Windows environment block is UTF-16 and reached through the PEB.
-        // Left to winX86, which can test it. This REFUSES rather than returning
-        // an empty map, because an empty map would silently hand a child an
-        // EMPTY environment instead of an inherited one.
-        return error.Unsupported;
-    }
     const env = std.c.environ;
     var n: usize = 0;
     while (env[n] != null) n += 1;
@@ -830,7 +851,7 @@ pub fn runCapture(gpa: std.mem.Allocator, argv: []const []const u8, max: usize, 
             // Threaded.global_single_threaded: spawning allocates (argv
             // conversion), and that instance is documented to work with a
             // failing allocator, so every spawn through it returns OutOfMemory.
-            var threaded: std.Io.Threaded = .init(gpa, .{});
+            var threaded: std.Io.Threaded = .init(gpa, .{ .environ = processEnviron() });
             defer threaded.deinit();
             const tio = threaded.io();
             var child = try std.process.spawn(tio, .{
@@ -920,7 +941,13 @@ pub fn killChild(child: *std.process.Child) void {
 /// panic, not an error.
 pub fn waitChild(child: *std.process.Child) !std.process.Child.Term {
     if (comptime zig16) {
-        if (child.id == null) return .{ .signal = .KILL }; // already reaped by kill
+        // Already reaped by kill. Windows has no signals -- std.posix.SIG there
+        // has no KILL member -- and a TerminateProcess'd child has no exit code
+        // worth inventing, so it reports .unknown instead.
+        if (child.id == null) return if (comptime @import("builtin").os.tag == .windows)
+            .{ .unknown = 0 }
+        else
+            .{ .signal = .KILL };
         return child.wait(io());
     }
     return child.wait();
@@ -934,7 +961,7 @@ pub fn waitChild(child: *std.process.Child) !std.process.Child.Term {
 /// it wants.
 pub fn spawnDetached(gpa: std.mem.Allocator, argv: []const []const u8) !void {
     if (zig16) {
-        var threaded: std.Io.Threaded = .init(gpa, .{});
+        var threaded: std.Io.Threaded = .init(gpa, .{ .environ = processEnviron() });
         defer threaded.deinit();
         _ = try std.process.spawn(threaded.io(), .{ .argv = argv });
     } else {
@@ -956,7 +983,7 @@ pub fn captureCommand(gpa: std.mem.Allocator, argv: []const []const u8, max: usi
         const out_file = try createFile(tmp_name, .{ .read = true });
         {
             defer close(out_file);
-            var threaded: std.Io.Threaded = .init(gpa, .{});
+            var threaded: std.Io.Threaded = .init(gpa, .{ .environ = processEnviron() });
             defer threaded.deinit();
             const tio = threaded.io();
             var child = try std.process.spawn(tio, .{ .argv = argv, .stdout = .{ .file = out_file } });

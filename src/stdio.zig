@@ -39,10 +39,15 @@ const is_windows = builtin.os.tag == .windows;
 
 pub const Error = error{WriteFailed};
 
-/// Raw file descriptor. On Windows this is a std.fs.File, which still exists
-/// on 0.15.2 and whose 0.16 port is winX86's to make on hardware that can test
-/// it.
-const Fd = if (is_windows) std.fs.File else c_int;
+/// Raw file descriptor: a HANDLE on Windows, an fd everywhere else.
+///
+/// Windows held a std.fs.File here until 0.16 removed std.fs.File along with the
+/// kernel32 calls beneath it. It now reaches its handle through win32.zig, which
+/// compiles on both toolchains. Optional because a process can legitimately have
+/// no standard handle (a GUI-subsystem launch); a write to a missing one fails
+/// instead of crashing.
+const Fd = if (is_windows) ?win32.HANDLE else c_int;
+const win32 = @import("win32.zig");
 
 const STDIN: c_int = 0;
 const STDOUT: c_int = 1;
@@ -53,7 +58,11 @@ const STDERR: c_int = 2;
 /// Loops because a single write may return a SHORT count -- on a pipe whose
 /// reader is slow, which is exactly what `wintermute | less` is -- and
 /// truncating a log line on backpressure is a silent failure. EINTR restarts.
-fn writeAllFd(fd: c_int, bytes: []const u8) Error!void {
+fn writeAllFd(fd: Fd, bytes: []const u8) Error!void {
+    if (comptime is_windows) {
+        win32.writeAll(fd, bytes) catch return Error.WriteFailed;
+        return;
+    }
     var off: usize = 0;
     while (off < bytes.len) {
         const n = std.c.write(fd, bytes.ptr + off, bytes.len - off);
@@ -70,10 +79,10 @@ fn writeAllFd(fd: c_int, bytes: []const u8) Error!void {
 /// of one print(); `@fieldParentPtr` in drain only needs the Writer to be
 /// embedded in it, not to outlive the call.
 const FdSink = struct {
-    fd: c_int,
+    fd: Fd,
     writer: std.Io.Writer,
 
-    fn init(fd: c_int) FdSink {
+    fn init(fd: Fd) FdSink {
         return .{
             .fd = fd,
             // Zero-length buffer: see the header. Every byte goes to drain.
@@ -117,10 +126,6 @@ pub const FileWriter = struct {
     fd: Fd,
 
     pub fn writeAll(self: FileWriter, bytes: []const u8) Error!void {
-        if (comptime is_windows) {
-            self.fd.writeAll(bytes) catch return Error.WriteFailed;
-            return;
-        }
         return writeAllFd(self.fd, bytes);
     }
 
@@ -129,10 +134,6 @@ pub const FileWriter = struct {
     }
 
     pub fn print(self: FileWriter, comptime fmt: []const u8, args: anytype) Error!void {
-        if (comptime is_windows) {
-            self.fd.deprecatedWriter().print(fmt, args) catch return Error.WriteFailed;
-            return;
-        }
         var sink = FdSink.init(self.fd);
         sink.writer.print(fmt, args) catch return Error.WriteFailed;
         // No flush: the zero-length buffer means nothing was ever held back.
@@ -141,9 +142,7 @@ pub const FileWriter = struct {
 
     /// Present because one call site reads from the stdin handle.
     pub fn read(self: FileWriter, buffer: []u8) Error!usize {
-        if (comptime is_windows) {
-            return self.fd.read(buffer) catch Error.WriteFailed;
-        }
+        if (comptime is_windows) return win32.read(self.fd, buffer);
         const n = std.c.read(self.fd, buffer.ptr, buffer.len);
         if (n < 0) return Error.WriteFailed;
         return @intCast(n);
@@ -158,7 +157,7 @@ pub const FileWriter = struct {
 /// and an unbuffered reader would make that one read(2) PER BYTE. The five
 /// affected declarations changed from const to var.
 pub const FileReader = struct {
-    fd: c_int,
+    fd: Fd,
     buf: [64 * 1024]u8 = undefined,
     start: usize = 0,
     end: usize = 0,
@@ -170,6 +169,12 @@ pub const FileReader = struct {
         if (self.start < self.end) return true;
         self.start = 0;
         self.end = 0;
+        if (comptime is_windows) {
+            const n = win32.read(self.fd, &self.buf);
+            if (n == 0) return false;
+            self.end = n;
+            return true;
+        }
         while (true) {
             const n = std.c.read(self.fd, &self.buf, self.buf.len);
             if (n < 0) {
@@ -247,19 +252,19 @@ pub const FileReader = struct {
 /// `handle` is std.posix.fd_t on BOTH toolchains (std.fs.File and std.Io.File
 /// agree on it), so one fd path serves process stdio and child pipes alike.
 pub fn writerFor(file: File) FileWriter {
-    return .{ .fd = if (comptime is_windows) file else file.handle };
+    return .{ .fd = file.handle };
 }
 
 pub fn readerFor(file: File) FileReader {
-    return .{ .fd = if (comptime is_windows) @panic("readerFor: windows unported") else file.handle };
+    return .{ .fd = file.handle };
 }
 
 pub fn stdout() FileWriter {
-    return .{ .fd = if (comptime is_windows) std.fs.File.stdout() else STDOUT };
+    return .{ .fd = if (comptime is_windows) win32.stdHandle(win32.STD_OUTPUT_HANDLE) else STDOUT };
 }
 
 pub fn stderr() FileWriter {
-    return .{ .fd = if (comptime is_windows) std.fs.File.stderr() else STDERR };
+    return .{ .fd = if (comptime is_windows) win32.stdHandle(win32.STD_ERROR_HANDLE) else STDERR };
 }
 
 /// A buffered reader on the process stdin.
@@ -269,11 +274,11 @@ pub fn stderr() FileWriter {
 /// strands any bytes already read into the copy -- with the old unbuffered
 /// deprecatedReader that was harmless, and it is not any more.
 pub fn stdinReader() FileReader {
-    return .{ .fd = STDIN };
+    return .{ .fd = if (comptime is_windows) win32.stdHandle(win32.STD_INPUT_HANDLE) else STDIN };
 }
 
 pub fn stdin() FileWriter {
-    return .{ .fd = if (comptime is_windows) std.fs.File.stdin() else STDIN };
+    return .{ .fd = if (comptime is_windows) win32.stdHandle(win32.STD_INPUT_HANDLE) else STDIN };
 }
 
 /// The file HANDLE type, for the places that store one in a struct rather than

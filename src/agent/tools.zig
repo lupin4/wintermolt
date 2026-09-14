@@ -9,6 +9,7 @@
 // with each API request so it knows what tools are available.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 const protocol = @import("../api/protocol.zig");
@@ -602,7 +603,20 @@ fn executeSchedule(alloc: Allocator, input_json: []const u8) ![]u8 {
 pub const tool_definitions = [_]protocol.ToolDefinition{
     .{
         .name = "bash",
-        .description = "Run a shell command and return stdout/stderr. Use for git, system commands, running programs.",
+        // SAY WHICH SHELL. The model cannot see the host.
+        //
+        // With a generic "run a shell command", a model asked for system info on
+        // Windows emitted uname / cat /etc/os-release / df -h, got an error, and
+        // then offered the SAME Unix commands again — an unbreakable loop where
+        // every turn looks like a tool failure rather than a wrong command.
+        // Naming the shell and giving the right verbs is what stops it.
+        .description = if (builtin.os.tag == .windows)
+            "Run a shell command via cmd.exe on WINDOWS and return stdout/stderr. " ++
+                "This is NOT a Unix shell: uname, /etc/os-release, /proc, df, ps and ls do not exist. " ++
+                "Use Windows commands — systeminfo, ver, hostname, dir, tasklist, wmic, " ++
+                "or `powershell -c \"<cmd>\"` for anything richer. Use for git, system commands, running programs."
+        else
+            "Run a shell command via /bin/sh and return stdout/stderr. Use for git, system commands, running programs.",
         .input_schema_json =
         \\{"type":"object","properties":{"command":{"type":"string","description":"The shell command to execute"}},"required":["command"]}
         ,

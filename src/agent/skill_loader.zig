@@ -344,8 +344,9 @@ pub const SkillRegistry = struct {
 // ---------------------------------------------------------------------------
 
 fn getGlobalSkillsDir(alloc: Allocator) ?[]const u8 {
-    const home = std.process.getEnvVarOwned(alloc, "HOME") catch return null;
-    defer alloc.free(home);
+    // compat.getenv, not getEnvVarOwned: 0.16 removed std's, and only
+    // compat.getenv falls back to USERPROFILE where Windows has no HOME.
+    const home = compat.getenv("HOME") orelse return null;
     return std.fmt.allocPrint(alloc, "{s}/.wintermolt/skills", .{home}) catch null;
 }
 

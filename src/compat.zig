@@ -10,6 +10,7 @@
 const std = @import("std");
 const fsio = @import("fsio.zig");
 const builtin = @import("builtin");
+const win32 = @import("win32.zig");
 
 // =============================================================================
 // getenv — borrowed-slice env var lookup matching std.posix.getenv semantics.
@@ -47,6 +48,31 @@ pub fn getenv(name: []const u8) ?[]const u8 {
         return std.mem.span(v);
     }
 
+    // WINDOWS HAS NO $HOME. It sets USERPROFILE.
+    //
+    // Dozens of call sites read getenv("HOME"), and several turn a miss into a
+    // hard failure -- storage, scheduler, session and router all
+    // `orelse return error.NoHomeDir`. Run from PowerShell or cmd, the program
+    // came up with:
+    //
+    //   [storage] Init failed: NoHomeDir
+    //   [scheduler] Init failed: NoHomeDir
+    //
+    // It only appeared to work when launched from MSYS2 or Git-Bash, which set
+    // HOME themselves -- invisible to anyone developing in a POSIX-ish shell,
+    // unavoidable for everyone else.
+    //
+    // Resolved HERE, not at the call sites: one place, no caller needs to know
+    // the platform, and an explicitly set HOME still wins so a deliberate
+    // override keeps working.
+    if (std.mem.eql(u8, name, "HOME")) {
+        if (lookupEnv("HOME")) |v| return v;
+        return lookupEnv("USERPROFILE");
+    }
+    return lookupEnv(name);
+}
+
+fn lookupEnv(name: []const u8) ?[]const u8 {
     fsio.lock(&env_mutex);
     defer fsio.unlock(&env_mutex);
     ensureEnvCache();
@@ -55,13 +81,12 @@ pub fn getenv(name: []const u8) ?[]const u8 {
         return if (cached.len == 0) null else cached;
     }
 
-    const value = std.process.getEnvVarOwned(env_allocator, name) catch |err| switch (err) {
-        error.EnvironmentVariableNotFound, error.InvalidWtf8 => {
-            const key_dup = env_allocator.dupe(u8, name) catch return null;
-            env_cache.put(key_dup, "") catch {};
-            return null;
-        },
-        else => return null,
+    // std.process.getEnvVarOwned is gone in 0.16; GetEnvironmentVariableW via
+    // win32.zig reads the same value on both toolchains.
+    const value = win32.getenvOwned(env_allocator, name) orelse {
+        const key_dup = env_allocator.dupe(u8, name) catch return null;
+        env_cache.put(key_dup, "") catch {};
+        return null;
     };
     const key_dup = env_allocator.dupe(u8, name) catch {
         env_allocator.free(value);
@@ -76,6 +101,25 @@ pub fn getenv(name: []const u8) ?[]const u8 {
 }
 
 // =============================================================================
+// initConsole / restoreConsole — a UTF-8 console with no setup from the user.
+//
+// The banner's box drawing and anything non-ASCII a model streams back is UTF-8,
+// and a Windows console decodes with its code page (437 / 1252 by default), so
+// it all rendered as mojibake unless the user had first typed
+// `[Console]::OutputEncoding = [System.Text.Encoding]::UTF8`. The program now
+// does that itself on the way in and puts the old code pages back on the way
+// out. No-op everywhere but Windows.
+// =============================================================================
+
+pub fn initConsole() void {
+    if (comptime builtin.os.tag == .windows) win32.initConsole();
+}
+
+pub fn restoreConsole() void {
+    if (comptime builtin.os.tag == .windows) win32.restoreConsole();
+}
+
+// =============================================================================
 // stdinReadyToRead — non-blocking "is there input on stdin?" check.
 //
 // On POSIX this is poll() with a 0ms timeout. On Windows we use
@@ -85,12 +129,9 @@ pub fn getenv(name: []const u8) ?[]const u8 {
 
 pub fn stdinReadyToRead() bool {
     if (comptime builtin.os.tag == .windows) {
-        const w = std.os.windows;
-        const maybe_h = w.kernel32.GetStdHandle(w.STD_INPUT_HANDLE);
-        const h = maybe_h orelse return false;
-        if (h == w.INVALID_HANDLE_VALUE) return false;
-        const r = w.kernel32.WaitForSingleObject(h, 0);
-        return r == w.WAIT_OBJECT_0;
+        // kernel32.GetStdHandle / WaitForSingleObject left std in 0.16.
+        const h = win32.stdHandle(win32.STD_INPUT_HANDLE) orelse return false;
+        return win32.WaitForSingleObject(h, 0) == win32.WAIT_OBJECT_0;
     }
     var poll_fds = [_]std.posix.pollfd{.{
         .fd = std.posix.STDIN_FILENO,
@@ -109,10 +150,7 @@ pub fn stdinReadyToRead() bool {
 
 pub fn drainStdinNonBlocking() void {
     if (comptime builtin.os.tag == .windows) {
-        const w = std.os.windows;
-        const maybe_h = w.kernel32.GetStdHandle(w.STD_INPUT_HANDLE);
-        const h = maybe_h orelse return;
-        if (h == w.INVALID_HANDLE_VALUE) return;
+        const h = win32.stdHandle(win32.STD_INPUT_HANDLE) orelse return;
         _ = FlushConsoleInputBuffer(h);
         return;
     }

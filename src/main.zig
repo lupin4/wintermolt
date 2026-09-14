@@ -50,6 +50,11 @@ pub fn main(init: std.process.Init) !void {
     defer arena.deinit();
     const alloc = arena.allocator();
 
+    // UTF-8 console on Windows, so nobody has to set [Console]::OutputEncoding
+    // before the banner renders. No-op elsewhere; see compat.initConsole.
+    compat.initConsole();
+    defer compat.restoreConsole();
+
     // std.fs.File and deprecatedWriter are both gone (0.16 removed std.fs.File;
     // deprecatedWriter went with it). std.Io.File + writerStreaming replaces
     // them, and this exact form compiles and behaves identically on 0.16 and
@@ -74,7 +79,12 @@ pub fn main(init: std.process.Init) !void {
     // Parse args
     // std.process.argsWithAllocator is gone; the iterator comes off Init now and
     // needs no allocator or deinit on POSIX (it walks the existing argv vector).
-    var args = init.minimal.args.iterate();
+    //
+    // iterate() is POSIX-only: on Windows it is a compile error ("use
+    // initAllocator instead"), because argv there is decoded from the UTF-16
+    // command line. iterateAllocator works on every target.
+    var args = try init.minimal.args.iterateAllocator(alloc);
+    defer args.deinit();
     _ = args.next(); // skip executable name
 
     var exec_prompt: ?[]const u8 = null;
@@ -1162,7 +1172,7 @@ fn printBanner(w: anytype) !void {
         \\  ╚╩╝┴┘└┘ ┴ └─┘┴└─┴ ┴└─┘┴─┘┴
         \\
     );
-    try w.print("  v{s} — Lite AI Agent CLI (Apache-2.0)\n", .{VERSION});
+    try w.print("  v{s} — Lite AI Agent CLI (MIT)\n", .{VERSION});
     try w.writeAll("  Type /help for commands, /quit to exit.\n\n");
 }
 

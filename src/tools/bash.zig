@@ -2,12 +2,13 @@
 //
 // bash.zig — Shell command execution tool
 //
-// Runs commands via /bin/sh -c, capturing stdout+stderr.
+// Runs commands via /bin/sh -c (cmd.exe /c on Windows), capturing stdout+stderr.
 // Output is truncated at 30000 bytes to stay within API limits.
 // Uses std.process.Child.collectOutput (Zig 0.15.2 API).
 // Secrets are redacted before returning output to the API context.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const fsio = @import("../fsio.zig");
 const stdio = @import("../stdio.zig");
 const Allocator = std.mem.Allocator;
@@ -44,7 +45,21 @@ fn executeHost(alloc: Allocator, command: []const u8) ![]u8 {
     // Std{out,err}StreamTooLong and kept the partial data. runCapture reads via
     // readToEndAlloc, which fails on overflow, so output beyond MAX_OUTPUT is now
     // an error instead of a truncated success.
-    const run = try fsio.runCapture(alloc, &[_][]const u8{ "/bin/sh", "-l", "-c", cmd_z }, MAX_OUTPUT, null);
+    // THE SHELL IS PLATFORM-SPECIFIC. /bin/sh does not exist on Windows.
+    //
+    // This spawned "/bin/sh -l -c" unconditionally, so on Windows the tool
+    // failed on every call -- `[tool: bash] [error]` -- and the model, told only
+    // that "some system commands aren't available", went on to suggest uname and
+    // cat /etc/os-release, which would not have worked either.
+    //
+    // cmd.exe is on every Windows install; PowerShell is not guaranteed to be on
+    // PATH under that name. The POSIX branch keeps the login shell so the user's
+    // PATH (Homebrew, pyenv, nvm) is inherited, which is why -l is there.
+    const argv: []const []const u8 = if (builtin.os.tag == .windows)
+        &[_][]const u8{ "cmd.exe", "/c", cmd_z }
+    else
+        &[_][]const u8{ "/bin/sh", "-l", "-c", cmd_z };
+    const run = try fsio.runCapture(alloc, argv, MAX_OUTPUT, null);
     defer run.deinit(alloc);
 
     const stdout = run.stdout;

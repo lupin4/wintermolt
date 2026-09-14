@@ -4,6 +4,44 @@ All notable changes to Wintermolt are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **Relicensed from Apache 2.0 to MIT.** `LICENSE` now carries the MIT text;
+  the README badge, comparison table and footer, the startup banner and the
+  build.zig header were updated to match.
+- **Clocks come from forTime.** `fsio.zig`'s timestamp and monotonic clocks
+  call forTime's C ABI (`ftim_now_unix_ns`, `ftim_mono_ns`) from its prebuilt
+  archive instead of libc `clock_gettime`, which does not exist on Windows.
+  `scripts/sync-prebuilts.sh` now also syncs forTime, forNet and the forIO
+  core pack, and takes `SYNC_TARGETS` so each machine copies only its own
+  target.
+- **Default local model is `qwen3:8b`** (was `qwen3:0.6b`, which narrated
+  instead of acting on tool results). `WINTERMOLT_MODEL` /
+  `WINTERMOLT_OLLAMA_MODEL` still override.
+
+### Fixed
+
+- **Windows (Zig 0.16).** Builds and runs from a plain PowerShell or cmd
+  window with no setup: `HOME` falls back to `USERPROFILE`; the console is
+  switched to UTF-8 with ANSI escapes at startup and restored on exit; the
+  bash tool runs `cmd.exe /c` and its description names Windows commands;
+  console I/O, environment lookup and random bytes go through a small
+  `src/win32.zig` because 0.16 removed those kernel32 paths from std.
+- **Child processes started with an empty environment** (all targets, Zig
+  0.16). `std.Io.Threaded` defaults its `environ` to empty and spawn builds the
+  child's environment from it, so every child fsio spawned had no PATH, HOME or
+  API keys. On Windows the bash tool could run `ver` (a cmd builtin) but
+  answered "'systeminfo' is not recognized" to real commands; on POSIX
+  `/bin/sh -l` hid it for the shell tool but not for MCP servers. fsio now
+  passes the real process environment (`.global` on Windows, libc `environ`
+  elsewhere), and `currentEnvMap` works on Windows.
+- **Ollama tool calls.** Follow-up requests carrying a tool call were
+  rejected with HTTP 400 because `arguments` was sent as a JSON string;
+  Ollama's `/api/chat` takes an object. The 400 handler no longer claims the
+  model lacks tool support.
+
 ## [0.5.0] — 2026-06-04
 
 ### Added
