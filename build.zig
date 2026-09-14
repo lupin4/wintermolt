@@ -46,6 +46,34 @@ fn buildRootHas(b: *std.Build, sub_path: []const u8) !void {
 }
 
 pub fn build(b: *std.Build) void {
+    // RELEASE BINARIES MUST NOT BE HOST-TUNED.
+    //
+    // standardTargetOptions with no -Dtarget gives Zig the NATIVE target
+    // INCLUDING native CPU features, so a plain `zig build` on a machine with
+    // wide vector support bakes those instructions into the binary. That is not
+    // hypothetical: the published prebuilt/wintermolt-linux-arm64 was built this
+    // way on a Jetson Thor and carried 17 SVE instructions (ptrue, movprfx).
+    // Generic aarch64 has no SVE, so it SIGILLs on a Raspberry Pi or any older
+    // Jetson — and the same mistake put 76k AVX-512 instructions in the Windows
+    // release exe.
+    //
+    // SO: BUILD THE PUBLISHED BINARY WITH AN EXPLICIT BASELINE CPU:
+    //
+    //     zig build -Doptimize=ReleaseFast -Dcpu=baseline
+    //
+    // and verify it before publishing — on aarch64 this must print 0:
+    //
+    //     objdump -d zig-out/bin/wintermolt \
+    //       | grep -cE '\b(ptrue|movprfx|whilelo|ld1d|st1d|cntd)\b'
+    //
+    // -Dtarget= is the WRONG knob. Naming a target makes Zig treat the build as
+    // a CROSS-compile and stop searching native paths, so libcurl and libsqlite3
+    // stop resolving. -Dcpu= keeps the native target and only lowers the CPU.
+    //
+    // A dedicated `release` step was tried and removed: it has to restate the
+    // whole link surface (curl, sqlite3, the sibling archives), which then drifts
+    // from this one silently. One target declaration, one flag at the command
+    // line.
     const target = b.standardTargetOptions(.{});
     // ReleaseFast (org optimize policy): wintermolt links ZERO forKernels archives at
     // build time, so there is no Fortran under this layer — the compute IS the Zig
