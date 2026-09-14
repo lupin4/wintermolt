@@ -26,6 +26,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   NOTICE kept.
 - `zig build test-tui`: headless TUI tests through zortui's testing module,
   driven by a fake agent. They are also part of `zig build test`.
+- **Themes for the full-screen view and the canvas.** Pick one of zortui's
+  nine (`dark`, `dracula`, `nord`, `tokyo-night`, `gruvbox`, `matrix`,
+  `monochrome`, `high-contrast`, `light`) with `--theme <name>`,
+  `WINTERMOLT_THEME`, or `/theme <name>`, which switches the running view at
+  once and saves `WINTERMOLT_THEME=<name>` in `~/.wintermolt/.env`. Precedence
+  is flag, environment, saved, then `dark`; an unknown name lists the valid
+  ones and the next source is used. `/theme` alone lists them. Canvas surfaces
+  follow the same theme (`canvas/tui.zig` gains `renderSurfaceThemed`).
 
 ### Changed
 

@@ -66,7 +66,8 @@ const surface_width: usize = 76;
 /// the ceiling for how tall a surface may grow before content is dropped.
 const max_height: usize = 400;
 
-const theme_name = "dark";
+/// The theme renderSurface draws in. renderSurfaceThemed takes any other.
+pub const default_theme = "dark";
 
 // ---------------------------------------------------------------- the model
 
@@ -249,6 +250,14 @@ const Surface = struct {
 /// `input_json` is the full canvas_update tool input, with "components" and an
 /// optional "data" field.
 pub fn renderSurface(alloc: Allocator, input_json: []const u8) ![]u8 {
+    return renderSurfaceThemed(alloc, input_json, default_theme);
+}
+
+/// renderSurface in a named zortui theme; tools/canvas.zig passes the one the
+/// user selected. The name is taken ONCE and threaded to both passes -- the
+/// measuring pass (measureHeight) and the draw -- because a measured height
+/// from one theme's layout would clip or pad a surface drawn in another.
+pub fn renderSurfaceThemed(alloc: Allocator, input_json: []const u8, theme_name: []const u8) ![]u8 {
     // Everything the parse produces — node slices, table cells, duped strings —
     // lives here and dies in one call. The nodes borrow from the parsed JSON,
     // so the arena must outlive rendering, not just parsing.
@@ -279,6 +288,7 @@ pub fn renderSurface(alloc: Allocator, input_json: []const u8) ![]u8 {
     content_frame.* = .{ .alloc = a, .nodes = nodes };
     const content_rows = try measureHeight(
         alloc,
+        theme_name,
         surface_width - 2, // inside the panel's left and right borders
         ui.Body.with(content_frame, Frame.draw),
     );
@@ -377,7 +387,7 @@ const render_overrides: zortui.capabilities.Overrides = .{
 /// The WIDTH matters and is not cosmetic: wrapped text occupies a different
 /// number of rows at a different column count, so measuring at the outer width
 /// and drawing at the inner one would under-count every paragraph that wraps.
-fn measureHeight(alloc: Allocator, width: usize, body: ui.Body) !usize {
+fn measureHeight(alloc: Allocator, theme_name: []const u8, width: usize, body: ui.Body) !usize {
     var probe = try zortui.testing.renderWith(
         alloc,
         width,
@@ -639,6 +649,49 @@ fn nearby(context: []const u8, keys: []const []const u8) ?[]const u8 {
 }
 
 // -------------------------------------------------------------------- tests
+
+test "a selected theme reaches both passes: drawn in it, measured in it" {
+    const alloc = std.testing.allocator;
+    // Long enough to wrap, so the measured height depends on the layout.
+    const json =
+        \\{"title":"Themed","components":[{"type":"text","value":"a paragraph long enough to wrap across the inside of a seventy-six column panel at least once, and then some more"},{"type":"divider"},{"type":"text","value":"after"}]}
+    ;
+    const dark_out = try renderSurface(alloc, json);
+    defer alloc.free(dark_out);
+    const light_out = try renderSurfaceThemed(alloc, json, "light");
+    defer alloc.free(light_out);
+
+    // The draw pass used light: some of light's colours appear, none of dark's.
+    const Palette = struct {
+        fn uses(out: []const u8, theme: zortui.Theme) !bool {
+            for ([_]zortui.Color{ theme.background, theme.surface, theme.foreground, theme.border, theme.title, theme.muted }) |c| {
+                var buf: [32]u8 = undefined;
+                const fg = try std.fmt.bufPrint(&buf, "\x1b[38;2;{d};{d};{d}m", .{ c.red(), c.green(), c.blue() });
+                if (std.mem.indexOf(u8, out, fg) != null) return true;
+                const bg = try std.fmt.bufPrint(&buf, "\x1b[48;2;{d};{d};{d}m", .{ c.red(), c.green(), c.blue() });
+                if (std.mem.indexOf(u8, out, bg) != null) return true;
+            }
+            return false;
+        }
+    };
+    try std.testing.expect(!std.mem.eql(u8, dark_out, light_out));
+    try std.testing.expect(try Palette.uses(light_out, zortui.theme.light));
+    try std.testing.expect(!try Palette.uses(light_out, zortui.theme.dark));
+    try std.testing.expect(try Palette.uses(dark_out, zortui.theme.dark));
+
+    // The measuring pass used light too: the drawn surface is exactly the
+    // content measured in light plus the panel's top and bottom border.
+    var arena = std.heap.ArenaAllocator.init(alloc);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const nodes = (try parseJson(a, json)) orelse return error.NotParsed;
+    const frame = try a.create(Frame);
+    frame.* = .{ .alloc = a, .nodes = nodes };
+    const measured = try measureHeight(alloc, "light", surface_width - 2, ui.Body.with(frame, Frame.draw));
+    try std.testing.expect(measured > 2);
+    try std.testing.expectEqual(measured + 2, std.mem.count(u8, light_out, "\n"));
+    try std.testing.expectEqual(std.mem.count(u8, dark_out, "\n"), std.mem.count(u8, light_out, "\n"));
+}
 
 test "renders a surface with a title and text" {
     const alloc = std.testing.allocator;

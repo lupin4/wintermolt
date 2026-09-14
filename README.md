@@ -513,6 +513,25 @@ default, which scrolls the transcript; other terminals may need their
 and the terminal can no longer select (many terminals still select with
 Shift+drag).
 
+**Themes.** Nine palettes from zortui: `dark` (the default), `dracula`, `nord`,
+`tokyo-night`, `gruvbox`, `matrix`, `monochrome`, `high-contrast` and `light`.
+Either spelling works, in any case (`tokyo-night` or `tokyoNight`). The
+full-screen view and canvas surfaces both use the theme, taken from the first
+of these that names a real theme:
+
+1. `wintermolt --theme <name>`, for that run;
+2. `WINTERMOLT_THEME=<name>` in the environment;
+3. the theme `/theme` saved in `~/.wintermolt/.env`;
+4. `dark`.
+
+A name that is not a theme is reported with the list of valid names (an
+`[error]` line in the full-screen view) and the next source is used. `/theme`
+alone lists the themes with the current one marked; `/theme <name>` switches
+the running view at once and saves the choice as `WINTERMOLT_THEME=<name>` in
+`~/.wintermolt/.env`, leaving everything else in that file as it was. In the
+plain REPL `/theme` lists and saves too; the colours show in the full-screen
+view and the canvas.
+
 The plain REPL is still there, unchanged:
 
 - **Automatically** when stdin or stdout is not a terminal, e.g.
@@ -532,6 +551,7 @@ full-screen view use `/keys list`, or run `wintermolt --keys`.
 | `/quit` `/exit` | Exit the REPL |
 | `/clear` `/new` | Archive conversation and start fresh |
 | `/model [name]` | Show or switch AI backend |
+| `/theme [name]` | List themes, or switch the full-screen view and canvas and save it |
 | `/look [prompt]` | Camera capture + AI vision |
 | `/screenshot [prompt]` | Screen capture + AI vision |
 | `/schedule` | Manage cron jobs (list, add, remove, enable, disable) |

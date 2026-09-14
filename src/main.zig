@@ -41,6 +41,7 @@ const protocol = @import("api/protocol.zig");
 const setup = @import("setup.zig");
 const export_mod = @import("agent/export.zig");
 const tui = @import("tui.zig");
+const theme_pref = @import("theme_pref.zig");
 const zortui = @import("zortui");
 
 const VERSION = "0.5.0";
@@ -112,9 +113,18 @@ pub fn main(init: std.process.Init) !void {
     var extension_arg: ?[]const u8 = null;
     var run_setup = false;
     var plain_mode = false;
+    var theme_flag: ?[]const u8 = null;
     while (args.next()) |arg| {
         if (std.mem.eql(u8, arg, "--plain")) {
             plain_mode = true;
+        }
+        if (std.mem.eql(u8, arg, "--theme")) {
+            theme_flag = args.next() orelse {
+                try stderr.writeAll("Error: --theme requires a theme name: ");
+                try theme_pref.writeNames(stderr);
+                try stderr.writeAll("\n");
+                std.process.exit(1);
+            };
         }
         if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             try printHelp(stdout);
@@ -210,6 +220,21 @@ pub fn main(init: std.process.Init) !void {
             }
         };
         return;
+    }
+
+    // Theme for the full-screen view and the canvas. WINTERMOLT_THEME is read
+    // BEFORE loadDotEnv copies ~/.wintermolt/.env into the environment, so the
+    // shell's value and the one /theme saved stay separate sources.
+    const theme_choice = theme_pref.resolve(theme_flag, compat.getenv(theme_pref.env_key), loadSavedTheme(alloc));
+    _ = theme_pref.select(theme_choice.name);
+    // A name that is not a theme is reported where it will be seen: in the
+    // full-screen transcript when that opens, on stderr otherwise.
+    var theme_reported = false;
+    const tui_possible = exec_prompt == null and !chat_mode and !web_mode and !menubar_mode and
+        !gateway_mode and !mcp_server_mode and !plain_mode and compat.stdioIsTerminal();
+    if (!tui_possible) {
+        try reportThemeRejections(stderr, &theme_choice);
+        theme_reported = true;
     }
 
     // Load .env file
@@ -430,7 +455,7 @@ pub fn main(init: std.process.Init) !void {
     // redirected stdout, --plain or WINTERMOLT_PLAIN=1 keep the plain REPL below,
     // unchanged.
     if (!plain_mode and !plainRequestedByEnv() and compat.stdioIsTerminal()) {
-        if (runTui(init, alloc, &agent, &session_mgr)) |_| {
+        if (runTui(init, alloc, &agent, &session_mgr, &theme_choice, &theme_reported)) |_| {
             return;
         } else |e| {
             if (e != error.TuiUnavailable) return e;
@@ -439,6 +464,7 @@ pub fn main(init: std.process.Init) !void {
     }
 
     // Interactive REPL
+    if (!theme_reported) try reportThemeRejections(stderr, &theme_choice);
     try printBanner(stdout);
 
     // stdio.stdinReader is BUFFERED and returned by value, so it is bound to a
@@ -600,6 +626,13 @@ fn dispatchCommand(
         try handleTtsCmd(alloc, stdout, stderr, "");
         return .handled;
     }
+    // The full-screen view handles /theme itself (tui.zig); this is the plain
+    // REPL's, which lists and saves -- the colours apply in the full-screen view
+    // and the canvas.
+    if (std.mem.eql(u8, trimmed, "/theme") or std.mem.startsWith(u8, trimmed, "/theme ")) {
+        try handleThemeCmd(alloc, stdout, stderr, std.mem.trim(u8, trimmed["/theme".len..], " \t"));
+        return .handled;
+    }
     if (std.mem.startsWith(u8, trimmed, "/session")) {
         const arg = std.mem.trim(u8, trimmed[8..], " \t");
         try handleSessionCmd(session_mgr, alloc, stdout, arg);
@@ -626,6 +659,51 @@ fn tuiMouseRequestedByEnv() bool {
     return v.len > 0 and !std.mem.eql(u8, v, "0");
 }
 
+// Theme selection (theme_pref.zig). The saved choice lives in the existing
+// ~/.wintermolt/.env, as WINTERMOLT_THEME.
+
+fn themeConfigPath(alloc: std.mem.Allocator) ![]u8 {
+    const home = compat.getenv("HOME") orelse return error.NoHomeDir;
+    return theme_pref.envPath(alloc, home);
+}
+
+/// The saved theme name, as written; null if there is none or it cannot be read.
+fn loadSavedTheme(alloc: std.mem.Allocator) ?[]const u8 {
+    const path = themeConfigPath(alloc) catch return null;
+    return theme_pref.loadSaved(alloc, fsio.io(), fsio.cwd(), path) catch null;
+}
+
+fn saveTheme(alloc: std.mem.Allocator, name: []const u8) !void {
+    const path = try themeConfigPath(alloc);
+    try theme_pref.save(alloc, fsio.io(), fsio.cwd(), path, name);
+}
+
+/// "[theme] Unknown theme 'x' (from --theme). Themes: .... Using dark (the default)."
+fn reportThemeRejections(w: anytype, choice: *const theme_pref.Resolved) !void {
+    for (choice.rejected()) |r| {
+        try w.writeAll("[theme] ");
+        try theme_pref.writeUnknown(w, r.value, r.source);
+        try w.print(" Using {s} ({s}).\n", .{ choice.name, theme_pref.sourceLabel(choice.source) });
+    }
+}
+
+/// The plain REPL's /theme: list the themes, or select and save one.
+fn handleThemeCmd(alloc: std.mem.Allocator, w: anytype, err_w: anytype, arg: []const u8) !void {
+    if (arg.len == 0) return theme_pref.writeList(w, theme_pref.selected());
+    const name = theme_pref.canonical(arg) orelse {
+        try err_w.writeAll("[theme] ");
+        try theme_pref.writeUnknown(err_w, arg, null);
+        try err_w.writeByte('\n');
+        return;
+    };
+    _ = theme_pref.select(name);
+    saveTheme(alloc, name) catch |e| {
+        try err_w.print("[theme] Using {s} for this session; could not save it: {s}\n", .{ name, @errorName(e) });
+        return;
+    };
+    try w.print("Theme set to {s} and saved to ~/.wintermolt/.env. It applies to the full-screen view and the canvas.\n", .{name});
+}
+
 /// What the TUI drives: the REPL's own dispatch, on the TUI's worker thread.
 /// Handlers and the agent write through stdio.stdout()/stderr(), which the
 /// session's sink routes into the transcript.
@@ -635,7 +713,14 @@ const TuiRunner = struct {
     session_mgr: *session_mod.SessionManager,
 
     fn runner(self: *TuiRunner) tui.Runner {
-        return .{ .ctx = self, .run = run, .info = info };
+        return .{ .ctx = self, .run = run, .info = info, .set_theme = setTheme };
+    }
+
+    /// UI thread, between jobs only: select `name` for the canvas and save it.
+    fn setTheme(ctx: *anyopaque, name: []const u8) anyerror!void {
+        const self: *TuiRunner = @ptrCast(@alignCast(ctx));
+        _ = theme_pref.select(name);
+        try saveTheme(self.alloc, name);
     }
 
     fn run(ctx: *anyopaque, line: []const u8, _: *tui.Inbox) void {
@@ -693,11 +778,14 @@ fn runTui(
     alloc: std.mem.Allocator,
     agent: *loop_mod.AgentLoop,
     session_mgr: *session_mod.SessionManager,
+    theme_choice: *const theme_pref.Resolved,
+    theme_reported: *bool,
 ) !void {
     const gpa = init.gpa;
     var runner: TuiRunner = .{ .agent = agent, .alloc = alloc, .session_mgr = session_mgr };
     var session = tui.Session.init(gpa, runner.runner(), VERSION);
     defer session.deinit();
+    session.theme = theme_choice.name;
 
     // Due jobs, as the REPL runs them before its first prompt -- before the
     // screen is taken, so anything they print reaches the normal console.
@@ -707,8 +795,19 @@ fn runTui(
     // forTime's monotonic clock (ftim_mono_ns), never a clock of its own.
     var app = zortui.App.init(
         gpa,
-        tui.appOptions(.fromEnviron(&init.minimal.environ), fsio.monoNs, tuiMouseRequestedByEnv()),
+        tui.appOptions(.fromEnviron(&init.minimal.environ), fsio.monoNs, tuiMouseRequestedByEnv(), theme_choice.name),
     ) catch return error.TuiUnavailable;
+
+    // Theme names that were given but are not themes: [error] lines up top.
+    for (theme_choice.rejected()) |r| {
+        var msg: std.Io.Writer.Allocating = .init(gpa);
+        defer msg.deinit();
+        msg.writer.writeAll("[error] ") catch continue;
+        theme_pref.writeUnknown(&msg.writer, r.value, r.source) catch continue;
+        msg.writer.print(" Using {s} ({s}).", .{ theme_choice.name, theme_pref.sourceLabel(theme_choice.source) }) catch continue;
+        session.transcript.add(.err, msg.written());
+    }
+    theme_reported.* = true;
 
     tui.active.store(true, .release);
     session.installSink();
@@ -738,6 +837,8 @@ fn tuiLoop(app: *zortui.App, session: *tui.Session) !void {
         // inherited stderr (an MCP server) can write to the console behind the
         // sink's back. Ctrl+L does the same on demand.
         if (session.pump() or session.takeRedraw()) app.redraw();
+        // /theme: the next frame is drawn, in full, in the new palette.
+        if (session.takeThemeChange()) |name| app.setTheme(name);
         _ = try app.draw(zortui.Body.with(session, tui.Session.view));
     }
 }
@@ -1395,11 +1496,15 @@ fn printHelp(w: anytype) !void {
         \\  /route         — Manage multi-agent routing bindings
         \\  /agents        — Show agent pool status
         \\  /tailscale     — Show Tailscale network status
+        \\  /theme [name]  — List themes, or switch the full-screen view and canvas and save it
         \\
         \\Modes:
         \\  wintermolt              — Interactive chat: full-screen in a terminal,
         \\                            plain REPL when stdin or stdout is not a terminal
         \\  wintermolt --plain      — Plain line-by-line REPL, even in a terminal
+        \\  wintermolt --theme NAME — Theme for the full-screen view and canvas (this run):
+        \\                            dark, dracula, nord, tokyo-night, gruvbox, matrix,
+        \\                            monochrome, high-contrast, light
         \\  wintermolt -e "prompt"  — Single-shot execution
         \\  wintermolt --keys       — Configure API keys
         \\  wintermolt --setup      — Alias for --keys
@@ -1441,6 +1546,8 @@ fn printHelp(w: anytype) !void {
         \\  WINTERMOLT_PLAIN=1   — Same as --plain: never open the full-screen view
         \\  WINTERMOLT_TUI_MOUSE=1 — Full-screen view takes the mouse (wheel, clicks);
         \\                         the terminal can then no longer select text
+        \\  WINTERMOLT_THEME=NAME  — Theme, below --theme and above the one /theme saved
+        \\                         in ~/.wintermolt/.env (default: dark)
         \\
     );
 }

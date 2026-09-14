@@ -34,6 +34,7 @@ const zortui = @import("zortui");
 // Deliberately not fsio.zig: this file stays free of the agent's platform layer
 // (and of fsio's POSIX-only tests) so the headless tests build everywhere.
 const stdio = @import("stdio.zig");
+const theme_pref = @import("theme_pref.zig");
 
 const Allocator = std.mem.Allocator;
 const Container = zortui.Container;
@@ -69,6 +70,10 @@ pub const Runner = struct {
     /// Runs on the UI thread, and only while no job is running. The returned
     /// slices are copied before the next job starts.
     info: *const fn (ctx: *anyopaque) Info,
+    /// Runs on the UI thread, never while a job runs: make `name` (a canonical
+    /// theme name) the process-wide theme -- the canvas renders with it -- and
+    /// save it. Null means a /theme switch lasts only this session.
+    set_theme: ?*const fn (ctx: *anyopaque, name: []const u8) anyerror!void = null,
 };
 
 /// Set while the alternate screen is up, so a panic can put the terminal back.
@@ -91,9 +96,13 @@ pub fn emergencyRestore() void {
 /// mouse-tracking sequence is sent, and on Windows the console keeps Quick
 /// Edit. The keyboard scrolls either way, and Windows Terminal turns the wheel
 /// into Up/Down on the alternate screen, which scroll too.
-pub fn appOptions(env: zortui.capabilities.Env, clock: zortui.Clock, mouse: bool) zortui.AppOptions {
+///
+/// `theme` is the canonical name theme_pref resolved (--theme, WINTERMOLT_THEME,
+/// ~/.wintermolt/.env, then dark); /theme changes it later through App.setTheme.
+pub fn appOptions(env: zortui.capabilities.Env, clock: zortui.Clock, mouse: bool, theme: []const u8) zortui.AppOptions {
     return .{
         .terminal = .{ .env = env, .title = "wintermolt", .mouse = mouse },
+        .theme = theme,
         // Quitting is ours: `q` has to be typeable; Esc, Ctrl+C and /quit quit.
         .quit_keys = &.{},
         .focus_navigation = false,
@@ -428,6 +437,11 @@ pub const Session = struct {
     frame: u64 = 0,
     frame_alloc: Allocator = undefined,
 
+    /// The theme the screen is drawn in, by canonical name.
+    theme: []const u8 = theme_pref.default_name,
+    /// Set by /theme until the app has applied it (takeThemeChange).
+    theme_pending: ?[]const u8 = null,
+
     pub fn init(gpa: Allocator, runner: Runner, version: []const u8) Session {
         var self: Session = .{
             .gpa = gpa,
@@ -552,6 +566,16 @@ pub const Session = struct {
             self.transcript.add(.info, "(still working on the previous request; wait for it to finish)");
             return;
         }
+        // On this thread, not the worker's: it changes how the screen is drawn,
+        // and it can only get here while no job is running, so the canvas never
+        // renders during a switch.
+        if (std.mem.eql(u8, line, "/theme") or std.mem.startsWith(u8, line, "/theme ")) {
+            self.transcript.push(.user, line);
+            self.themeCommand(std.mem.trim(u8, line["/theme".len..], " \t"));
+            self.editor.clear();
+            self.scroll = 0;
+            return;
+        }
         const owned = self.gpa.dupe(u8, line) catch return;
         self.transcript.push(.user, owned);
         self.editor.clear();
@@ -620,6 +644,47 @@ pub const Session = struct {
     pub fn takeRedraw(self: *Session) bool {
         defer self.redraw_requested = false;
         return self.redraw_requested;
+    }
+
+    /// /theme with no argument lists the themes; /theme <name> switches to one,
+    /// saves it through the runner, and confirms in the transcript. An unknown
+    /// name is an [error] line and changes nothing.
+    pub fn themeCommand(self: *Session, arg: []const u8) void {
+        var out: std.Io.Writer.Allocating = .init(self.gpa);
+        defer out.deinit();
+        const w = &out.writer;
+
+        if (arg.len == 0) {
+            theme_pref.writeList(w, self.theme) catch return;
+            self.transcript.add(.info, std.mem.trimEnd(u8, out.written(), "\n"));
+            return;
+        }
+        const name = theme_pref.canonical(arg) orelse {
+            w.writeAll("[error] ") catch return;
+            theme_pref.writeUnknown(w, arg, null) catch return;
+            self.transcript.add(.err, out.written());
+            return;
+        };
+        self.theme = name;
+        self.theme_pending = name;
+        if (self.runner.set_theme) |set| {
+            set(self.runner.ctx, name) catch |e| {
+                w.print("[error] Theme set to {s} for this session, but it could not be saved: {s}", .{ name, @errorName(e) }) catch return;
+                self.transcript.add(.err, out.written());
+                return;
+            };
+            w.print("Theme set to {s} and saved to ~/.wintermolt/.env.", .{name}) catch return;
+        } else {
+            w.print("Theme set to {s} for this session.", .{name}) catch return;
+        }
+        self.transcript.add(.info, out.written());
+    }
+
+    /// The theme /theme switched to since the last call, for the app to apply
+    /// (App.setTheme repaints the whole screen). UI thread.
+    pub fn takeThemeChange(self: *Session) ?[]const u8 {
+        defer self.theme_pending = null;
+        return self.theme_pending;
     }
 
     // ── view ───────────────────────────────────────────────────────────
@@ -784,9 +849,16 @@ const testing = std.testing;
 const FakeAgent = struct {
     received: std.ArrayList(u8) = .empty,
     alloc: Allocator,
+    /// What /theme asked the runner to apply and save.
+    theme_saved: ?[]const u8 = null,
 
     fn runner(self: *FakeAgent) Runner {
-        return .{ .ctx = self, .run = run, .info = info };
+        return .{ .ctx = self, .run = run, .info = info, .set_theme = setTheme };
+    }
+
+    fn setTheme(ctx: *anyopaque, name: []const u8) anyerror!void {
+        const self: *FakeAgent = @ptrCast(@alignCast(ctx));
+        self.theme_saved = name;
     }
 
     fn run(ctx: *anyopaque, line: []const u8, inbox: *Inbox) void {
@@ -822,7 +894,7 @@ fn typeText(session: *Session, text: []const u8) void {
 }
 
 fn render(session: *Session) !zortui.RenderedScreen {
-    return zortui.renderToScreen(testing.allocator, 80, 24, "dark", zortui.Body.with(session, Session.view));
+    return zortui.renderToScreen(testing.allocator, 80, 24, session.theme, zortui.Body.with(session, Session.view));
 }
 
 test "transcript renders user, assistant and tool lines distinguishably" {
@@ -1029,10 +1101,10 @@ fn fakeClock() u64 {
 test "the view leaves the mouse to the terminal unless asked" {
     // Default: no mouse reporting, so the terminal keeps click-and-drag
     // selection (and Windows its Quick Edit).
-    const default = appOptions(zortui.capabilities.Env.empty, fakeClock, false);
+    const default = appOptions(zortui.capabilities.Env.empty, fakeClock, false, "dark");
     try testing.expectEqual(@as(?bool, false), default.terminal.mouse);
     // WINTERMOLT_TUI_MOUSE=1.
-    const opted_in = appOptions(zortui.capabilities.Env.empty, fakeClock, true);
+    const opted_in = appOptions(zortui.capabilities.Env.empty, fakeClock, true, "dark");
     try testing.expectEqual(@as(?bool, true), opted_in.terminal.mouse);
 }
 
@@ -1055,7 +1127,7 @@ test "Ctrl+Up and Ctrl+Down scroll like Up and Down" {
 }
 
 test "the app runs on the clock it is handed" {
-    const opts = appOptions(zortui.capabilities.Env.empty, fakeClock, false);
+    const opts = appOptions(zortui.capabilities.Env.empty, fakeClock, false, "dark");
     try testing.expect(opts.clock.? == @as(zortui.Clock, fakeClock));
 
     // zortui reads time only through clock.nowNs; with these options that is
@@ -1085,4 +1157,205 @@ test "a failed tool call is drawn as an error, a successful one as a tool line" 
     const last = session.transcript.lines.items[session.transcript.lines.items.len - 1];
     try testing.expectEqualStrings("[tool: web_search] [error]", last.text);
     try testing.expectEqual(Kind.err, last.kind);
+}
+
+// ── themes ─────────────────────────────────────────────────────────────────
+
+test "theme precedence: --theme, then WINTERMOLT_THEME, then saved, then dark" {
+    const flag = theme_pref.resolve("nord", "dracula", "gruvbox");
+    try testing.expectEqualStrings("nord", flag.name);
+    try testing.expectEqual(theme_pref.Source.flag, flag.source);
+
+    const env = theme_pref.resolve(null, "dracula", "gruvbox");
+    try testing.expectEqualStrings("dracula", env.name);
+    try testing.expectEqual(theme_pref.Source.env, env.source);
+
+    const saved = theme_pref.resolve(null, null, "gruvbox");
+    try testing.expectEqualStrings("gruvbox", saved.name);
+    try testing.expectEqual(theme_pref.Source.saved, saved.source);
+
+    const none = theme_pref.resolve(null, null, null);
+    try testing.expectEqualStrings("dark", none.name);
+    try testing.expectEqual(theme_pref.Source.default, none.source);
+    try testing.expectEqual(@as(usize, 0), none.rejected().len);
+
+    // Blank is "not given", not an unknown name.
+    const blank = theme_pref.resolve("", "  ", null);
+    try testing.expectEqualStrings("dark", blank.name);
+    try testing.expectEqual(@as(usize, 0), blank.rejected().len);
+
+    // The app starts in whatever was resolved.
+    const opts = appOptions(zortui.capabilities.Env.empty, fakeClock, false, saved.name);
+    try testing.expectEqualStrings("gruvbox", opts.theme);
+}
+
+test "theme names: the name or the key, in any case" {
+    const Case = struct { given: []const u8, want: []const u8 };
+    const cases = [_]Case{
+        .{ .given = "tokyo-night", .want = "tokyo-night" },
+        .{ .given = "tokyoNight", .want = "tokyo-night" },
+        .{ .given = "TOKYONIGHT", .want = "tokyo-night" },
+        .{ .given = "High-Contrast", .want = "high-contrast" },
+        .{ .given = "highcontrast", .want = "high-contrast" },
+        .{ .given = " Dracula ", .want = "dracula" },
+        .{ .given = "\"light\"", .want = "light" },
+    };
+    for (cases) |c| {
+        const got = theme_pref.canonical(c.given) orelse return error.NameNotResolved;
+        try testing.expectEqualStrings(c.want, got);
+    }
+    try testing.expect(theme_pref.canonical("") == null);
+    try testing.expect(theme_pref.canonical("tokyo night") == null);
+}
+
+test "an unknown theme is reported and the next source decides" {
+    const r = theme_pref.resolve("solarized", "Nord", "matrix");
+    try testing.expectEqualStrings("nord", r.name);
+    try testing.expectEqual(theme_pref.Source.env, r.source);
+    try testing.expectEqual(@as(usize, 1), r.rejected().len);
+    try testing.expectEqual(theme_pref.Source.flag, r.rejected()[0].source);
+    try testing.expectEqualStrings("solarized", r.rejected()[0].value);
+
+    const all_bad = theme_pref.resolve("a", "b", "c");
+    try testing.expectEqualStrings("dark", all_bad.name);
+    try testing.expectEqual(@as(usize, 3), all_bad.rejected().len);
+    try testing.expectEqual(theme_pref.Source.saved, all_bad.rejected()[2].source);
+
+    var msg: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer msg.deinit();
+    try theme_pref.writeUnknown(&msg.writer, "solarized", .flag);
+    try testing.expectEqualStrings(
+        "Unknown theme 'solarized' (from --theme). Themes: dark, dracula, nord, tokyo-night, gruvbox, matrix, monochrome, high-contrast, light.",
+        msg.written(),
+    );
+
+    // In the full-screen view: an [error] line, and nothing changes.
+    var fake: FakeAgent = .{ .alloc = testing.allocator };
+    defer fake.received.deinit(testing.allocator);
+    var session = Session.init(testing.allocator, fake.runner(), "0.5.0");
+    defer session.deinit();
+    typeText(&session, "/theme solarized");
+    session.handleEvent(keyNamed("enter"));
+    const last = session.transcript.lines.items[session.transcript.lines.items.len - 1];
+    try testing.expectEqual(Kind.err, last.kind);
+    try testing.expect(std.mem.startsWith(u8, last.text, "[error] Unknown theme 'solarized'. Themes: dark, dracula,"));
+    try testing.expectEqualStrings("dark", session.theme);
+    try testing.expect(session.takeThemeChange() == null);
+    try testing.expect(fake.theme_saved == null);
+    try testing.expect(!session.busy);
+}
+
+test "/theme lists all nine themes with the current one marked" {
+    var fake: FakeAgent = .{ .alloc = testing.allocator };
+    defer fake.received.deinit(testing.allocator);
+    var session = Session.init(testing.allocator, fake.runner(), "0.5.0");
+    defer session.deinit();
+    session.theme = "nord";
+
+    typeText(&session, "/theme");
+    session.handleEvent(keyNamed("enter"));
+    try testing.expect(!session.busy); // handled here, not sent to the agent
+    try testing.expectEqualStrings("", fake.received.items);
+    try testing.expectEqualStrings("", session.editor.text());
+
+    const lines = session.transcript.lines.items;
+    var at: usize = lines.len;
+    while (at > 0) : (at -= 1) {
+        if (lines[at - 1].kind == .user and std.mem.eql(u8, lines[at - 1].text, "/theme")) break;
+    }
+    try testing.expect(at > 0);
+    const listing = lines[at..];
+    try testing.expect(std.mem.startsWith(u8, listing[0].text, "Themes ("));
+
+    var marked: usize = 0;
+    var found: usize = 0;
+    for (zortui.theme.themes) |t| {
+        for (listing[1..]) |l| {
+            const name = std.mem.trimStart(u8, l.text[2..], " ");
+            if (!std.mem.startsWith(u8, name, t.theme.name)) continue;
+            if (name.len > t.theme.name.len and name[t.theme.name.len] != ' ') continue;
+            found += 1;
+            if (std.mem.startsWith(u8, l.text, "* ")) {
+                marked += 1;
+                try testing.expectEqualStrings("nord", t.theme.name);
+            }
+        }
+    }
+    try testing.expectEqual(@as(usize, 9), found);
+    try testing.expectEqual(@as(usize, 1), marked);
+    try testing.expectEqual(@as(usize, 10), listing.len); // the heading and nine themes
+}
+
+test "/theme <name> switches live: the next render uses the new palette, and it is saved" {
+    var fake: FakeAgent = .{ .alloc = testing.allocator };
+    defer fake.received.deinit(testing.allocator);
+    var session = Session.init(testing.allocator, fake.runner(), "0.5.0");
+    defer session.deinit();
+    session.transcript.push(.user, "hello");
+
+    const before = blk: {
+        var screen = try render(&session);
+        defer screen.deinit();
+        const at = screen.find("> hello") orelse return error.UserLineMissing;
+        break :blk screen.cell(at.x, at.y).fg;
+    };
+    try testing.expectEqual(zortui.theme.dark.primary.raw(), before.raw());
+
+    typeText(&session, "/theme Dracula");
+    session.handleEvent(keyNamed("enter"));
+    try testing.expectEqualStrings("dracula", session.theme);
+    try testing.expectEqualStrings("dracula", session.takeThemeChange().?);
+    try testing.expect(session.takeThemeChange() == null);
+    try testing.expectEqualStrings("dracula", fake.theme_saved.?);
+    const confirm = session.transcript.lines.items[session.transcript.lines.items.len - 1];
+    try testing.expectEqual(Kind.info, confirm.kind);
+    try testing.expectEqualStrings("Theme set to dracula and saved to ~/.wintermolt/.env.", confirm.text);
+
+    var screen = try render(&session);
+    defer screen.deinit();
+    const at = screen.find("> hello") orelse return error.UserLineMissing;
+    const after = screen.cell(at.x, at.y).fg;
+    try testing.expectEqual(zortui.theme.dracula.primary.raw(), after.raw());
+    try testing.expect(after.raw() != before.raw());
+}
+
+test "theme persistence round trip in a temp ~/.wintermolt/.env" {
+    const gpa = testing.allocator;
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = "home/.wintermolt/.env";
+
+    // No file yet: nothing saved. Saving creates the file and its directory.
+    try testing.expect((try theme_pref.loadSaved(gpa, io, tmp.dir, path)) == null);
+    try theme_pref.save(gpa, io, tmp.dir, path, "dracula");
+    {
+        const got = (try theme_pref.loadSaved(gpa, io, tmp.dir, path)) orelse return error.NotSaved;
+        defer gpa.free(got);
+        try testing.expectEqualStrings("dracula", got);
+    }
+
+    // An existing .env keeps every other byte; its theme line is replaced in
+    // place, CRLF and all, whatever form it was written in.
+    const existing = "# Wintermolt configuration\r\nOLLAMA_HOST=\"http://localhost:11434\"\r\nexport WINTERMOLT_THEME='nord'\r\nWINTERMOLT_MODEL=qwen3:8b\r\n";
+    try tmp.dir.writeFile(io, .{ .sub_path = path, .data = existing });
+    try theme_pref.save(gpa, io, tmp.dir, path, "tokyo-night");
+    const text = try tmp.dir.readFileAlloc(io, path, gpa, .limited(1 << 16));
+    defer gpa.free(text);
+    try testing.expectEqualStrings(
+        "# Wintermolt configuration\r\nOLLAMA_HOST=\"http://localhost:11434\"\r\nWINTERMOLT_THEME=tokyo-night\r\nWINTERMOLT_MODEL=qwen3:8b\r\n",
+        text,
+    );
+
+    // Read back, it is the saved source.
+    const again = (try theme_pref.loadSaved(gpa, io, tmp.dir, path)) orelse return error.NotSaved;
+    defer gpa.free(again);
+    const r = theme_pref.resolve(null, null, again);
+    try testing.expectEqualStrings("tokyo-night", r.name);
+    try testing.expectEqual(theme_pref.Source.saved, r.source);
+
+    // A file without a trailing newline gets the line appended after one.
+    const appended = try theme_pref.setInEnvText(gpa, "A=1", "light");
+    defer gpa.free(appended);
+    try testing.expectEqualStrings("A=1\nWINTERMOLT_THEME=light\n", appended);
 }
