@@ -118,6 +118,19 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
 
+    // zortui — the terminal UI layer, through b.dependency rather than a path
+    // into its source. It is the only dependency in build.zig.zon, and it is
+    // cheap: pure Zig, no libc, no @cImport, no system libraries, and its own
+    // .dependencies is empty, so nothing new reaches the link.
+    //
+    // src/canvas/tui.zig is the consumer. Everything else here still writes
+    // through stdio.zig.
+    const zortui_dep = b.dependency("zortui", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    exe_mod.addImport("zortui", zortui_dep.module("zortui"));
+
     // --- Dep kernels: linked from the COMMITTED local prebuilt tree only.
     // scripts/sync-prebuilts.sh copies sibling deliveries into
     // prebuilt/<short>/lib/ (short = macos | thor | linX86 | winX86).
@@ -315,6 +328,22 @@ pub fn build(b: *std.Build) void {
         });
         test_step.dependOn(&b.addRunArtifact(compat_test).step);
     }
+
+    // The A2UI renderer, separately because it needs the zortui import that the
+    // loop above deliberately does not give anything. Same reason as the loop:
+    // its tests assert on RENDERED output — that a row stays on one line, that
+    // a table prints its cells, that a wide-character title does not shift the
+    // border — and none of that is observable from a build that only compiles.
+    const tui_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/canvas_tui_tests.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+    });
+    tui_test.root_module.addImport("zortui", zortui_dep.module("zortui"));
+    test_step.dependOn(&b.addRunArtifact(tui_test).step);
 }
 
 fn getShortTargetName(t: std.Target) []const u8 {

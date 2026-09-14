@@ -1,0 +1,26 @@
+// wintermolt package manifest.
+//
+// This exists so wintermolt can consume zortui through b.dependency rather
+// than rooting a module at a path inside its source tree. zortui is pure Zig
+// with no dependencies of its own — 47 .zig files, no libc, no @cImport, no
+// system libraries — so building it from source here costs nothing and links
+// nothing new.
+//
+// A PATH dependency, not a fetched one: zortui is checked out beside this repo
+// and built in place, so there is no hash because nothing is downloaded.
+.{
+    .name = .wintermolt,
+    .version = "0.5.0",
+    .minimum_zig_version = "0.15.0",
+    .fingerprint = 0x155598d25deaf312,
+    .dependencies = .{
+        .zortui = .{ .path = "../zortui" },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "prebuilt",
+        "skills",
+    },
+}
