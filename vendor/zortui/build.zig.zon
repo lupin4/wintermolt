@@ -1,0 +1,19 @@
+.{
+    .name = .zortui,
+    .version = "0.1.0",
+    .fingerprint = 0xf4f1934c86ccedb3,
+    .minimum_zig_version = "0.16.0",
+    // Zero dependencies, including for tests: the conformance suite reads its
+    // fixtures with std.json.
+    .dependencies = .{},
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "examples",
+        "conformance",
+        "README.md",
+        "LICENSE",
+        "NOTICE",
+    },
+}

@@ -130,7 +130,8 @@ an API key for Claude, GPT, DeepSeek, Qwen, Gemini, or forAI.
 ### Step 3 — Run
 
 ```bash
-./wintermolt                          # interactive REPL
+./wintermolt                          # interactive chat (full-screen in a terminal)
+./wintermolt --plain                  # the plain line-by-line REPL instead
 ./wintermolt -e "list files in pwd"   # one-shot prompt
 ./wintermolt --keys                   # configure cloud API keys
 ./wintermolt --help                   # all commands
@@ -155,7 +156,7 @@ If you want to compile yourself (also required for Linux x86_64 today).
 
 ### Prerequisites
 
-- **[Zig 0.15.2+](https://ziglang.org/download/)** (one binary, no installer)
+- **[Zig 0.16](https://ziglang.org/download/)** (one binary, no installer). 0.15.2 no longer builds wintermolt.
 - **libcurl** + **sqlite3** dev headers:
   - **macOS**: `brew install curl sqlite3` (usually preinstalled)
   - **Linux (Debian/Ubuntu)**: `sudo apt-get install libcurl4-openssl-dev libsqlite3-dev`
@@ -476,13 +477,71 @@ Wintermolt ships with [forLearn](https://github.com/forKernels/forLearn), which 
 
 | Mode | Command | Description |
 |:-----|:--------|:------------|
-| REPL | `wintermolt` | Interactive terminal session |
+| Chat (TUI) | `wintermolt` | Full-screen chat when stdin and stdout are a terminal |
+| Plain REPL | `wintermolt --plain` | Line-by-line session; also what you get when input is piped |
 | Single-shot | `wintermolt -e "prompt"` | Run one prompt, print result, exit |
 | Setup | `wintermolt --setup` | Interactive API key + model wizard |
 | Chat | `wintermolt --chat` | Multi-platform messaging bot |
 | Web | `wintermolt --web` | Browser UI at localhost:3000 |
 | Menu Bar | `wintermolt --menubar` | macOS native status bar app |
 | MCP Server | `wintermolt --mcp-server` | Expose tools via JSON-RPC 2.0 |
+
+### Full-screen chat and the plain REPL
+
+Run `wintermolt` in a real terminal (Windows console, macOS or Linux tty) and
+it opens a full-screen chat built on [zortui](vendor/zortui/VENDORED.md). You
+get a scrolling transcript with your lines, the model's replies and tool calls
+in different colors, an input line, and a status bar showing the backend, the
+model and whether a request is running.
+
+| Key | Action |
+|:----|:-------|
+| Enter | Send the line (slash commands work as in the REPL) |
+| ← → Home End, Backspace, Delete | Edit the input line |
+| PgUp PgDn, ↑ ↓, Ctrl+↑ Ctrl+↓ | Scroll the transcript |
+| Mouse wheel | Scroll, where the terminal turns the wheel into ↑ ↓ (see below) |
+| Ctrl+L | Repaint the screen |
+| Esc, Ctrl+C, `/quit` | Exit and restore the terminal |
+
+**Selecting text.** The full-screen view leaves the mouse to your terminal, so
+click-and-drag selection and copy work as they do in any other program:
+Windows Terminal, the classic Windows console (Quick Edit stays on) and POSIX
+terminals. Windows Terminal turns the wheel into ↑ ↓ on a full-screen view by
+default, which scrolls the transcript; other terminals may need their
+"alternate scroll" setting. To give the view the mouse instead, set
+`WINTERMOLT_TUI_MOUSE=1`: the wheel then scrolls the transcript everywhere,
+and the terminal can no longer select (many terminals still select with
+Shift+drag).
+
+**Themes.** Nine palettes from zortui: `dark` (the default), `dracula`, `nord`,
+`tokyo-night`, `gruvbox`, `matrix`, `monochrome`, `high-contrast` and `light`.
+Either spelling works, in any case (`tokyo-night` or `tokyoNight`). The
+full-screen view and canvas surfaces both use the theme, taken from the first
+of these that names a real theme:
+
+1. `wintermolt --theme <name>`, for that run;
+2. `WINTERMOLT_THEME=<name>` in the environment;
+3. the theme `/theme` saved in `~/.wintermolt/.env`;
+4. `dark`.
+
+A name that is not a theme is reported with the list of valid names (an
+`[error]` line in the full-screen view) and the next source is used. `/theme`
+alone lists the themes with the current one marked; `/theme <name>` switches
+the running view at once and saves the choice as `WINTERMOLT_THEME=<name>` in
+`~/.wintermolt/.env`, leaving everything else in that file as it was. In the
+plain REPL `/theme` lists and saves too; the colours show in the full-screen
+view and the canvas.
+
+The plain REPL is still there, unchanged:
+
+- **Automatically** when stdin or stdout is not a terminal, e.g.
+  `printf '/stats\n/quit\n' | wintermolt` or `wintermolt > log.txt`.
+- **On request** with `wintermolt --plain`, or `WINTERMOLT_PLAIN=1` in the
+  environment.
+
+`-e`, `--web`, `--gateway`, `--chat` and `--mcp-server` never open the
+full-screen view. `/keys` with no argument prompts for input, so inside the
+full-screen view use `/keys list`, or run `wintermolt --keys`.
 
 ## All REPL Commands
 
@@ -492,6 +551,7 @@ Wintermolt ships with [forLearn](https://github.com/forKernels/forLearn), which 
 | `/quit` `/exit` | Exit the REPL |
 | `/clear` `/new` | Archive conversation and start fresh |
 | `/model [name]` | Show or switch AI backend |
+| `/theme [name]` | List themes, or switch the full-screen view and canvas and save it |
 | `/look [prompt]` | Camera capture + AI vision |
 | `/screenshot [prompt]` | Screen capture + AI vision |
 | `/schedule` | Manage cron jobs (list, add, remove, enable, disable) |

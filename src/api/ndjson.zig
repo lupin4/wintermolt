@@ -14,6 +14,7 @@ const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 const protocol = @import("protocol.zig");
 const sse = @import("sse.zig");
+const stdio = @import("../stdio.zig");
 
 pub const NdjsonParser = struct {
     alloc: Allocator,
@@ -252,11 +253,12 @@ pub const NdjsonParser = struct {
         // Surface the silent-truncation trap: if Ollama reported
         // done_reason=="length", the prompt was truncated by num_ctx. Warn in
         // ALL cases so the user can raise WINTERMOLT_OLLAMA_CTX or trim load.
+        // Through stdio rather than std.debug.print: same unbuffered stderr, but
+        // the TUI's sink can take it instead of letting it hit the screen.
         if (self.done_length) {
-            std.debug.print(
+            stdio.stderr().writeAll(
                 "[WARN] ollama: done_reason=length — prompt truncated by num_ctx; raise WINTERMOLT_OLLAMA_CTX or trim tools/history\n",
-                .{},
-            );
+            ) catch {};
         }
 
         // Set stop reason based on what we accumulated

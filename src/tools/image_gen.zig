@@ -7,6 +7,7 @@
 // and optionally base64 data for vision feedback loops.
 
 const std = @import("std");
+const curl_tls = @import("../curl_tls.zig");
 const fsio = @import("../fsio.zig");
 const compat = @import("../compat.zig");
 const Allocator = std.mem.Allocator;
@@ -67,6 +68,7 @@ pub fn executeTool(alloc: Allocator, input_json: []const u8) ![]u8 {
     // Call OpenAI API
     const handle = curl_easy_init() orelse
         return alloc.dupe(u8, "Error: Failed to initialize HTTP client.");
+    curl_tls.configure(handle);
     defer curl_easy_cleanup(handle);
 
     var response = ResponseBuffer{ .data = .empty, .alloc = alloc };
@@ -87,9 +89,10 @@ pub fn executeTool(alloc: Allocator, input_json: []const u8) ![]u8 {
     var headers: ?*CurlSlist = null;
     headers = curl_slist_append(headers, "Content-Type: application/json");
     headers = curl_slist_append(headers, auth_z.ptr);
+    // Freed after curl_easy_perform: libcurl reads the list during the transfer.
+    defer if (headers) |h| curl_slist_free_all(h);
     if (headers) |h| {
         _ = curl_easy_setopt(handle, CURLOPT_HTTPHEADER, h);
-        defer curl_slist_free_all(h);
     }
 
     const result = curl_easy_perform(handle);
@@ -132,6 +135,7 @@ pub fn executeTool(alloc: Allocator, input_json: []const u8) ![]u8 {
 
 fn downloadImage(alloc: Allocator, url: []const u8, output_path: []const u8) !bool {
     const handle = curl_easy_init() orelse return false;
+    curl_tls.configure(handle);
     defer curl_easy_cleanup(handle);
 
     var response = ResponseBuffer{ .data = .empty, .alloc = alloc };

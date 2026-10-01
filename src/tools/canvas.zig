@@ -16,6 +16,7 @@ const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 const sse = @import("../api/sse.zig");
 const tui = @import("../canvas/tui.zig");
+const theme_pref = @import("../theme_pref.zig");
 
 /// Callback for forwarding canvas messages to the web bridge.
 /// Set by web/bridge.zig when in web mode.
@@ -43,8 +44,9 @@ fn handleCreateOrUpdate(alloc: Allocator, surface_id: []const u8, input_json: []
         return std.fmt.allocPrint(alloc, "Canvas surface '{s}' sent to web UI.", .{surface_id});
     }
 
-    // Terminal mode: render with TUI
-    const rendered = tui.renderSurface(alloc, input_json) catch |e| {
+    // Terminal mode: render with TUI, in the theme the user selected
+    // (--theme, WINTERMOLT_THEME, ~/.wintermolt/.env, /theme; theme_pref.zig).
+    const rendered = tui.renderSurfaceThemed(alloc, input_json, theme_pref.selected()) catch |e| {
         return std.fmt.allocPrint(alloc, "Canvas TUI render error: {s}", .{@errorName(e)});
     };
 

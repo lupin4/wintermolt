@@ -46,6 +46,42 @@ fn buildRootHas(b: *std.Build, sub_path: []const u8) !void {
 }
 
 pub fn build(b: *std.Build) void {
+    // RELEASE BINARIES MUST NOT BE HOST-TUNED.
+    //
+    // standardTargetOptions with no -Dtarget gives Zig the NATIVE target
+    // INCLUDING native CPU features, so a plain `zig build` on a machine with
+    // wide vector support bakes those instructions into the binary. That is not
+    // hypothetical: the published prebuilt/wintermolt-linux-arm64 was built this
+    // way on a Jetson Thor and carried 17 SVE instructions (ptrue, movprfx).
+    // Generic aarch64 has no SVE, so it SIGILLs on a Raspberry Pi or any older
+    // Jetson — and the same mistake put 76k AVX-512 instructions in the Windows
+    // release exe.
+    //
+    // SO: BUILD THE PUBLISHED BINARY WITH AN EXPLICIT CPU FLOOR:
+    //
+    //     aarch64:  zig build -Doptimize=ReleaseFast -Dcpu=baseline
+    //     x86_64:   zig build -Doptimize=ReleaseFast -Dcpu=x86_64_v3
+    //
+    // THE FLOOR IS PER-ARCH, not one value. `baseline` is the aarch64 answer
+    // only because the ARM floor is still undecided — the fleet currently
+    // carries four different -mcpu answers (native, cortex-a78, cortex-a78ae,
+    // cortex-a72/apple-m1), so baseline is what is safe until the user picks
+    // one. On x86 the floor IS decided: x86_64_v3. Building Windows at generic
+    // x86-64 would be a needless downgrade, not a safety measure.
+    //
+    // and verify it before publishing — on aarch64 this must print 0:
+    //
+    //     objdump -d zig-out/bin/wintermolt \
+    //       | grep -cE '\b(ptrue|movprfx|whilelo|ld1d|st1d|cntd)\b'
+    //
+    // -Dtarget= is the WRONG knob. Naming a target makes Zig treat the build as
+    // a CROSS-compile and stop searching native paths, so libcurl and libsqlite3
+    // stop resolving. -Dcpu= keeps the native target and only lowers the CPU.
+    //
+    // A dedicated `release` step was tried and removed: it has to restate the
+    // whole link surface (curl, sqlite3, the sibling archives), which then drifts
+    // from this one silently. One target declaration, one flag at the command
+    // line.
     const target = b.standardTargetOptions(.{});
     // ReleaseFast (org optimize policy): wintermolt links ZERO forKernels archives at
     // build time, so there is no Fortran under this layer — the compute IS the Zig
@@ -203,6 +239,18 @@ pub fn build(b: *std.Build) void {
     });
     exe_mod.addImport("llama_c", llama_c_mod);
 
+    // --- zortui: the full-screen TUI (src/tui.zig) ---
+    // A plain vendored copy (vendor/zortui, see VENDORED.md) imported as a
+    // module -- not a package fetched over the network. zortui needs Zig 0.16,
+    // which wintermolt already does: main takes a std.process.Init, and 0.15.2
+    // has no such type.
+    const zortui_mod = b.createModule(.{
+        .root_source_file = b.path("vendor/zortui/src/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    exe_mod.addImport("zortui", zortui_mod);
+
     const exe = b.addExecutable(.{
         .name = "wintermolt",
         .root_module = exe_mod,
@@ -247,11 +295,29 @@ pub fn build(b: *std.Build) void {
     // prebuilt archives, so `zig build test` remains narrower than it looks --
     // a pre-existing gap, flagged not silently widened.
     test_mod.addImport("llama_c", llama_c_mod);
+    test_mod.addImport("zortui", zortui_mod);
     const unit_tests = b.addTest(.{ .root_module = test_mod });
 
     const run_unit_tests = b.addRunArtifact(unit_tests);
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_unit_tests.step);
+
+    // The TUI, headless: zortui's testing module renders to cells, so these run
+    // without a terminal and with a fake agent instead of a model. Its own
+    // binary, for the reason the compat files below have theirs. Also runnable
+    // alone as `zig build test-tui`.
+    const tui_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/tui.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+            .imports = &.{.{ .name = "zortui", .module = zortui_mod }},
+        }),
+    });
+    const run_tui_tests = b.addRunArtifact(tui_tests);
+    test_step.dependOn(&run_tui_tests.step);
+    b.step("test-tui", "Run the headless TUI tests").dependOn(&run_tui_tests.step);
 
     // The 0.16 compatibility layer is tested per FILE.
     //
@@ -279,6 +345,50 @@ pub fn build(b: *std.Build) void {
         });
         test_step.dependOn(&b.addRunArtifact(compat_test).step);
     }
+
+    // The A2UI renderer, separately because it needs the zortui import that the
+    // loop above deliberately does not give anything. Same reason as the loop:
+    // its tests assert on RENDERED output — that a row stays on one line, that
+    // a table prints its cells, that a wide-character title does not shift the
+    // border — and none of that is observable from a build that only compiles.
+    const tui_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/canvas_tui_tests.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+    });
+    tui_test.root_module.addImport("zortui", zortui_mod);
+    test_step.dependOn(&b.addRunArtifact(tui_test).step);
+
+    // The [ok] / [error] printed after a tool call. A pure file, rooted on its
+    // own for the reason the compat files above are: tests in a file main.zig
+    // merely imports are not collected.
+    const tool_status_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/agent/tool_status.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    test_step.dependOn(&b.addRunArtifact(tool_status_test).step);
+
+    // The environment, end to end: a value setenv puts there at runtime (every
+    // ~/.wintermolt/.env key does) must reach getenv and each child spawned
+    // afterwards. Its own root for the reason the compat files have theirs; also
+    // runnable alone as `zig build test-env`.
+    const env_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/env_tests.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+    });
+    const run_env_tests = b.addRunArtifact(env_tests);
+    test_step.dependOn(&run_env_tests.step);
+    b.step("test-env", "Run the environment tests (setenv, .env, child processes)").dependOn(&run_env_tests.step);
 }
 
 fn getShortTargetName(t: std.Target) []const u8 {

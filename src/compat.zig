@@ -120,6 +120,24 @@ pub fn restoreConsole() void {
 }
 
 // =============================================================================
+// stdioIsTerminal — are stdin AND stdout both an interactive terminal?
+//
+// Decides between the full-screen TUI and the plain REPL. Both ends, because
+// the TUI reads raw keys from stdin and draws on stdout: `printf ... | wintermolt`
+// (stdin a pipe) and `wintermolt > log` (stdout a file) must stay line-oriented.
+// Windows: GetConsoleMode succeeds only on a console handle, so pipes, files and
+// mintty's pty pipes all read as "not a terminal". POSIX: isatty.
+// =============================================================================
+
+pub fn stdioIsTerminal() bool {
+    if (comptime builtin.os.tag == .windows) {
+        return win32.isConsole(win32.stdHandle(win32.STD_INPUT_HANDLE)) and
+            win32.isConsole(win32.stdHandle(win32.STD_OUTPUT_HANDLE));
+    }
+    return std.c.isatty(std.posix.STDIN_FILENO) != 0 and std.c.isatty(std.posix.STDOUT_FILENO) != 0;
+}
+
+// =============================================================================
 // stdinReadyToRead — non-blocking "is there input on stdin?" check.
 //
 // On POSIX this is poll() with a 0ms timeout. On Windows we use
@@ -173,9 +191,10 @@ pub fn drainStdinNonBlocking() void {
 extern "kernel32" fn FlushConsoleInputBuffer(handle: std.os.windows.HANDLE) callconv(.winapi) std.os.windows.BOOL;
 
 // =============================================================================
-// POSIX libc shims — Fortran/C code from forKernels sibling repos calls these
-// directly. On Windows we provide no-op implementations so the link resolves;
-// real behavior matters only on POSIX where the libc versions are used.
+// POSIX libc shims — mingw's CRT has neither of these. Fortran/C code from
+// forKernels sibling repos calls them directly, and config.loadDotEnv calls
+// setenv. On Windows setenv is REAL (below); sysconf is a stub reporting -1.
+// POSIX links the libc versions and never sees this.
 // =============================================================================
 
 comptime {
@@ -185,10 +204,38 @@ comptime {
     }
 }
 
+/// setenv(3) on Windows: SetEnvironmentVariableW, honouring `overwrite`.
+///
+/// This was a no-op returning success. config.loadDotEnv copies every
+/// ~/.wintermolt/.env entry into the environment through it, so on Windows the
+/// file loaded, "[config] Loaded N vars" printed, and not one of those keys was
+/// visible: not to getenv (WINTERMOLT_CONFIG_VERSION=1 never hid the setup
+/// notice; an API key kept only in .env was missing), and not to the children
+/// the bash tool starts, where `echo %KEY%` came back unexpanded.
+///
+/// Children need nothing more: fsio spawns with the `.global` environ, and 0.16
+/// copies the LIVE process block (the PEB's) at each spawn, so a value set here
+/// reaches every child started afterwards.
+///
+/// overwrite=0 asks whether the name EXISTS, so a variable set to the empty
+/// string counts as set, as with POSIX setenv. getenv reports an empty value as
+/// null on Windows, which is why lookupEnv is not the test here.
+///
+/// All under env_mutex, so a getenv racing this call cannot cache the old value
+/// again after the entry is dropped. The old cached VALUE is not freed: getenv
+/// hands out borrowed slices with process lifetime, and a caller may hold one.
 fn windowsSetenv(name: ?[*:0]const u8, value: ?[*:0]const u8, overwrite: c_int) callconv(.c) c_int {
-    _ = name;
-    _ = value;
-    _ = overwrite;
+    const n = std.mem.span(name orelse return -1);
+    const v = std.mem.span(value orelse return -1);
+    // POSIX refuses both with EINVAL.
+    if (n.len == 0 or std.mem.indexOfScalar(u8, n, '=') != null) return -1;
+
+    fsio.lock(&env_mutex);
+    defer fsio.unlock(&env_mutex);
+    if (overwrite == 0 and win32.envExists(env_allocator, n)) return 0;
+    if (!win32.setenv(env_allocator, n, v)) return -1;
+    ensureEnvCache();
+    if (env_cache.fetchRemove(n)) |kv| env_allocator.free(kv.key);
     return 0;
 }
 

@@ -26,6 +26,7 @@ const kernel_mod = @import("../api/kernel.zig");
 const forai_mod = @import("../api/forai.zig");
 const history_mod = @import("history.zig");
 const tools = @import("tools.zig");
+const tool_status = @import("tool_status.zig");
 const config_mod = @import("config.zig");
 const storage_mod = @import("storage.zig");
 const rag_mod = @import("rag.zig");
@@ -678,7 +679,6 @@ pub const AgentLoop = struct {
 
     /// Execute tool calls from the API response.
     pub fn executeTools(self: *AgentLoop, response: *const protocol.Response, stdout: anytype) !void {
-        const stderr = stdio.stderr();
         var results: std.ArrayList(protocol.ToolResult) = .empty;
         defer results.deinit(self.alloc);
 
@@ -717,7 +717,9 @@ pub const AgentLoop = struct {
                         });
                         self.tool_errors_this_turn += 1;
                         if (self.tool_done_callback) |cb| cb(tu.id, false);
-                        try stderr.print("\x1b[31m[error]\x1b[0m\n", .{});
+                        // stdout, like [ok]: the status finishes the
+                        // "[tool: name] " line, so the TUI sees one line.
+                        try stdout.print("\x1b[31m[error]\x1b[0m\n", .{});
                         continue;
                     };
 
@@ -761,8 +763,15 @@ pub const AgentLoop = struct {
                         .is_error = false,
                     });
 
-                    if (self.tool_done_callback) |cb| cb(tu.id, true);
-                    try stdout.print("\x1b[32m[ok]\x1b[0m\n", .{});
+                    // Most tools report failure as a result string, not a Zig
+                    // error, so [ok] has to be decided from the result.
+                    if (tool_status.classify(tu.name, result) == .failed) {
+                        if (self.tool_done_callback) |cb| cb(tu.id, false);
+                        try stdout.print("\x1b[31m[error]\x1b[0m\n", .{});
+                    } else {
+                        if (self.tool_done_callback) |cb| cb(tu.id, true);
+                        try stdout.print("\x1b[32m[ok]\x1b[0m\n", .{});
+                    }
                 },
                 else => {},
             }

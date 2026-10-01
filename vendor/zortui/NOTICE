@@ -1,0 +1,14 @@
+zortui
+======
+
+zortui is our copy of the Zig port of hqtui (ports/zig in
+https://github.com/profullstack/hqtui), maintained independently.
+
+The original work is by the hqtui authors and is released under the MIT
+License; that license and its copyright notice are reproduced in LICENSE and
+apply to this repository. The git history of ports/zig is preserved here, so
+every upstream commit keeps its original author.
+
+Changes made in this repository (starting with the Windows console backend)
+are Copyright (c) 2026 The Fantastic Planet — By David Clabaugh, and are
+released under the same MIT License.

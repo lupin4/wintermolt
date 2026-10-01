@@ -39,6 +39,11 @@ printf '/stats\n/schedule list\n/quit\n' | ./zig-out/bin/wintermolt
 
 Expected: ASCII banner, stats block (backend/model), jobs list, `Goodbye.`
 
+Piped stdin always gets the plain REPL. Run bare `wintermolt` in a real
+terminal and it opens the full-screen TUI (`src/tui.zig`, zortui) instead,
+which can't be driven by a pipe; `--plain` or `WINTERMOLT_PLAIN=1` forces the
+plain REPL. TUI logic is tested headless with `zig build test-tui`.
+
 ## Backend requirement
 
 Prompts need an AI backend. Default is **Ollama at localhost:11434**

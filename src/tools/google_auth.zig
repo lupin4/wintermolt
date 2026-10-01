@@ -12,6 +12,7 @@
 // Tokens are cached in memory and auto-refreshed when expired.
 
 const std = @import("std");
+const curl_tls = @import("../curl_tls.zig");
 const fsio = @import("../fsio.zig");
 const compat = @import("../compat.zig");
 const Allocator = std.mem.Allocator;
@@ -115,6 +116,7 @@ pub const GoogleAuth = struct {
         defer self.alloc.free(body);
 
         const handle = curl_easy_init() orelse return error.CurlInitFailed;
+        curl_tls.configure(handle);
         defer curl_easy_cleanup(handle);
 
         var response = ResponseBuffer{ .data = .empty, .alloc = self.alloc };
@@ -129,9 +131,10 @@ pub const GoogleAuth = struct {
 
         var headers: ?*CurlSlist = null;
         headers = curl_slist_append(headers, "Content-Type: application/x-www-form-urlencoded");
+        // Freed after curl_easy_perform: libcurl reads the list during the transfer.
+        defer if (headers) |h| curl_slist_free_all(h);
         if (headers) |h| {
             _ = curl_easy_setopt(handle, CURLOPT_HTTPHEADER, h);
-            defer curl_slist_free_all(h);
         }
 
         const result = curl_easy_perform(handle);
@@ -164,6 +167,7 @@ pub fn googleGet(alloc: Allocator, auth: *GoogleAuth, url: []const u8) ![]u8 {
     defer alloc.free(url_z);
 
     const handle = curl_easy_init() orelse return error.CurlInitFailed;
+    curl_tls.configure(handle);
     defer curl_easy_cleanup(handle);
 
     var response = ResponseBuffer{ .data = .empty, .alloc = alloc };
@@ -175,9 +179,10 @@ pub fn googleGet(alloc: Allocator, auth: *GoogleAuth, url: []const u8) ![]u8 {
 
     var headers: ?*CurlSlist = null;
     headers = curl_slist_append(headers, auth_z.ptr);
+    // Freed after curl_easy_perform: libcurl reads the list during the transfer.
+    defer if (headers) |h| curl_slist_free_all(h);
     if (headers) |h| {
         _ = curl_easy_setopt(handle, CURLOPT_HTTPHEADER, h);
-        defer curl_slist_free_all(h);
     }
 
     const result = curl_easy_perform(handle);
@@ -200,6 +205,7 @@ pub fn googlePost(alloc: Allocator, auth: *GoogleAuth, url: []const u8, body: []
     defer alloc.free(url_z);
 
     const handle = curl_easy_init() orelse return error.CurlInitFailed;
+    curl_tls.configure(handle);
     defer curl_easy_cleanup(handle);
 
     var response = ResponseBuffer{ .data = .empty, .alloc = alloc };
@@ -215,9 +221,10 @@ pub fn googlePost(alloc: Allocator, auth: *GoogleAuth, url: []const u8, body: []
     var headers: ?*CurlSlist = null;
     headers = curl_slist_append(headers, auth_z.ptr);
     headers = curl_slist_append(headers, "Content-Type: application/json");
+    // Freed after curl_easy_perform: libcurl reads the list during the transfer.
+    defer if (headers) |h| curl_slist_free_all(h);
     if (headers) |h| {
         _ = curl_easy_setopt(handle, CURLOPT_HTTPHEADER, h);
-        defer curl_slist_free_all(h);
     }
 
     const result = curl_easy_perform(handle);

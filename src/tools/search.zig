@@ -11,6 +11,7 @@
 //   <a class="result__snippet" href="...">Snippet text</a>
 
 const std = @import("std");
+const curl_tls = @import("../curl_tls.zig");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 const sse = @import("../api/sse.zig");
@@ -101,6 +102,7 @@ pub fn executeTool(alloc: Allocator, input_json: []const u8) ![]u8 {
 pub fn webSearch(alloc: Allocator, query: []const u8, max_results: usize) ![]u8 {
     const handle = curl_easy_init() orelse
         return std.fmt.allocPrint(alloc, "Error: failed to initialize HTTP client", .{});
+    curl_tls.configure(handle);
     defer curl_easy_cleanup(handle);
 
     // URL-encode the query using curl's built-in encoder
