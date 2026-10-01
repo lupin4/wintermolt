@@ -146,7 +146,7 @@ That's it. You're running.
 
 | Platform | Binary | Size | Notes |
 |:---|:---|---:|:---|
-| macOS arm64 | [`wintermolt-macos`](prebuilt/wintermolt-macos) | 5.8 MB | Mach-O, dynamic libcurl + sqlite3 |
+| macOS arm64 | [`wintermolt-macos`](prebuilt/wintermolt-macos) | 6.2 MB | Mach-O, dynamic libcurl + sqlite3 |
 | Linux arm64 | [`wintermolt-linux-arm64`](prebuilt/wintermolt-linux-arm64) | 10.6 MB | ELF aarch64, dynamic libcurl + sqlite3 |
 | Linux x86_64 | [`wintermolt-linux-x86_64`](prebuilt/wintermolt-linux-x86_64) | 11 MB | ELF x86-64, dynamic libcurl + sqlite3. glibc 2.34+ (Ubuntu 22.04, Debian 12, RHEL 9 and later). x86-64-v3 CPU (Intel Haswell, AMD Zen or newer). |
 | Windows x86_64 | [`wintermolt-windows-x86_64.exe`](prebuilt/wintermolt-windows-x86_64.exe) | 14 MB | PE32+, HTTP/3 and crypto linked in statically. Imports only Windows system DLLs: nothing else to install. x86-64-v3 CPU (Intel Haswell, AMD Zen or newer). |
