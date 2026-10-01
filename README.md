@@ -52,13 +52,12 @@ Tailscale peers:
 
 ## Why Wintermolt?
 
-Most AI coding tools ship hundreds of megabytes of Electron or Node.js runtime just to send API calls and edit files. Wintermolt compiles to a **single native binary** — about 6 MB on macOS Apple Silicon, 11 MB on Linux, 14 MB on Windows (statically-linked HTTP/3 stack) — and cross-compiles to any platform Zig supports, including ARM boards like Jetson and Raspberry Pi.
+Most AI coding tools ship hundreds of megabytes of Electron or Node.js runtime just to send API calls and edit files. Wintermolt compiles to a **single native binary** — about 6 MB on macOS Apple Silicon, 11 MB on Linux, 14 MB on Windows (statically-linked HTTP/3 stack) — and builds natively on macOS, Linux and Windows, including ARM boards like Jetson and Raspberry Pi.
 
 | | Wintermolt | Claude Code | Cursor | Aider |
 |---|:---:|:---:|:---:|:---:|
 | **Binary size** | **6–14 MB** | ~200 MB | ~500 MB | ~50 MB |
 | **Runtime** | **None** | Node.js 18+ | Electron | Python 3.8+ |
-| **Cross-compile** | **One command** | N/A | N/A | N/A |
 | **Runs on Jetson/Pi** | **Yes** | Barely | No | Slow |
 | **Runs on Windows** | **Yes (v0.4+)** | Via WSL | Yes | Yes |
 | **AI backends** | **7** | 1 | Multiple | Multiple |
@@ -109,7 +108,8 @@ Invoke-WebRequest `
 **Linux (x86_64 — servers, cloud VMs):**
 
 ```bash
-curl -L -o wintermolt https://github.com/lupin4/wintermolt/raw/main/prebuilt/wintermolt-linux-x86_64 \n  && chmod +x wintermolt
+curl -L -o wintermolt https://github.com/lupin4/wintermolt/raw/main/prebuilt/wintermolt-linux-x86_64 \
+  && chmod +x wintermolt
 ```
 
 ### Step 2 — Install Ollama (optional but recommended)
@@ -175,13 +175,16 @@ zig build -Doptimize=ReleaseSmall
 ./zig-out/bin/wintermolt
 ```
 
-### Cross-Compile (one command)
+### Release Builds
+
+Build each platform on a machine of that platform. `-Dtarget=` makes Zig treat
+the build as a cross-compile, and it then stops finding the system libcurl and
+sqlite3 (and, for Windows, the MSYS2 UCRT64 libraries). Set a CPU floor with
+`-Dcpu=` instead, so the binary runs on more than the machine that built it:
 
 ```bash
-zig build -Dtarget=aarch64-linux-gnu   # Linux ARM — Jetson, Pi 5
-zig build -Dtarget=x86_64-linux-gnu    # Linux x86_64 — servers, VMs
-zig build -Dtarget=aarch64-macos-none  # macOS Apple Silicon
-zig build -Dtarget=x86_64-windows-gnu  # Windows (needs MSYS2 UCRT64 on the build host)
+zig build -Doptimize=ReleaseFast -Dcpu=baseline    # aarch64 — Apple Silicon, Jetson, Pi 5, Graviton
+zig build -Doptimize=ReleaseFast -Dcpu=x86_64_v3   # x86_64 — Linux, Windows (MSYS2 UCRT64)
 ```
 
 ---

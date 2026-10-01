@@ -34,6 +34,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   is flag, environment, saved, then `dark`; an unknown name lists the valid
   ones and the next source is used. `/theme` alone lists them. Canvas surfaces
   follow the same theme (`canvas/tui.zig` gains `renderSurfaceThemed`).
+- **Linux x86_64 binary.** `prebuilt/wintermolt-linux-x86_64` ships for the
+  first time: dynamic libcurl and sqlite3, glibc 2.34+, x86-64-v3 CPU floor.
 
 ### Changed
 
