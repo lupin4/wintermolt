@@ -1,18 +1,19 @@
 # Backends
 
-Wintermolt routes prompts through a single `Backend` enum. Seven backends
+Wintermolt routes prompts through a single `Backend` enum. Eight backends
 are supported. The default is Ollama (local, no API key).
 
 ## Backend matrix
 
 | Backend  | Default model              | Auth                    | Notes                                          |
 | :------- | :------------------------- | :---------------------- | :--------------------------------------------- |
-| `ollama` | `qwen3:0.6b`               | None — local            | Requires `ollama serve` on `WINTERMOLT_OLLAMA_URL` (default `http://localhost:11434`). |
+| `ollama` | `qwen3:8b`                 | None — local            | Requires `ollama serve` on `WINTERMOLT_OLLAMA_URL` (default `http://localhost:11434`). |
 | `claude` | `claude-sonnet-4-20250514` | `ANTHROPIC_API_KEY`     | Anthropic Messages API.                        |
 | `openai` | `gpt-4o-mini`              | `OPENAI_API_KEY`        | Chat Completions API.                          |
 | `deepseek` | `deepseek-chat`          | `DEEPSEEK_API_KEY`      | OpenAI-compatible endpoint.                    |
 | `qwen`   | `qwen-plus`                | `QWEN_API_KEY`          | Alibaba DashScope OpenAI-compatible endpoint.  |
 | `gemini` | `gemini-2.0-flash`         | `GOOGLE_GEMINI_API_KEY` | Google Gemini REST API.                        |
+| `kernel` | `qwen3:0.6b` (GGUF in `~/.wintermolt/models`) | None — in-process | llama.cpp on Metal, in-process. macOS Apple Silicon only; other builds report "darwin-arm64 only". `WINTERMOLT_KERNEL_DEFAULT` sets the default alias, `WINTERMOLT_KERNEL_MODEL_DIR` the model directory. |
 | `forai`  | (GGUF in `~/.wintermolt/models`) | None — in-process | In-process inference engine: forAI + forNLP on forMetal (macOS) / forCUDA (Linux, Windows). No external model loader. Engine ships when the forAI rebuild lands; until then `/model forai` reports not-yet-delivered. Previous HTTP mode: use `openai` backend with a custom URL. |
 
 ## Switching at runtime
@@ -38,7 +39,7 @@ WINTERMOLT_MODEL=qwen3:14b ./wintermolt
 WINTERMOLT_OLLAMA_URL=http://localhost:11434   # base URL
 WINTERMOLT_OLLAMA_CTX=4096                     # context window cap
 WINTERMOLT_OLLAMA_KEEP_ALIVE=5m                # unload timer (0 = unload immediately)
-WINTERMOLT_MODEL=qwen3:0.6b                    # model tag
+WINTERMOLT_MODEL=qwen3:8b                      # model tag
 
 # OpenAI
 OPENAI_API_KEY=sk-...

@@ -60,11 +60,11 @@ Most AI coding tools ship hundreds of megabytes of Electron or Node.js runtime j
 | **Runtime** | **None** | Node.js 18+ | Electron | Python 3.8+ |
 | **Runs on Jetson/Pi** | **Yes** | Barely | No | Slow |
 | **Runs on Windows** | **Yes (v0.4+)** | Via WSL | Yes | Yes |
-| **AI backends** | **7** | 1 | Multiple | Multiple |
+| **AI backends** | **8** | 1 | Multiple | Multiple |
 | **Camera + vision** | **Built-in** | No | No | No |
 | **Browser automation** | **Built-in** | No | No | No |
 | **MCP client + server** | **Both** | Client only | Client only | No |
-| **Chat bridges** | **4 platforms** | No | No | No |
+| **Chat bridges** | **18 platforms** | No | No | No |
 | **Cron scheduler** | **Built-in** | No | No | No |
 | **Mesh networking** | **Tailscale** | No | No | No |
 | **Menu bar app** | **macOS native** | No | No | No |
@@ -245,9 +245,9 @@ Wintermolt ships with 79 skill definitions across 11 domains. Each skill defines
 | 3D / VFX | 9 | qwen3:8b |
 | Engineering (general) | 14 | qwen3:8b |
 
-Skills live in `skills/` as `skill.json` manifests. Each specifies `backend`, `model`, and `role_prompt` — swap to Claude, GPT, or any Ollama model by editing one field. Subagents automatically switch to the skill's preferred backend when spawned.
+Skills live in `skills/` as `skill.json` manifests. Each specifies `backend`, `model`, and `role_prompt`. These are not applied yet: today the model sees each skill's name and description through the `skills` tool, and `spawn_agent` takes a model of its own rather than a skill's. See [docs/SKILLS.md](docs/SKILLS.md).
 
-### 16 Built-in Tools
+### 20 Built-in Tools
 
 The AI invokes these autonomously. No plugins needed.
 
@@ -268,7 +268,11 @@ The AI invokes these autonomously. No plugins needed.
 | `schedule` | Cron jobs — schedule recurring commands |
 | `tailscale` | Mesh VPN — query peers, devices, connectivity |
 | `canvas_update` | A2UI — render rich UI surfaces in terminal or web |
-| `harness_create` | Generate CLI-Anything harness for any software |
+| `skills` | List skills and the built-in tool catalog |
+| `text_to_speech` | Speech via OpenAI, ElevenLabs or Edge TTS |
+| `image_generate` | DALL-E 3 image generation |
+| `google_workspace` | Gmail, Calendar and Drive via Google APIs |
+| `spawn_agent` | Run a subtask in a child agent with its own context |
 
 ### Cron Scheduler
 
@@ -578,7 +582,7 @@ full-screen view use `/keys list`, or run `wintermolt --keys`.
 
 | Page | Covers |
 | :--- | :--- |
-| [docs/BACKENDS.md](docs/BACKENDS.md) | All 7 backends, default models, env vars, `--keys` flow. |
+| [docs/BACKENDS.md](docs/BACKENDS.md) | All 8 backends, default models, env vars, `--keys` flow. |
 | [docs/TOOLS.md](docs/TOOLS.md) | The 20 built-in tools (9 core + 11 extended), triggers, safety. |
 | [docs/SKILLS.md](docs/SKILLS.md) | Skill manifest format, built-in catalog, custom skills. |
 | [docs/MCP.md](docs/MCP.md) | MCP client + server, `~/.wintermolt/mcp.json`, Claude Desktop / Zed wiring. |

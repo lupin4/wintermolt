@@ -7,8 +7,11 @@ keep them running.
 
 | Flag             | Purpose                                                  |
 | :--------------- | :------------------------------------------------------- |
-| _(none)_         | Interactive REPL.                                        |
+| _(none)_         | Interactive chat: full-screen view in a terminal, plain REPL otherwise. |
+| `--plain`        | Plain line-by-line REPL in a terminal (also `WINTERMOLT_PLAIN=1`). |
+| `--theme <name>` | Full-screen view theme (also `WINTERMOLT_THEME`, `/theme`). |
 | `-e "<prompt>"`  | One-shot execution; prints response, exits.              |
+| `--version`, `--help` | Print the version, or usage, and exit.              |
 | `--keys`         | Interactive credential setup (also `--setup`).           |
 | `--chat`         | Spawn the chat-bridge sidecar (18 platforms).            |
 | `--web`          | Spawn the web UI bridge (WebSocket + JSON lines).        |
@@ -53,9 +56,9 @@ JSON-lines over stdin/stdout. No sockets, no shared memory.
 ./wintermolt --web
 ```
 
-Spawns the web sidecar (WebSocket + static files). Default port is
-configurable via `WINTERMOLT_WEB_PORT` (defaults to `7878`). Visit
-`http://localhost:7878`.
+Spawns the web sidecar (WebSocket + static files) on port `3000`. `PORT`
+or `WINTERMOLT_WEB_PORT` changes it (`PORT` wins when both are set). Visit
+`http://localhost:3000`.
 
 ## macOS menu bar
 
@@ -72,7 +75,7 @@ Click the menu bar icon to chat without a terminal. macOS-only.
 ./wintermolt --gateway
 ```
 
-Listens on `:8080` and accepts `POST /v1/chat/completions` requests
+Listens on `:8080` (`WINTERMOLT_GATEWAY_PORT` changes it) and accepts `POST /v1/chat/completions` requests
 in the OpenAI Chat Completions format. Useful for routing existing
 OpenAI-client code through Wintermolt's backend dispatcher.
 
