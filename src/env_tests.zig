@@ -83,6 +83,26 @@ test "setenv: a child process inherits a value set at runtime" {
     try testing.expectEqualStrings("child-sees-me", out);
 }
 
+// childEcho goes through runCapture, which builds a fresh Threaded per call and
+// so always sees the environment of the moment. spawnPiped (MCP servers,
+// sidecars) goes through fsio.io()'s Threaded, which lives for the whole process.
+// POSIX only: Windows reads its environment block live at every spawn, and has
+// no /bin/sh to ask.
+test "setenv: a child started through spawnPiped sees values set after fsio.io() was built" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    _ = fsio.io();
+    // Several NEW names: each one makes glibc move environ, and each move frees
+    // the array before it -- the array io() may still be holding.
+    var name_buf: [64]u8 = undefined;
+    for (0..8) |i| {
+        const name = try std.fmt.bufPrintZ(&name_buf, "WINTERMOLT_ENVTEST_PIPED_{d}", .{i});
+        try testing.expectEqual(@as(c_int, 0), setenvZ(name, "piped", 1));
+    }
+    var child = try fsio.spawnPiped(testing.allocator, &.{ "/bin/sh", "-c", "test \"$WINTERMOLT_ENVTEST_PIPED_7\" = piped" });
+    const term = try fsio.waitChild(&child);
+    try testing.expectEqual(std.process.Child.Term{ .exited = 0 }, term);
+}
+
 test "loadDotEnv: a key only in .env loads and reaches a child; the real environment beats .env" {
     const gpa = testing.allocator;
     var tmp = testing.tmpDir(.{});

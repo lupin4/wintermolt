@@ -72,7 +72,10 @@ var io_state: std.atomic.Value(u8) = .init(0); // 0 empty, 1 constructing, 2 rea
 ///
 /// Windows: `.global` reads the live process environment through the PEB.
 /// POSIX: libc's `environ`. Threaded.deinit does not free this block, so handing
-/// it libc's own pointer is safe.
+/// it libc's own pointer is safe -- for a Threaded that is used and dropped at
+/// once. It is a view of libc's ARRAY, though, and setenv moves that array when
+/// it adds a name and frees it on the next move. A Threaded that outlives a
+/// setenv (io()'s) gets ownedProcessEnviron instead.
 fn processEnviron() if (zig16) std.process.Environ else void {
     if (comptime !zig16) return {};
     if (comptime @import("builtin").os.tag == .windows) return .{ .block = .global };
@@ -80,6 +83,22 @@ fn processEnviron() if (zig16) std.process.Environ else void {
     var n: usize = 0;
     while (env[n] != null) n += 1;
     return .{ .block = .{ .slice = env[0..n :null] } };
+}
+
+/// io()'s environment: on POSIX a copy io() owns, never freed, because its
+/// Threaded lives as long as the process. Built on processEnviron's view, it
+/// went on reading libc's array after config.loadDotEnv's setenv calls had freed
+/// it -- Threaded.scanEnviron (the PATH lookup in every spawn) died with SIGSEGV
+/// on Linux. The copy is the environment as of io()'s first call; spawnPiped
+/// hands children the live one. Windows' `.global` is already read live.
+fn ownedProcessEnviron() if (zig16) std.process.Environ else void {
+    if (comptime !zig16) return {};
+    if (comptime @import("builtin").os.tag == .windows) return processEnviron();
+    const view = processEnviron().block.slice;
+    const a = std.heap.c_allocator;
+    const copy = a.allocSentinel(?[*:0]const u8, view.len, null) catch return processEnviron();
+    for (view, 0..) |entry, i| copy[i] = (a.dupeZ(u8, std.mem.span(entry.?)) catch return processEnviron()).ptr;
+    return .{ .block = .{ .slice = copy } };
 }
 
 pub inline fn io() if (zig16) std.Io else void {
@@ -90,7 +109,7 @@ pub inline fn io() if (zig16) std.Io else void {
     if (io_state.load(.acquire) == 2) return io_instance.io();
     while (true) {
         if (io_state.cmpxchgStrong(0, 1, .acquire, .monotonic) == null) {
-            io_instance = std.Io.Threaded.init(std.heap.c_allocator, .{ .environ = processEnviron() });
+            io_instance = std.Io.Threaded.init(std.heap.c_allocator, .{ .environ = ownedProcessEnviron() });
             io_state.store(2, .release);
             return io_instance.io();
         }
@@ -905,13 +924,21 @@ pub fn runCapture(gpa: std.mem.Allocator, argv: []const []const u8, max: usize, 
 /// It is NOT the std global. POSIX spawn *does* allocate -- see io() above --
 /// so the global's failing allocator made every one of these return
 /// error.OutOfMemory.
+///
+/// On POSIX the child gets the LIVE environment, read at this call. io()'s
+/// Threaded holds the environment as of its first call (ownedProcessEnviron),
+/// so a child started from that would miss every .env key config.loadDotEnv set
+/// afterwards. Windows' `.global` block is already read at each spawn.
 pub fn spawnPiped(gpa: std.mem.Allocator, argv: []const []const u8) !std.process.Child {
     if (comptime zig16) {
+        var env_map: ?EnvMap = if (comptime @import("builtin").os.tag == .windows) null else try currentEnvMap(gpa);
+        defer if (env_map) |*m| m.deinit();
         return std.process.spawn(io(), .{
             .argv = argv,
             .stdin = .pipe,
             .stdout = .pipe,
             .stderr = .inherit,
+            .environ_map = if (env_map) |*m| m else null,
         });
     } else {
         var child = std.process.Child.init(argv, gpa);

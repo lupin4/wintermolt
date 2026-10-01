@@ -119,6 +119,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (vendored zortui c47945c). Scrolling stays on the keyboard (PgUp/PgDn, ↑ ↓,
   and now Ctrl+↑ Ctrl+↓), and Windows Terminal still scrolls with the wheel.
   `WINTERMOLT_TUI_MOUSE=1` gives the view the mouse back.
+- **Crash, or missing `.env` keys, starting an MCP server on Linux and
+  macOS.** fsio's long-lived Io kept a view of libc's `environ` array taken on
+  its first use. `setenv`, which `config.loadDotEnv` calls for every `.env`
+  key, moves that array when it adds a name and frees it on the next move. A
+  child started through `spawnPiped` (MCP servers, sidecars) then got the old
+  environment without the `.env` keys, or the spawn's PATH lookup read the
+  freed array and the process died with SIGSEGV. The Io now owns a copy of the
+  environment, and `spawnPiped` hands each child the live one. Windows was not
+  affected. `zig build test-env` covers it: it sets eight new names after the
+  Io exists, then checks that a `spawnPiped` child sees the last one.
 
 ## [0.5.0] — 2026-06-04
 
