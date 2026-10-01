@@ -374,6 +374,18 @@ pub fn build(b: *std.Build) void {
     });
     test_step.dependOn(&b.addRunArtifact(tool_status_test).step);
 
+    // Skill manifests, and `skills use` handing a skill's role prompt to the
+    // model. Its own root for the same reason; libc for fsio and bash.zig.
+    const skill_loader_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/skill_loader_tests.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+    });
+    test_step.dependOn(&b.addRunArtifact(skill_loader_test).step);
+
     // The environment, end to end: a value setenv puts there at runtime (every
     // ~/.wintermolt/.env key does) must reach getenv and each child spawned
     // afterwards. Its own root for the reason the compat files have theirs; also

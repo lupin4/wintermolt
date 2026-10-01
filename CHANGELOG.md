@@ -39,6 +39,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Skills take effect.** The `skills` tool gains `operation='use'`, which
+  hands a skill's `role_prompt` to the model as instructions for the current
+  task, on whatever backend is running; calling a prompt skill by name does
+  the same. Before, the 79 shipped skills were listed by name and
+  description and nothing more: their role prompts were read and never
+  used. The nine generic personas (`code_reviewer`, `debugger`,
+  `python_engineer`, `refactorer`, `test_writer`, `typescript_engineer`,
+  `project_planner`, `research_assistant`, `technical_writer`) are removed;
+  the 70 that carry forKernels / Zortran house rules stay. A manifest's
+  `backend` and `model` are still not used.
 - **The TUI reads time through forTime.** zortui timed frames, animation and,
   on Windows, its input-wait deadlines with its own monotonic clock. The
   vendored copy is now lupin4/zortui 9261fe1, which adds an optional
@@ -72,6 +82,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Runtime skills never loaded.** `AgentLoop` created the skill registry
+  and never filled it, so no skill from `./skills`, `~/.wintermolt/skills` or
+  a plugin reached the model in any mode, bash and MCP skills included.
+  Startup now loads them (`[skills] Loaded N runtime skill(s)`), and
+  `--mcp-server` loads them too.
 - **Windows (Zig 0.16).** Builds and runs from a plain PowerShell or cmd
   window with no setup: `HOME` falls back to `USERPROFILE`; the console is
   switched to UTF-8 with ANSI escapes at startup and restored on exit; the

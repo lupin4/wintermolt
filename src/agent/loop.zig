@@ -134,6 +134,7 @@ pub const AgentLoop = struct {
         // Initialize skill loader
         var skill_registry: ?skill_loader.SkillRegistry = null;
         skill_registry = skill_loader.SkillRegistry.init(alloc);
+        skill_registry.?.loadFromDirectories();
 
         // Initialize scheduler (SQLite-persisted cron jobs)
         var scheduler: ?scheduler_mod.Scheduler = null;

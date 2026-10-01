@@ -227,9 +227,9 @@ All backends support **streaming**. Ollama runs 100% local, air-gapped, no API k
 
 - **Local GGUF inference in-process** (`/model kernel` today on Apple Silicon; `/model forai` on forMetal/forCUDA across macOS/Linux/Windows as engine deliveries land). Unsloth-trained GGUF exports run as-is.
 
-### 79 Model-Agnostic Skills
+### 70 Domain Skills
 
-Wintermolt ships with 79 skill definitions across 11 domains. Each skill defines a specialized agent role with a preferred model — but any skill can run on any backend.
+Wintermolt ships with 70 skill definitions across 11 domains: the house rules and domain knowledge of the forKernels / Zortran stack, written as instructions the model loads when it works in that area.
 
 | Domain | Skills | Default Model |
 |--------|:------:|---------------|
@@ -243,9 +243,9 @@ Wintermolt ships with 79 skill definitions across 11 domains. Each skill defines
 | Agent Architecture | 6 | qwen3:8b |
 | Audio / Music | 8 | qwen3:8b |
 | 3D / VFX | 9 | qwen3:8b |
-| Engineering (general) | 14 | qwen3:8b |
+| Engineering (kernels, release) | 5 | qwen3:30b (devops: 8b) |
 
-Skills live in `skills/` as `skill.json` manifests. Each specifies `backend`, `model`, and `role_prompt`. These are not applied yet: today the model sees each skill's name and description through the `skills` tool, and `spawn_agent` takes a model of its own rather than a skill's. See [docs/SKILLS.md](docs/SKILLS.md).
+Skills live in `skills/` as `skill.json` manifests and load at startup. The model lists them with the `skills` tool and loads one with `operation='use'`, which puts the skill's `role_prompt` into the conversation on whatever backend is running. The manifests' `backend` and `model` fields are recorded but not used. See [docs/SKILLS.md](docs/SKILLS.md).
 
 ### 20 Built-in Tools
 

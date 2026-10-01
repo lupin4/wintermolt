@@ -264,8 +264,19 @@ pub const SkillRegistry = struct {
             .bash => self.executeBash(skill, input_json),
             .script => self.executeScript(skill, input_json),
             .mcp => self.executeMcp(skill, input_json),
-            .prompt => std.fmt.allocPrint(self.alloc, "Skill '{s}' is prompt-only (no executable handler).", .{skill.name}),
+            .prompt => self.useSkill(skill.name),
         };
+    }
+
+    /// The text that puts a skill into effect: its role prompt, framed for the
+    /// model running the task. It applies on whatever backend is running; the
+    /// manifest's backend and model are not consulted.
+    pub fn useSkill(self: *SkillRegistry, name: []const u8) ![]u8 {
+        const skill = self.findByName(name) orelse return error.SkillNotFound;
+        if (skill.role_prompt.len == 0) return error.NoRolePrompt;
+        return std.fmt.allocPrint(self.alloc,
+            "Skill '{s}' is now in effect. Follow these instructions for the rest of this task:\n\n{s}",
+            .{ skill.name, skill.role_prompt });
     }
 
     fn executeBash(self: *SkillRegistry, skill: *RuntimeSkill, input_json: []const u8) ![]u8 {
@@ -368,4 +379,60 @@ fn containsKeywordCI(text: []const u8, keyword: []const u8) bool {
         if (match) return true;
     }
     return false;
+}
+
+// ---------------------------------------------------------------------------
+// Tests — rooted on their own in build.zig: tests in a file main.zig merely
+// imports are not collected.
+// ---------------------------------------------------------------------------
+
+test "useSkill returns the role prompt of a prompt skill" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var reg = SkillRegistry.init(arena.allocator());
+    defer reg.deinit();
+
+    try reg.parseManifest(
+        \\{"name": "zortran_bind_c", "description": "d", "handler_type": "prompt",
+        \\ "backend": "ollama", "model": "qwen3:30b",
+        \\ "role_prompt": "Scalars take value, arrays never do."}
+    , "skills", "zortran-bind-c");
+
+    const text = try reg.useSkill("zortran_bind_c");
+    try std.testing.expect(std.mem.indexOf(u8, text, "Scalars take value, arrays never do.") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "zortran_bind_c") != null);
+
+    // Called by name, a prompt skill hands back the same text instead of
+    // "prompt-only (no executable handler)".
+    const by_name = try reg.executeSkill(reg.findByName("zortran_bind_c").?, "{}");
+    try std.testing.expectEqualStrings(text, by_name);
+}
+
+test "useSkill fails for an unknown skill and for one without a role prompt" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var reg = SkillRegistry.init(arena.allocator());
+    defer reg.deinit();
+
+    try reg.parseManifest(
+        \\{"name": "word_count", "handler_type": "bash", "command": "wc -w"}
+    , "skills", "word-count");
+
+    try std.testing.expectError(error.SkillNotFound, reg.useSkill("nope"));
+    try std.testing.expectError(error.NoRolePrompt, reg.useSkill("word_count"));
+}
+
+test "every shipped skill in skills/ loads with a role prompt" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var reg = SkillRegistry.init(arena.allocator());
+    defer reg.deinit();
+
+    // zig build runs tests from the build root, where skills/ lives.
+    try reg.scanDirectory("skills");
+    try std.testing.expect(reg.skills.items.len > 0);
+    for (reg.skills.items) |skill| {
+        try std.testing.expect(skill.handler_type == .prompt);
+        _ = try reg.useSkill(skill.name);
+    }
 }

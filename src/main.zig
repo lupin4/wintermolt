@@ -260,6 +260,11 @@ pub fn main(init: std.process.Init) !void {
     // --mcp-server mode
     if (mcp_server_mode) {
         const mcp_server = @import("mcp/server.zig");
+        // No AgentLoop here, so load the skills the `skills` tool reads.
+        var skill_registry = @import("agent/skill_loader.zig").SkillRegistry.init(alloc);
+        defer skill_registry.deinit();
+        skill_registry.loadFromDirectories();
+        @import("agent/tools.zig").setSkillRegistry(&skill_registry);
         try mcp_server.run(alloc);
         return;
     }
