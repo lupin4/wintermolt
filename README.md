@@ -52,11 +52,11 @@ Tailscale peers:
 
 ## Why Wintermolt?
 
-Most AI coding tools ship hundreds of megabytes of Electron or Node.js runtime just to send API calls and edit files. Wintermolt compiles to a **single native binary** — 1 MB on macOS Apple Silicon, 7 MB on Linux ARM, 12 MB on Windows (statically-linked HTTP/3 stack) — and cross-compiles to any platform Zig supports, including ARM boards like Jetson and Raspberry Pi.
+Most AI coding tools ship hundreds of megabytes of Electron or Node.js runtime just to send API calls and edit files. Wintermolt compiles to a **single native binary** — about 6 MB on macOS Apple Silicon, 11 MB on Linux, 14 MB on Windows (statically-linked HTTP/3 stack) — and cross-compiles to any platform Zig supports, including ARM boards like Jetson and Raspberry Pi.
 
 | | Wintermolt | Claude Code | Cursor | Aider |
 |---|:---:|:---:|:---:|:---:|
-| **Binary size** | **1–12 MB** | ~200 MB | ~500 MB | ~50 MB |
+| **Binary size** | **6–14 MB** | ~200 MB | ~500 MB | ~50 MB |
 | **Runtime** | **None** | Node.js 18+ | Electron | Python 3.8+ |
 | **Cross-compile** | **One command** | N/A | N/A | N/A |
 | **Runs on Jetson/Pi** | **Yes** | Barely | No | Slow |
@@ -87,7 +87,7 @@ directory.
 **macOS (Apple Silicon — M1/M2/M3/M4):**
 
 ```bash
-curl -L -o wintermolt https://github.com/lupin4/wintermolt/raw/main/prebuilt/wintermolt-darwin-arm64 \
+curl -L -o wintermolt https://github.com/lupin4/wintermolt/raw/main/prebuilt/wintermolt-macos \
   && chmod +x wintermolt
 ```
 
@@ -106,8 +106,11 @@ Invoke-WebRequest `
   -OutFile wintermolt.exe
 ```
 
-**Linux (x86_64 — servers, cloud VMs):** prebuilt binary not yet
-shipped — [build from source](#build-from-source) (one Zig command).
+**Linux (x86_64 — servers, cloud VMs):**
+
+```bash
+curl -L -o wintermolt https://github.com/lupin4/wintermolt/raw/main/prebuilt/wintermolt-linux-x86_64 \n  && chmod +x wintermolt
+```
 
 ### Step 2 — Install Ollama (optional but recommended)
 
@@ -143,16 +146,16 @@ That's it. You're running.
 
 | Platform | Binary | Size | Notes |
 |:---|:---|---:|:---|
-| macOS arm64 | [`wintermolt-darwin-arm64`](prebuilt/wintermolt-darwin-arm64) | 1.1 MB | Mach-O, dynamic libcurl + sqlite3 |
-| Linux arm64 | [`wintermolt-linux-arm64`](prebuilt/wintermolt-linux-arm64) | 7 MB | ELF aarch64, dynamic |
-| Windows x86_64 | [`wintermolt-windows-x86_64.exe`](prebuilt/wintermolt-windows-x86_64.exe) | 12 MB | PE32+, static HTTP/3 + crypto. **Runtime needs MSYS2 UCRT64 DLLs on `PATH`** — install via [MSYS2](https://www.msys2.org/) once, then `pacman -S mingw-w64-ucrt-x86_64-curl mingw-w64-ucrt-x86_64-sqlite3`. |
-| Linux x86_64 | _build from source_ | — | `zig build -Dtarget=x86_64-linux-gnu` |
+| macOS arm64 | [`wintermolt-macos`](prebuilt/wintermolt-macos) | 5.8 MB | Mach-O, dynamic libcurl + sqlite3 |
+| Linux arm64 | [`wintermolt-linux-arm64`](prebuilt/wintermolt-linux-arm64) | 10.6 MB | ELF aarch64, dynamic libcurl + sqlite3 |
+| Linux x86_64 | [`wintermolt-linux-x86_64`](prebuilt/wintermolt-linux-x86_64) | 11 MB | ELF x86-64, dynamic libcurl + sqlite3. glibc 2.34+ (Ubuntu 22.04, Debian 12, RHEL 9 and later). x86-64-v3 CPU (Intel Haswell, AMD Zen or newer). |
+| Windows x86_64 | [`wintermolt-windows-x86_64.exe`](prebuilt/wintermolt-windows-x86_64.exe) | 14 MB | PE32+, HTTP/3 and crypto linked in statically. Imports only Windows system DLLs: nothing else to install. x86-64-v3 CPU (Intel Haswell, AMD Zen or newer). |
 
 ---
 
 ## Build from source
 
-If you want to compile yourself (also required for Linux x86_64 today).
+If you want to compile yourself.
 
 ### Prerequisites
 
@@ -583,7 +586,7 @@ full-screen view use `/keys list`, or run `wintermolt --keys`.
 ## Architecture
 
 ```
-wintermolt (3 MB arm64 binary)
+wintermolt (one native binary, 6–14 MB)
 │
 ├── src/main.zig                 Entry point — REPL, CLI, mode dispatch
 ├── src/setup.zig                OOBE setup wizard
@@ -638,8 +641,9 @@ wintermolt (3 MB arm64 binary)
 ├── src/web/bridge.zig           Web UI bridge (WebSocket + JSON lines)
 │
 ├── prebuilt/                    Prebuilt executables (committed to repo)
-│   ├── wintermolt-darwin-arm64        macOS Apple Silicon
+│   ├── wintermolt-macos               macOS Apple Silicon
 │   ├── wintermolt-linux-arm64         Linux ARM64 (Jetson, Pi 5)
+│   ├── wintermolt-linux-x86_64        Linux x86_64
 │   └── wintermolt-windows-x86_64.exe  Windows x86_64
 │
 └── menubar/                     macOS menu bar Swift sidecar
