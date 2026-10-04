@@ -430,27 +430,15 @@ wintermolt --web     # Serves http://localhost:3000
 
 Real-time streaming via WebSocket. The AI's responses render token-by-token in the browser with tool execution previews.
 
-### CLI-Anything — Make Any Software Agent-Native
+### CLI-Anything — Wintermolt as a Tool for Other Agents
 
-Wintermolt integrates [CLI-Anything](https://github.com/forKernels/CLI-Anything), a framework that turns any software into an AI-controllable tool by generating structured CLI wrappers.
+[CLI-Anything](https://github.com/forKernels/CLI-Anything) is a framework for wrapping software in structured CLIs that AI agents can drive. Wintermolt ships its own harness in `agent-harness/`: a pip-installable Python CLI (Click command groups, `--json` output) that runs the `wintermolt` binary through `-e` and `--mcp-server` and reads its SQLite history read-only, so another agent can use Wintermolt as a tool.
 
-```
-> Create a harness for OBS Studio using its WebSocket API
-
-[harness_create] Generating CLI-Anything harness for "obs"...
-  obs/agent-harness/
-    setup.py
-    cli_anything/obs/obs_cli.py          (Click CLI with --json)
-    cli_anything/obs/core/backend.py     (WebSocket backend)
-    cli_anything/obs/skills/SKILL.md     (AI-discoverable metadata)
-
-[bash] pip install -e obs/agent-harness/
-Done. OBS is now agent-native. Try: cli-anything-obs --json scene list
+```bash
+pip install -e agent-harness/
 ```
 
-The generated harness follows CLI-Anything conventions: `--json` flag for structured output, Click command groups for tool dispatch, and a SKILL.md that lets any AI agent auto-discover the tool's capabilities. Wintermolt discovers installed harnesses automatically via the MCP bridge.
-
-Existing CLI-Anything harnesses include Blender, Audacity, ComfyUI, CloudCompare, and [many more](https://github.com/forKernels/CLI-Anything).
+Wintermolt has no tool that generates harnesses for other software. The `cli_anything_harness` skill (`skills use`) carries the CLI-Anything conventions for writing one by hand. Existing harnesses for Blender, Audacity, ComfyUI, CloudCompare and [more](https://github.com/forKernels/CLI-Anything) are command-line programs the `bash` tool can run like any other.
 
 ### Skills System
 
@@ -478,8 +466,6 @@ Wintermolt ships with [forLearn](https://github.com/forKernels/forLearn), which 
 | Online predictor | Per-feature autoregressive model |
 | Q-Learning | Tabular RL with epsilon-greedy |
 | Curiosity | Intrinsic motivation via forward-model prediction error |
-
-**Harness generation** — scaffolds [CLI-Anything](https://github.com/forKernels/CLI-Anything) projects for connecting to new software. The `harness_create` tool generates a complete pip-installable Python CLI with `--json` support, backend adapter, and SKILL.md — making any application agent-native in one command.
 
 ---
 
