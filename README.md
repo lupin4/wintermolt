@@ -147,7 +147,7 @@ That's it. You're running.
 | Platform | Binary | Size | Notes |
 |:---|:---|---:|:---|
 | macOS arm64 | [`wintermolt-macos`](prebuilt/wintermolt-macos) | 6.2 MB | Mach-O, dynamic libcurl + sqlite3 |
-| Linux arm64 | [`wintermolt-linux-arm64`](prebuilt/wintermolt-linux-arm64) | 10.6 MB | ELF aarch64, dynamic libcurl + sqlite3 |
+| Linux arm64 | [`wintermolt-linux-arm64`](prebuilt/wintermolt-linux-arm64) | 10.6 MB | ELF aarch64, dynamic libcurl + sqlite3. glibc 2.36+ (Debian 12 / Raspberry Pi OS Bookworm, Ubuntu 24.04 / JetPack 7 and later) — it imports `arc4random_buf`, which Ubuntu 22.04 / JetPack 6 lack. Not musl: on Alpine, [build it](#musl-alpine). |
 | Linux x86_64 | [`wintermolt-linux-x86_64`](prebuilt/wintermolt-linux-x86_64) | 11 MB | ELF x86-64, dynamic libcurl + sqlite3. glibc 2.34+ (Ubuntu 22.04, Debian 12, RHEL 9 and later). x86-64-v3 CPU (Intel Haswell, AMD Zen or newer). |
 | Windows x86_64 | [`wintermolt-windows-x86_64.exe`](prebuilt/wintermolt-windows-x86_64.exe) | 14 MB | PE32+, HTTP/3 and crypto linked in statically. Imports only Windows system DLLs: nothing else to install. x86-64-v3 CPU (Intel Haswell, AMD Zen or newer). |
 
@@ -186,6 +186,30 @@ sqlite3 (and, for Windows, the MSYS2 UCRT64 libraries). Set a CPU floor with
 zig build -Doptimize=ReleaseFast -Dcpu=baseline    # aarch64 — Apple Silicon, Jetson, Pi 5, Graviton
 zig build -Doptimize=ReleaseFast -Dcpu=x86_64_v3   # x86_64 — Linux, Windows (MSYS2 UCRT64)
 ```
+
+Add `-Dstrip=true` to leave debug info out of the binary. Crash backtraces then
+lose their file and line numbers.
+
+### musl (Alpine)
+
+The Linux prebuilts are glibc builds and do not start on Alpine, even with
+`gcompat`. Build a musl binary instead. The sysroot route below cross-compiles
+from any Linux host; `-Dtarget=` is the one place it is right, because
+`--search-prefix` hands Zig the libcurl and sqlite3 that cross-compiling would
+otherwise stop finding.
+
+Extract Alpine's `curl-dev`, `libcurl`, `sqlite-dev` and `sqlite-libs` apks
+(same Alpine release and arch as the target) into `$SYSROOT`, then:
+
+```bash
+PKG_CONFIG_LIBDIR=/nonexistent zig build \
+  -Dtarget=aarch64-linux-musl -Dcpu=cortex_a53 -Doptimize=ReleaseSmall \
+  --search-prefix "$SYSROOT/usr"
+```
+
+`cortex_a53` is the Pi Zero 2 W / Pi 3; `-Dcpu=baseline` runs on any aarch64.
+Verified on a Pi Zero 2 W under Alpine 3.23: a 961 KB dynamically linked musl
+binary, no preload needed.
 
 ---
 

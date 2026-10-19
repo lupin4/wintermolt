@@ -99,6 +99,9 @@ pub fn build(b: *std.Build) void {
         "optimize",
         "Prioritize performance, safety, or binary size (delivery default: ReleaseFast)",
     ) orelse release_fast;
+    // Unset leaves Zig's per-mode default. The Linux prebuilts shipped with full
+    // debug info; -Dstrip=true is the knob for a small published binary.
+    const strip = b.option(bool, "strip", "Omit debug info from the binary");
 
     // -------------------------------------------------------------------
     // WINTERMOLT EXECUTABLE
@@ -116,6 +119,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .link_libc = true,
+        .strip = strip,
     });
 
     // --- Dep kernels: linked from the COMMITTED local prebuilt tree only.
