@@ -663,6 +663,7 @@ wintermolt (one native binary, 6–14 MB)
 | `WINTERMOLT_OLLAMA_KEEP_ALIVE` | `5m` | Model unload timer (`0` = unload after each response) |
 | `WINTERMOLT_MODEL` | `qwen3:0.6b` | Default model |
 | `OPENAI_API_KEY` | — | OpenAI API key (GPT-4o, GPT-4.1) |
+| `WINTERMOLT_OPENAI_URL` | `https://api.openai.com/v1/chat/completions` | OpenAI-compatible Chat Completions URL — point it at LiteLLM, vLLM, llama.cpp server, OpenRouter |
 | `DEEPSEEK_API_KEY` | — | DeepSeek API key (V3, R1) |
 | `QWEN_API_KEY` | — | Qwen API key (Qwen 2.5+) |
 | `GOOGLE_GEMINI_API_KEY` | — | Google Gemini API key |

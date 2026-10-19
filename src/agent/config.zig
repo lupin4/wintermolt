@@ -14,6 +14,8 @@
 //   WINTERMOLT_VISION_BACKEND — Optional. Vision routing: "ollama" (default) or "openai"
 //   OPENAI_API_KEY           — Optional. Enables OpenAI backend (/model openai)
 //   WINTERMOLT_OPENAI_MODEL  — Optional. OpenAI model (default: "gpt-4o-mini")
+//   WINTERMOLT_OPENAI_URL    — Optional. OpenAI-compatible Chat Completions URL
+//                              (default: https://api.openai.com/v1/chat/completions)
 //   DEEPSEEK_API_KEY         — Optional. Enables DeepSeek Cloud backend (/model deepseek)
 //   QWEN_API_KEY             — Optional. Enables Qwen Cloud backend (/model qwen)
 //   WINTERMOLT_QWEN_MODEL    — Optional. Qwen model (default: "qwen-plus")
@@ -192,6 +194,7 @@ pub const Config = struct {
     // Multi-backend support
     openai_api_key: ?[]const u8,
     openai_model: []const u8,
+    openai_url: []const u8,
     deepseek_cloud_key: ?[]const u8,
     qwen_api_key: ?[]const u8,
     qwen_model: []const u8,
@@ -277,6 +280,9 @@ pub const Config = struct {
         const openai_api_key = compat.getenv("OPENAI_API_KEY");
         const openai_model = compat.getenv("WINTERMOLT_OPENAI_MODEL") orelse
             "gpt-4o-mini";
+        // Any OpenAI-compatible server: LiteLLM, vLLM, llama.cpp, OpenRouter.
+        const openai_url = compat.getenv("WINTERMOLT_OPENAI_URL") orelse
+            "https://api.openai.com/v1/chat/completions";
         const deepseek_cloud_key = compat.getenv("DEEPSEEK_API_KEY");
         const qwen_api_key = compat.getenv("QWEN_API_KEY");
         const qwen_model = compat.getenv("WINTERMOLT_QWEN_MODEL") orelse
@@ -336,6 +342,7 @@ pub const Config = struct {
             .vision_backend = vision_backend,
             .openai_api_key = openai_api_key,
             .openai_model = openai_model,
+            .openai_url = openai_url,
             .deepseek_cloud_key = deepseek_cloud_key,
             .qwen_api_key = qwen_api_key,
             .qwen_model = qwen_model,
@@ -465,7 +472,7 @@ pub fn buildCapabilities(config: *const Config, alloc: std.mem.Allocator, tool_c
     try w.print("  - Claude (primary): {s}\n", .{config.model});
     try w.print("  - Ollama (local): {s} at {s}\n", .{ config.ollama_model, config.ollama_url });
     if (config.openai_api_key != null)
-        try w.print("  - OpenAI: {s}\n", .{config.openai_model});
+        try w.print("  - OpenAI: {s} at {s}\n", .{ config.openai_model, config.openai_url });
     if (config.deepseek_cloud_key != null)
         try w.writeAll("  - DeepSeek Cloud\n");
     if (config.qwen_api_key != null)

@@ -9,12 +9,12 @@ are supported. The default is Ollama (local, no API key).
 | :------- | :------------------------- | :---------------------- | :--------------------------------------------- |
 | `ollama` | `qwen3:8b`                 | None — local            | Requires `ollama serve` on `WINTERMOLT_OLLAMA_URL` (default `http://localhost:11434`). |
 | `claude` | `claude-sonnet-4-20250514` | `ANTHROPIC_API_KEY`     | Anthropic Messages API.                        |
-| `openai` | `gpt-4o-mini`              | `OPENAI_API_KEY`        | Chat Completions API.                          |
+| `openai` | `gpt-4o-mini`              | `OPENAI_API_KEY`        | Chat Completions API at `WINTERMOLT_OPENAI_URL` (default `https://api.openai.com/v1/chat/completions`) — any OpenAI-compatible server works. |
 | `deepseek` | `deepseek-chat`          | `DEEPSEEK_API_KEY`      | OpenAI-compatible endpoint.                    |
 | `qwen`   | `qwen-plus`                | `QWEN_API_KEY`          | Alibaba DashScope OpenAI-compatible endpoint.  |
 | `gemini` | `gemini-2.0-flash`         | `GOOGLE_GEMINI_API_KEY` | Google Gemini REST API.                        |
 | `kernel` | `qwen3:0.6b` (GGUF in `~/.wintermolt/models`) | None — in-process | llama.cpp on Metal, in-process. macOS Apple Silicon only; other builds report "darwin-arm64 only". `WINTERMOLT_KERNEL_DEFAULT` sets the default alias, `WINTERMOLT_KERNEL_MODEL_DIR` the model directory. |
-| `forai`  | (GGUF in `~/.wintermolt/models`) | None — in-process | In-process inference engine: forAI + forNLP on forMetal (macOS) / forCUDA (Linux, Windows). No external model loader. Engine ships when the forAI rebuild lands; until then `/model forai` reports not-yet-delivered. Previous HTTP mode: use `openai` backend with a custom URL. |
+| `forai`  | (GGUF in `~/.wintermolt/models`) | None — in-process | In-process inference engine: forAI + forNLP on forMetal (macOS) / forCUDA (Linux, Windows). No external model loader. Engine ships when the forAI rebuild lands; until then `/model forai` reports not-yet-delivered. Previous HTTP mode: use the `openai` backend with `WINTERMOLT_OPENAI_URL`. |
 
 ## Switching at runtime
 
@@ -44,6 +44,7 @@ WINTERMOLT_MODEL=qwen3:8b                      # model tag
 # OpenAI
 OPENAI_API_KEY=sk-...
 WINTERMOLT_OPENAI_MODEL=gpt-4o-mini
+WINTERMOLT_OPENAI_URL=https://api.openai.com/v1/chat/completions   # full URL, not a base URL
 
 # Anthropic Claude
 ANTHROPIC_API_KEY=sk-ant-...

@@ -103,6 +103,19 @@ test "setenv: a child started through spawnPiped sees values set after fsio.io()
     try testing.expectEqual(std.process.Child.Term{ .exited = 0 }, term);
 }
 
+// The OpenAI backend speaks Chat Completions to whatever URL this names, so any
+// OpenAI-compatible server (LiteLLM, vLLM, llama.cpp, OpenRouter) can stand in.
+test "Config.load: WINTERMOLT_OPENAI_URL names the OpenAI endpoint, api.openai.com when unset" {
+    const key = "WINTERMOLT_OPENAI_URL";
+    if (compat.getenv(key) == null) {
+        const unset = try config.Config.load(null);
+        try testing.expectEqualStrings("https://api.openai.com/v1/chat/completions", unset.openai_url);
+    }
+    try testing.expectEqual(@as(c_int, 0), setenvZ(key, "http://127.0.0.1:4000/v1/chat/completions", 1));
+    const set = try config.Config.load(null);
+    try testing.expectEqualStrings("http://127.0.0.1:4000/v1/chat/completions", set.openai_url);
+}
+
 test "loadDotEnv: a key only in .env loads and reaches a child; the real environment beats .env" {
     const gpa = testing.allocator;
     var tmp = testing.tmpDir(.{});

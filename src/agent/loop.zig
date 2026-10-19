@@ -500,7 +500,7 @@ pub const AgentLoop = struct {
                         api_key,
                         self.config.openai_model,
                     );
-                    openai_client.api_url = "https://api.openai.com/v1/chat/completions";
+                    openai_client.api_url = self.config.openai_url;
                     if (openai_client.sendMessage(system_prompt, messages, tool_defs, effective_cb)) |resp| {
                         stderr.writeAll("[fallback] OpenAI succeeded\n") catch {};
                         succeeded = true;
@@ -571,7 +571,7 @@ pub const AgentLoop = struct {
                 api_key,
                 model_name orelse self.config.openai_model,
             );
-            client.api_url = "https://api.openai.com/v1/chat/completions";
+            client.api_url = self.config.openai_url;
             self.backend = .{ .openai = client };
             stderr.print("[backend] Switched to OpenAI ({s})\n", .{model_name orelse self.config.openai_model}) catch {};
         } else if (std.mem.eql(u8, backend_name, "deepseek")) {

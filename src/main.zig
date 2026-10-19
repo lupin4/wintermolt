@@ -1541,10 +1541,12 @@ fn printHelp(w: anytype) !void {
         \\  Rocket.Chat    ROCKETCHAT_URL + ROCKETCHAT_TOKEN + ROCKETCHAT_USER_ID
         \\
         \\Environment:
-        \\  OPENAI_API_KEY       — OpenAI API key (optional)
+        \\  ANTHROPIC_API_KEY    — Claude API key (optional)
         \\  WINTERMOLT_MODEL     — Default model
         \\  OLLAMA_HOST          — Ollama URL (default: http://localhost:11434)
         \\  OPENAI_API_KEY       — OpenAI API key
+        \\  WINTERMOLT_OPENAI_URL — OpenAI-compatible Chat Completions URL
+        \\                         (default: https://api.openai.com/v1/chat/completions)
         \\  DEEPSEEK_API_KEY     — DeepSeek API key
         \\  QWEN_API_KEY         — Qwen API key
         \\  TAILSCALE_API_KEY    — Tailscale API key (optional, for device list)
