@@ -375,7 +375,8 @@ test "LineReader: splits, keeps a newline-less tail, and spills a long line" {
 
     // The third line is deliberately longer than the 16-byte buffer below, so
     // the overflow path is exercised rather than merely present.
-    const long = "C" ** 100;
+    // @splat, not `"C" ** 100`: 0.17 removed the ** operator.
+    const long: [100]u8 = @splat('C');
     const body = "alpha\nbeta\n" ++ long ++ "\nomega-no-newline";
     {
         const f = try createFile(path, .{});
@@ -392,7 +393,7 @@ test "LineReader: splits, keeps a newline-less tail, and spills a long line" {
 
     try std.testing.expectEqualStrings("alpha", (try lr.next()).?);
     try std.testing.expectEqualStrings("beta", (try lr.next()).?);
-    try std.testing.expectEqualStrings(long, (try lr.next()).?);
+    try std.testing.expectEqualStrings(&long, (try lr.next()).?);
     try std.testing.expectEqualStrings("omega-no-newline", (try lr.next()).?);
     try std.testing.expect((try lr.next()) == null);
     // Idempotent at the end, so a caller's while-loop cannot spin.
