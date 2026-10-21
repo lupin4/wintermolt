@@ -58,6 +58,24 @@ variable applies (`WINTERMOLT_OPENAI_MODEL`, `WINTERMOLT_QWEN_MODEL`,
 `WINTERMOLT_KERNEL_DEFAULT`, `WINTERMOLT_FORAI_DEFAULT`), and then the default
 in the table above.
 
+A named model is not translated for the chosen backend: it goes out as written,
+so `WINTERMOLT_BACKEND=openai WINTERMOLT_MODEL=qwen3:8b` asks OpenAI for a model
+called `qwen3:8b`. The provider refuses it, and the refusal fails the request:
+the usual fallback chain runs, and `-e` exits 1 when nothing answers. What that
+refusal looks like on stderr:
+
+- `404`: `[openai HTTP 404] Request failed`, then `[fallback] Trying Ollama
+  ...`, and exit 1 when that fails too. With `WINTERMOLT_NO_FALLBACK=1` it is
+  `[fallback] off (WINTERMOLT_NO_FALLBACK=1): OpenAI failed (HttpError)`.
+- `400` is read as context overflow, not as a refused model: wintermolt
+  compacts history, retries the request once, and ends at `[Error] Retry
+  failed: ContextOverflow` without falling back.
+- A `200` whose stream carries an error frame is `[openai] stream error:
+  <provider text>` and does fall back (see below).
+
+An HTTP failure prints the status, not the provider's own error body; the `200`
+error frame is the one shape whose message is relayed.
+
 Setting the variable is an explicit request, so a backend that cannot be built —
 a mistyped name, a cloud backend without its key, `forai` on a build without the
 engine — prints the reason and exits 1 before the first request. It never
