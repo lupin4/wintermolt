@@ -57,6 +57,10 @@ pub const DeepSeekClient = struct {
     model: []const u8,
     api_url: []const u8,
     max_tokens: u32,
+    /// Provider this client talks to, for the stderr lines. One client serves
+    /// openai, deepseek, qwen and gemini, so a failure has to name the one that
+    /// was asked rather than reading as DeepSeek for all of them.
+    label: []const u8 = "openai",
 
     pub fn init(
         alloc: Allocator,
@@ -93,7 +97,7 @@ pub const DeepSeekClient = struct {
 
         {
             const dbg = stdio.stderr();
-            dbg.print("[deepseek] request: {d} bytes (~{d}k tokens est)\n", .{ body.len, body.len / 3000 }) catch {};
+            dbg.print("[{s}] request: {d} bytes (~{d}k tokens est)\n", .{ self.label, body.len, body.len / 3000 }) catch {};
         }
 
         // Initialize curl
@@ -145,7 +149,7 @@ pub const DeepSeekClient = struct {
             if (result != .ok) {
                 const err_msg = curl_easy_strerror(result);
                 const stderr = stdio.stderr();
-                stderr.print("\n[deepseek curl error] {s}\n", .{err_msg}) catch {};
+                stderr.print("\n[{s} curl error] {s}\n", .{ self.label, err_msg }) catch {};
                 return error.CurlRequestFailed;
             }
 
@@ -158,7 +162,7 @@ pub const DeepSeekClient = struct {
                 attempt += 1;
                 const wait_secs: u64 = std.math.shl(u64, 2, @as(u6, @intCast(attempt - 1)));
                 const stderr = stdio.stderr();
-                stderr.print("\n[deepseek] Rate limited, waiting {d}s ({d}/{d})...\n", .{ wait_secs, attempt, max_retries }) catch {};
+                stderr.print("\n[{s}] Rate limited, waiting {d}s ({d}/{d})...\n", .{ self.label, wait_secs, attempt, max_retries }) catch {};
                 fsio.sleepNs(wait_secs * 1_000_000_000);
                 parser.reset();
                 continue;
@@ -167,9 +171,9 @@ pub const DeepSeekClient = struct {
             const stderr = stdio.stderr();
             const error_body = parser.getAccumulatedText();
             if (error_body.len > 0) {
-                stderr.print("\n[deepseek HTTP {d}] {s}\n", .{ http_code, error_body[0..@min(error_body.len, 500)] }) catch {};
+                stderr.print("\n[{s} HTTP {d}] {s}\n", .{ self.label, http_code, error_body[0..@min(error_body.len, 500)] }) catch {};
             } else {
-                stderr.print("\n[deepseek HTTP {d}] Request failed\n", .{http_code}) catch {};
+                stderr.print("\n[{s} HTTP {d}] Request failed\n", .{ self.label, http_code }) catch {};
             }
 
             if (http_code == 400 or http_code == 413) return error.ContextOverflow;
@@ -179,9 +183,12 @@ pub const DeepSeekClient = struct {
         // A provider error frame inside a 200 means the request failed even
         // though the status said otherwise. Returning the parser's empty
         // response instead would report a refused request as a blank answer.
-        if (parser.stream_error) |msg| {
+        if (parser.stream_failed) {
             const stderr = stdio.stderr();
-            stderr.print("\n[deepseek] stream error: {s}\n", .{msg}) catch {};
+            stderr.print("\n[{s}] stream error: {s}\n", .{
+                self.label,
+                parser.stream_error orelse "provider reported an error frame",
+            }) catch {};
             return error.HttpError;
         }
 

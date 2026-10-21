@@ -129,9 +129,13 @@ data: {"error": {"message":"Model not found","type":"invalid_request_error"}}
 ```
 
 Wintermolt treats either shape as a failed request: it prints
-`[deepseek] stream error: <provider text>` on stderr and falls back, rather than
-reporting a blank answer. A model that merely prints that text is not affected,
-because a quote inside a JSON string arrives escaped.
+`[<backend>] stream error: <provider text>` on stderr — naming the backend that
+was asked, not the client it happens to share — and falls back, rather than
+reporting a blank answer. Only a top-level `error` key or a top-level
+`"type":"error"` counts, so the `error` object Azure documents inside
+`content_filter_results` on a chunk of a *successful* answer does not throw the
+answer away. A model that merely prints the text is not affected either, because
+a quote inside a JSON string arrives escaped.
 
 ## Interactive setup
 
