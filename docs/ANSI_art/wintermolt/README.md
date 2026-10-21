@@ -5,8 +5,7 @@ spindle, with its planet.
 
 ![preview](straylight-preview.png)
 
-- `villa-straylight.png`: the source image. Not committed: its origin and
-  license are unrecorded. Put a copy here to regenerate.
+- `villa-straylight.png`: the source image, AI-generated for this project.
 - `generate_banner.py`: turns it into the art in `src/banner/`, which
   `src/banner.zig` embeds.
 - `straylight-preview.png`: the result, painted in One Half Dark.
