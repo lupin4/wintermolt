@@ -2,8 +2,9 @@ name: Wintermolt linX86 release binary
 
 # Builds the binary published as prebuilt/wintermolt-linux-x86_64, the way the
 # README's "Release Builds" section says to: natively in an Ubuntu 22.04
-# container, whose glibc 2.35 gives a 2.34 floor (#2), with -Dcpu=x86_64_v3 and
-# never -Dtarget=, which makes Zig stop finding libcurl and libsqlite3
+# container, whose glibc 2.35 gives a 2.34 floor (#2), with -Dcpu=x86_64_v3,
+# stripped like the arm64 and macOS releases, and never -Dtarget=, which makes
+# Zig stop finding libcurl and libsqlite3
 # (build.zig:48). The dep kernels are the committed prebuilt/linX86/lib archives.
 #
 # Each check below is one the last linX86 release (41b974a) recorded by hand.
@@ -37,7 +38,7 @@ jobs:
           version: 0.16.0
 
       - name: Build
-        run: zig build -Doptimize=ReleaseFast -Dcpu=x86_64_v3
+        run: zig build -Doptimize=ReleaseFast -Dcpu=x86_64_v3 -Dstrip=true
 
       - name: Test
         run: zig build test --summary all
