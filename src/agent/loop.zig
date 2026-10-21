@@ -66,6 +66,10 @@ pub const AgentLoop = struct {
     message_sequence: u32,
     tool_errors_this_turn: u32,
     last_message_ts: i64,
+    /// The last processInput gave up without an answer: every backend failed,
+    /// or the retry after compacting did. The error is already on stderr; `-e`
+    /// turns this into its exit status, the only thing a script can check.
+    turn_failed: bool = false,
 
     // Subagent hierarchy
     depth: u8, // 0 = root agent, >0 = subagent
@@ -256,6 +260,7 @@ pub const AgentLoop = struct {
 
         self.last_message_ts = fsio.milliTimestamp();
         self.tool_errors_this_turn = 0;
+        self.turn_failed = false;
 
         // Wire subagent manager into tools module for spawn_agent tool
         if (self.subagent_manager) |mgr_opaque| {
@@ -293,6 +298,7 @@ pub const AgentLoop = struct {
                         text_cb,
                         relevant_tools,
                     ) catch |e2| {
+                        self.turn_failed = true;
                         try stderr.print("\n[Error] Retry failed: {s}\n", .{@errorName(e2)});
                         return;
                     };
@@ -315,6 +321,7 @@ pub const AgentLoop = struct {
                         .unknown => return,
                     }
                 }
+                self.turn_failed = true;
                 try stderr.print("\n[Error] API call failed: {s}\n", .{@errorName(e)});
                 return;
             };

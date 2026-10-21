@@ -416,6 +416,24 @@ pub fn build(b: *std.Build) void {
     const run_env_tests = b.addRunArtifact(env_tests);
     test_step.dependOn(&run_env_tests.step);
     b.step("test-env", "Run the environment tests (setenv, .env, child processes)").dependOn(&run_env_tests.step);
+
+    // `-e` end to end, on the real binary: a request no backend answers must
+    // fail the process, or a script cannot tell it from an answer. The
+    // environment is emptied (no key, no HOME, nothing of the user's) and
+    // Ollama is a dead port, so this can never reach a real or local model.
+    // Windows keeps SystemRoot, which its socket layer reads.
+    const cli_unanswered = b.addRunArtifact(exe);
+    cli_unanswered.setName("run wintermolt -e with every backend down");
+    cli_unanswered.addArgs(&.{ "-e", "hi" });
+    cli_unanswered.clearEnvironment();
+    if (b.graph.environ_map.get("SystemRoot")) |root| {
+        cli_unanswered.setEnvironmentVariable("SystemRoot", root);
+    }
+    cli_unanswered.setEnvironmentVariable("WINTERMOLT_OLLAMA_URL", "http://127.0.0.1:9");
+    cli_unanswered.setEnvironmentVariable("WINTERMOLT_NO_HISTORY", "1");
+    cli_unanswered.expectExitCode(1);
+    test_step.dependOn(&cli_unanswered.step);
+    b.step("test-cli", "Run the binary end to end (-e exit status)").dependOn(&cli_unanswered.step);
 }
 
 fn getShortTargetName(t: std.Target) []const u8 {

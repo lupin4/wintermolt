@@ -454,6 +454,13 @@ pub fn main(init: std.process.Init) !void {
     if (exec_prompt) |prompt| {
         agent.startConversation();
         try agent.processInput(prompt);
+        // Nothing answered: a script running `-e` sees only the exit status.
+        // The agent is freed first because exit() runs static destructors,
+        // and the kernel backend must be gone before ggml-metal's runs.
+        if (agent.turn_failed) {
+            agent.deinit();
+            std.process.exit(1);
+        }
         return;
     }
 
@@ -1510,8 +1517,8 @@ fn printHelp(w: anytype) !void {
         \\  wintermolt --theme NAME — Theme for the full-screen view and canvas (this run):
         \\                            dark, dracula, nord, tokyo-night, gruvbox, matrix,
         \\                            monochrome, high-contrast, light
-        \\  wintermolt -e "prompt"  — Single-shot execution
-        \\  wintermolt --keys       — Configure API keys
+        \\  wintermolt -e "prompt"  — Single-shot execution (exits 1 if no backend answers)
+        \\  wintermolt --keys      — Configure API keys
         \\  wintermolt --setup      — Alias for --keys
         \\  wintermolt --chat       — Chat bridge (18 platforms)
         \\  wintermolt --web        — Web UI

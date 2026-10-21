@@ -499,7 +499,7 @@ Wintermolt ships with [forLearn](https://github.com/forKernels/forLearn), which 
 |:-----|:--------|:------------|
 | Chat (TUI) | `wintermolt` | Full-screen chat when stdin and stdout are a terminal |
 | Plain REPL | `wintermolt --plain` | Line-by-line session; also what you get when input is piped |
-| Single-shot | `wintermolt -e "prompt"` | Run one prompt, print result, exit |
+| Single-shot | `wintermolt -e "prompt"` | Run one prompt, print result, exit; status 1 if no backend answered |
 | Setup | `wintermolt --setup` | Interactive API key + model wizard |
 | Chat | `wintermolt --chat` | Multi-platform messaging bot |
 | Web | `wintermolt --web` | Browser UI at localhost:3000 |
