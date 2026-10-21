@@ -32,9 +32,32 @@ Or set the default for the session via env:
 WINTERMOLT_MODEL=qwen3:14b ./wintermolt
 ```
 
+## Selecting the startup backend
+
+`/model` only exists in the REPL, so a non-interactive run (`-e`, `--web`,
+`--gateway`, `--chat`) has no command with which to leave the Ollama default.
+`WINTERMOLT_BACKEND` picks the backend the run starts on:
+
+```bash
+# one-shot prompt through the OpenAI backend, no REPL to type /model in
+WINTERMOLT_BACKEND=openai OPENAI_API_KEY=sk-... ./wintermolt -e "summarise README.md"
+
+# gateway server in front of Claude
+WINTERMOLT_BACKEND=claude ANTHROPIC_API_KEY=sk-ant-... ./wintermolt --gateway
+```
+
+The model is still named by that backend's own variable (`WINTERMOLT_MODEL`,
+`WINTERMOLT_OPENAI_MODEL`, `WINTERMOLT_QWEN_MODEL`, ...). An unknown name, or a
+backend whose key is missing, is reported on stderr and leaves Ollama in place;
+it never fails the run. `WINTERMOLT_BACKEND` also wins over the
+`models.chat.prefer` routing in `wintermolt.json`, because it is set explicitly.
+
 ## Per-backend env vars
 
 ```bash
+# Startup backend for every mode, not only the REPL
+WINTERMOLT_BACKEND=ollama                      # ollama (default), claude, openai, ...
+
 # Ollama (default)
 WINTERMOLT_OLLAMA_URL=http://localhost:11434   # base URL
 WINTERMOLT_OLLAMA_CTX=4096                     # context window cap
@@ -64,6 +87,22 @@ WINTERMOLT_GEMINI_MODEL=gemini-2.0-flash
 WINTERMOLT_VISION_BACKEND=ollama   # or "openai"
 WINTERMOLT_VISION_MODEL=qwen2.5vl
 ```
+
+## Provider errors inside a `200` stream
+
+OpenAI-compatible servers often answer `200` and put the failure in an SSE
+frame instead of an HTTP status — a quota refusal, a rate limit, or a model the
+server does not serve:
+
+```
+data: {"type":"error","error":{"message":"Insufficient credits for request"}}
+data: {"error":{"message":"Model not found","type":"invalid_request_error"}}
+```
+
+Wintermolt treats either shape as a failed request: it prints
+`[deepseek] stream error: <provider text>` on stderr and falls back, rather than
+reporting a blank answer. A model that merely prints that text is not affected,
+because a quote inside a JSON string arrives escaped.
 
 ## Interactive setup
 

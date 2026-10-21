@@ -178,6 +178,15 @@ pub const DeepSeekClient = struct {
             return error.HttpError;
         }
 
+        // A provider error frame inside a 200 means the request failed even
+        // though the status said otherwise. Returning the parser's empty
+        // response instead would report a refused request as a blank answer.
+        if (parser.stream_error) |msg| {
+            const stderr = stdio.stderr();
+            stderr.print("\n[deepseek] stream error: {s}\n", .{msg}) catch {};
+            return error.HttpError;
+        }
+
         return parser.toResponse();
     }
 };

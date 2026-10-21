@@ -38,6 +38,11 @@ pub const OpenAiStreamParser = struct {
     stop_reason: protocol.StopReason = .unknown,
     /// Whether we've received the [DONE] signal
     done: bool = false,
+    /// Provider error frame, owned. Hosted gateways answer HTTP 200 and put the
+    /// failure in a `data:` line instead of a status code, so without this the
+    /// request looks like an empty successful answer and the caller reports
+    /// nothing. The client turns a set field into a failed request.
+    stream_error: ?[]u8 = null,
 
     const ToolCallAccum = struct {
         id: []u8,
@@ -61,6 +66,7 @@ pub const OpenAiStreamParser = struct {
             tc.arguments.deinit(self.alloc);
         }
         self.tool_calls.deinit(self.alloc);
+        if (self.stream_error) |msg| self.alloc.free(msg);
     }
 
     pub fn reset(self: *OpenAiStreamParser) void {
@@ -74,6 +80,8 @@ pub const OpenAiStreamParser = struct {
         self.tool_calls.clearRetainingCapacity();
         self.stop_reason = .unknown;
         self.done = false;
+        if (self.stream_error) |msg| self.alloc.free(msg);
+        self.stream_error = null;
     }
 
     /// Feed raw SSE data from curl callback.
@@ -95,6 +103,22 @@ pub const OpenAiStreamParser = struct {
         // SSE data: prefix
         if (!std.mem.startsWith(u8, line, "data: ")) return;
         const payload = line["data: ".len..];
+
+        // Provider error frame, in either shape seen in the wild:
+        //   {"type":"error","error":{"message":"..."}}
+        //   {"error":{"message":"...","type":"invalid_request_error"}}
+        // Keep the message and stop feeding: the rest of a failed stream is
+        // noise. Quotes inside content strings arrive escaped (`\"error\":{`),
+        // so a model that merely prints this text does not trip the check.
+        if (std.mem.startsWith(u8, payload, "{\"type\":\"error\"") or
+            std.mem.indexOf(u8, payload, "\"error\":{") != null)
+        {
+            const message = sse_utils.findJsonString(payload, "message") orelse payload;
+            if (self.stream_error) |old| self.alloc.free(old);
+            self.stream_error = self.alloc.dupe(u8, message) catch null;
+            self.done = true;
+            return;
+        }
 
         // [DONE] signal
         if (std.mem.eql(u8, payload, "[DONE]")) {
@@ -284,4 +308,60 @@ fn findNestedString(json: []const u8, outer: []const u8, inner: []const u8) ?[]c
         i += 1;
     }
     return null;
+}
+
+// Hosted gateways (LiteLLM, OpenRouter, vLLM) report quota, rate-limit and
+// model-not-found failures inside an HTTP 200 as an SSE error frame. Without
+// stream_error such a frame parses to an empty successful answer, so a caller
+// cannot tell a refused request from a model that said nothing.
+test "stream error: {\"type\":\"error\"} inside a 200 stream is captured, and yields no answer" {
+    var parser = OpenAiStreamParser.init(std.testing.allocator, null);
+    defer parser.deinit();
+
+    try parser.feed("data: {\"type\":\"error\",\"error\":{\"message\":\"Insufficient credits for request\"}}\n\n");
+
+    try std.testing.expectEqualStrings("Insufficient credits for request", parser.stream_error orelse "");
+    try std.testing.expect(parser.done);
+    // What made this silent: the frame carries no content and no finish_reason.
+    try std.testing.expectEqual(@as(usize, 0), parser.text_buf.items.len);
+    try std.testing.expectEqual(protocol.StopReason.unknown, parser.stop_reason);
+}
+
+test "stream error: the {\"error\":{...}} shape without a top-level type is captured too" {
+    var parser = OpenAiStreamParser.init(std.testing.allocator, null);
+    defer parser.deinit();
+
+    try parser.feed("data: {\"error\":{\"message\":\"Model not found\",\"type\":\"invalid_request_error\"}}\n");
+
+    try std.testing.expectEqualStrings("Model not found", parser.stream_error orelse "");
+}
+
+// The needle is checked on the raw line, where a quote inside a JSON string is
+// escaped. A model that merely prints the shape must keep streaming.
+test "stream error: content that mentions an error object is not an error frame" {
+    var parser = OpenAiStreamParser.init(std.testing.allocator, null);
+    defer parser.deinit();
+
+    try parser.feed("data: {\"choices\":[{\"delta\":{\"content\":\"{\\\"error\\\":{\\\"message\\\":\\\"not a frame\\\"}}\"}}]}\n");
+
+    try std.testing.expectEqual(@as(?[]u8, null), parser.stream_error);
+    try std.testing.expect(std.mem.indexOf(u8, parser.text_buf.items, "\"error\":{") != null);
+}
+
+test "stream error: a healthy stream sets no error, and reset clears one" {
+    var parser = OpenAiStreamParser.init(std.testing.allocator, null);
+    defer parser.deinit();
+
+    try parser.feed("data: {\"choices\":[{\"delta\":{\"content\":\"hi\"},\"finish_reason\":\"stop\"}]}\n\n");
+    try parser.feed("data: [DONE]\n\n");
+    try std.testing.expectEqual(@as(?[]u8, null), parser.stream_error);
+    try std.testing.expectEqualStrings("hi", parser.text_buf.items);
+    try std.testing.expectEqual(protocol.StopReason.end_turn, parser.stop_reason);
+
+    // A 429 retry reuses the parser; the previous attempt's error must not
+    // outlive it.
+    try parser.feed("data: {\"type\":\"error\",\"error\":{\"message\":\"rate limited\"}}\n");
+    try std.testing.expect(parser.stream_error != null);
+    parser.reset();
+    try std.testing.expectEqual(@as(?[]u8, null), parser.stream_error);
 }

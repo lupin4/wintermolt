@@ -298,6 +298,16 @@ pub fn main(init: std.process.Init) !void {
         agent.switchBackend("claude", config.model);
     }
 
+    // WINTERMOLT_BACKEND selects the startup backend, so a non-interactive run
+    // (-e, --web, --gateway) is not stuck on the Ollama default that only the
+    // interactive /model command could change. The model id still comes from the
+    // backend's own variable (WINTERMOLT_MODEL, WINTERMOLT_OPENAI_MODEL, ...).
+    // Set explicitly, so it wins over the wintermolt.json api-override above; an
+    // unknown name is reported by switchBackend and leaves Ollama in place.
+    if (compat.getenv("WINTERMOLT_BACKEND")) |startup_backend| {
+        agent.switchBackend(startup_backend, null);
+    }
+
     // Re-bind tools-module globals (scheduler, skill registry, storage, RAG) —
     // init() returns by value, so they must point at agent's final address.
     agent.bindTools();
@@ -1542,6 +1552,8 @@ fn printHelp(w: anytype) !void {
         \\
         \\Environment:
         \\  ANTHROPIC_API_KEY    — Claude API key (optional)
+        \\  WINTERMOLT_BACKEND   — Startup backend: ollama (default), claude, openai,
+        \\                         deepseek, qwen, gemini, kernel, forai
         \\  WINTERMOLT_MODEL     — Default model
         \\  OLLAMA_HOST          — Ollama URL (default: http://localhost:11434)
         \\  OPENAI_API_KEY       — OpenAI API key
@@ -1573,4 +1585,5 @@ fn printHelp(w: anytype) !void {
 // ---------------------------------------------------------------------------
 test {
     _ = @import("agent/redact.zig");
+    _ = @import("api/openai_sse.zig");
 }

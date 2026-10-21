@@ -685,6 +685,7 @@ wintermolt (one native binary, 6–14 MB)
 | `WINTERMOLT_OLLAMA_URL` | `http://localhost:11434` | Ollama base URL |
 | `WINTERMOLT_OLLAMA_CTX` | `4096` | Context window cap (prevents OOM on small devices) |
 | `WINTERMOLT_OLLAMA_KEEP_ALIVE` | `5m` | Model unload timer (`0` = unload after each response) |
+| `WINTERMOLT_BACKEND` | `ollama` | Backend a run starts on (`ollama`, `claude`, `openai`, `deepseek`, `qwen`, `gemini`, `kernel`, `forai`) — the only way to pick a backend for a non-interactive run |
 | `WINTERMOLT_MODEL` | `qwen3:0.6b` | Default model |
 | `OPENAI_API_KEY` | — | OpenAI API key (GPT-4o, GPT-4.1) |
 | `WINTERMOLT_OPENAI_URL` | `https://api.openai.com/v1/chat/completions` | OpenAI-compatible Chat Completions URL — point it at LiteLLM, vLLM, llama.cpp server, OpenRouter |
