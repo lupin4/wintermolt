@@ -34,9 +34,10 @@ WINTERMOLT_MODEL=qwen3:14b ./wintermolt
 
 ## Selecting the startup backend
 
-`/model` only exists in the REPL, so a non-interactive run (`-e`, `--web`,
-`--gateway`, `--chat`) has no command with which to leave the Ollama default.
-`WINTERMOLT_BACKEND` picks the backend the run starts on:
+`/model` is the REPL's command, and `--web` has its own `/model` endpoint, so a
+run that reaches neither — `-e`, `--gateway`, `--chat` — has no way to leave the
+Ollama default. `WINTERMOLT_BACKEND` picks the backend the run starts on, in
+every mode:
 
 ```bash
 # one-shot prompt through the OpenAI backend, no REPL to type /model in
@@ -46,11 +47,22 @@ WINTERMOLT_BACKEND=openai OPENAI_API_KEY=sk-... ./wintermolt -e "summarise READM
 WINTERMOLT_BACKEND=claude ANTHROPIC_API_KEY=sk-ant-... ./wintermolt --gateway
 ```
 
-The model is still named by that backend's own variable (`WINTERMOLT_MODEL`,
-`WINTERMOLT_OPENAI_MODEL`, `WINTERMOLT_QWEN_MODEL`, ...). An unknown name, or a
-backend whose key is missing, is reported on stderr and leaves Ollama in place;
-it never fails the run. `WINTERMOLT_BACKEND` also wins over the
-`models.chat.prefer` routing in `wintermolt.json`, because it is set explicitly.
+Every loop the run builds starts on that backend, including the `--chat` agent
+pool and the subagents of `spawn_agent`.
+
+The variable chooses only *where* a request goes. A model named by
+`WINTERMOLT_MODEL`, or by the cloud override `wintermolt.json` can select, is
+used as-is by whichever backend is chosen; without one, the backend's own
+variable applies (`WINTERMOLT_OPENAI_MODEL`, `WINTERMOLT_QWEN_MODEL`,
+`WINTERMOLT_GEMINI_MODEL`, `WINTERMOLT_OLLAMA_MODEL`,
+`WINTERMOLT_KERNEL_DEFAULT`, `WINTERMOLT_FORAI_DEFAULT`), and then the default
+in the table above.
+
+Setting the variable is an explicit request, so a backend that cannot be built —
+a mistyped name, a cloud backend without its key, `forai` on a build without the
+engine — prints the reason and exits 1 before the first request. It never
+quietly answers from Ollama. It also wins over the `models.chat.prefer` routing
+in `wintermolt.json`.
 
 ## Per-backend env vars
 

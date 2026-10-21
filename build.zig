@@ -467,6 +467,38 @@ pub fn build(b: *std.Build) void {
     cli_no_fallback.expectExitCode(1);
     test_step.dependOn(&cli_no_fallback.step);
     test_cli.dependOn(&cli_no_fallback.step);
+
+    // WINTERMOLT_BACKEND is an explicit request: a backend that cannot be built
+    // must fail the run before the first request, not quietly answer from
+    // Ollama. A mistyped name and a cloud backend with no key are the two ways
+    // to get there; the environment is emptied, so `openai` has no key to find.
+    const cli_bad_backend_name = b.addRunArtifact(exe);
+    cli_bad_backend_name.setName("run wintermolt -e with WINTERMOLT_BACKEND=opnai");
+    cli_bad_backend_name.addArgs(&.{ "-e", "hi" });
+    cli_bad_backend_name.clearEnvironment();
+    if (b.graph.environ_map.get("SystemRoot")) |root| {
+        cli_bad_backend_name.setEnvironmentVariable("SystemRoot", root);
+    }
+    cli_bad_backend_name.setEnvironmentVariable("WINTERMOLT_BACKEND", "opnai");
+    cli_bad_backend_name.setEnvironmentVariable("WINTERMOLT_NO_HISTORY", "1");
+    cli_bad_backend_name.addCheck(.{ .expect_stderr_match = "[backend] Unknown: opnai" });
+    cli_bad_backend_name.expectExitCode(1);
+    test_step.dependOn(&cli_bad_backend_name.step);
+    test_cli.dependOn(&cli_bad_backend_name.step);
+
+    const cli_backend_without_key = b.addRunArtifact(exe);
+    cli_backend_without_key.setName("run wintermolt -e with WINTERMOLT_BACKEND=openai and no key");
+    cli_backend_without_key.addArgs(&.{ "-e", "hi" });
+    cli_backend_without_key.clearEnvironment();
+    if (b.graph.environ_map.get("SystemRoot")) |root| {
+        cli_backend_without_key.setEnvironmentVariable("SystemRoot", root);
+    }
+    cli_backend_without_key.setEnvironmentVariable("WINTERMOLT_BACKEND", "openai");
+    cli_backend_without_key.setEnvironmentVariable("WINTERMOLT_NO_HISTORY", "1");
+    cli_backend_without_key.addCheck(.{ .expect_stderr_match = "OPENAI_API_KEY not set" });
+    cli_backend_without_key.expectExitCode(1);
+    test_step.dependOn(&cli_backend_without_key.step);
+    test_cli.dependOn(&cli_backend_without_key.step);
 }
 
 fn getShortTargetName(t: std.Target) []const u8 {

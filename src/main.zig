@@ -288,25 +288,23 @@ pub fn main(init: std.process.Init) !void {
         mcp_mgr.deinit();
     }
 
-    // Initialize agent loop
-    var agent = try loop_mod.AgentLoop.init(alloc, &config);
+    // Initialize agent loop. WINTERMOLT_BACKEND, when set, is built inside init,
+    // so every loop this run creates follows it. A backend that cannot be built
+    // has already printed why and must fail the run: the variable is an explicit
+    // request, and answering from Ollama instead would hide it.
+    var agent = loop_mod.AgentLoop.init(alloc, &config) catch |e| {
+        try stderr.print("[wintermolt] startup failed: {s}\n", .{@errorName(e)});
+        std.process.exit(1);
+    };
     defer agent.deinit();
 
     // api-override (wintermolt.json models.chat.prefer + a cloud key present):
     // switch the primary off ollama onto the API for reliable native tool-calling.
-    if (config.api_override) {
+    // WINTERMOLT_BACKEND wins over it, having been built in init already: the
+    // exported variable is an explicit request, the override a config default.
+    if (config.api_override and config.backend == null) {
         stdio.stderr().print("[config] api-override → claude ({s})\n", .{config.model}) catch {};
-        agent.switchBackend("claude", config.model);
-    }
-
-    // WINTERMOLT_BACKEND selects the startup backend, so a non-interactive run
-    // (-e, --web, --gateway) is not stuck on the Ollama default that only the
-    // interactive /model command could change. The model id still comes from the
-    // backend's own variable (WINTERMOLT_MODEL, WINTERMOLT_OPENAI_MODEL, ...).
-    // Set explicitly, so it wins over the wintermolt.json api-override above; an
-    // unknown name is reported by switchBackend and leaves Ollama in place.
-    if (compat.getenv("WINTERMOLT_BACKEND")) |startup_backend| {
-        agent.switchBackend(startup_backend, null);
+        agent.switchBackend("claude", config.model) catch {};
     }
 
     // Re-bind tools-module globals (scheduler, skill registry, storage, RAG) —
@@ -877,7 +875,9 @@ fn handleModel(agent: *loop_mod.AgentLoop, w: anytype, arg: ?[]const u8) !void {
         var iter = std.mem.splitScalar(u8, a, ' ');
         const backend = iter.next() orelse return;
         const model = iter.next();
-        agent.switchBackend(backend, model);
+        // A backend that cannot be built leaves the current one in place and has
+        // already said why on stderr; /model is not a place to end the session.
+        agent.switchBackend(backend, model) catch {};
     } else {
         const info = agent.getBackendInfo();
         try w.print("Current: {s} ({s})\n", .{ info.name, info.model });
@@ -1278,9 +1278,9 @@ fn spawnSubagent(
     child_agent.depth = child_depth;
     child_agent.subagent_manager = @ptrCast(mgr);
 
-    // Apply model override
-    if (model_override) |model| {
-        child_agent.switchBackend(model, null);
+    // Apply backend override
+    if (model_override) |override| {
+        child_agent.switchBackend(override, null) catch {};
     }
 
     child_agent.startConversation();
@@ -1559,8 +1559,9 @@ fn printHelp(w: anytype) !void {
         \\
         \\Environment:
         \\  ANTHROPIC_API_KEY    — Claude API key (optional)
-        \\  WINTERMOLT_BACKEND   — Startup backend: ollama (default), claude, openai,
-        \\                         deepseek, qwen, gemini, kernel, forai
+        \\  WINTERMOLT_BACKEND   — Backend a run starts on: ollama (default), claude,
+        \\                         openai, deepseek, qwen, gemini, kernel, forai.
+        \\                         A name that cannot be built exits 1
         \\  WINTERMOLT_MODEL     — Default model
         \\  OLLAMA_HOST          — Ollama URL (default: http://localhost:11434)
         \\  OPENAI_API_KEY       — OpenAI API key
