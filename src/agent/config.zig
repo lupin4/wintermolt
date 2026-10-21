@@ -6,6 +6,12 @@
 //   WINTERMOLT_MODEL         — Optional. Model ID (default: qwen3:8b via Ollama)
 //   WINTERMOLT_TOKENS        — Optional. Max response tokens (default: 8192)
 //   WINTERMOLT_NO_HISTORY    — Optional. Set to "1" to disable SQLite history
+//   WINTERMOLT_NO_FALLBACK   — Optional. Set to "1": a failed request fails (no Ollama/OpenAI retry)
+//   WINTERMOLT_NO_TOOLS      — Optional. Set to "1": send no tool definitions (models without
+//                              function calling)
+//   WINTERMOLT_STALL_TIMEOUT — Optional. Seconds a model request may receive nothing before it
+//                              is dropped (default: 180; 0 = never). Read per request by
+//                              api/curl_timeouts.zig
 //   WINTERMOLT_OLLAMA_URL    — Optional. Ollama base URL (default: http://localhost:11434)
 //   WINTERMOLT_OLLAMA_MODEL  — Optional. Ollama model (default: qwen3:8b)
 //   WINTERMOLT_OLLAMA_CTX    — Optional. Context window cap (default: 4096). Prevents OOM.
@@ -14,6 +20,8 @@
 //   WINTERMOLT_VISION_BACKEND — Optional. Vision routing: "ollama" (default) or "openai"
 //   OPENAI_API_KEY           — Optional. Enables OpenAI backend (/model openai)
 //   WINTERMOLT_OPENAI_MODEL  — Optional. OpenAI model (default: "gpt-4o-mini")
+//   WINTERMOLT_OPENAI_URL    — Optional. OpenAI-compatible Chat Completions URL
+//                              (default: https://api.openai.com/v1/chat/completions)
 //   DEEPSEEK_API_KEY         — Optional. Enables DeepSeek Cloud backend (/model deepseek)
 //   QWEN_API_KEY             — Optional. Enables Qwen Cloud backend (/model qwen)
 //   WINTERMOLT_QWEN_MODEL    — Optional. Qwen model (default: "qwen-plus")
@@ -183,6 +191,10 @@ pub const Config = struct {
     max_tokens: u32,
     system_prompt: []const u8,
     history_enabled: bool,
+    // False: a failed request fails, instead of being retried on Ollama/OpenAI.
+    fallback_enabled: bool,
+    // False: no tool definitions are sent, for models without function calling.
+    tools_enabled: bool,
     ollama_url: []const u8,
     ollama_model: []const u8,
     ollama_num_ctx: u32,
@@ -192,6 +204,7 @@ pub const Config = struct {
     // Multi-backend support
     openai_api_key: ?[]const u8,
     openai_model: []const u8,
+    openai_url: []const u8,
     deepseek_cloud_key: ?[]const u8,
     qwen_api_key: ?[]const u8,
     qwen_model: []const u8,
@@ -253,6 +266,16 @@ pub const Config = struct {
             break :blk !std.mem.eql(u8, no_hist, "1");
         };
 
+        const fallback_enabled = blk: {
+            const no_fallback = compat.getenv("WINTERMOLT_NO_FALLBACK") orelse break :blk true;
+            break :blk !std.mem.eql(u8, no_fallback, "1");
+        };
+
+        const tools_enabled = blk: {
+            const no_tools = compat.getenv("WINTERMOLT_NO_TOOLS") orelse break :blk true;
+            break :blk !std.mem.eql(u8, no_tools, "1");
+        };
+
         const ollama_url = compat.getenv("WINTERMOLT_OLLAMA_URL") orelse
             compat.getenv("OLLAMA_HOST") orelse
             "http://localhost:11434";
@@ -277,6 +300,9 @@ pub const Config = struct {
         const openai_api_key = compat.getenv("OPENAI_API_KEY");
         const openai_model = compat.getenv("WINTERMOLT_OPENAI_MODEL") orelse
             "gpt-4o-mini";
+        // Any OpenAI-compatible server: LiteLLM, vLLM, llama.cpp, OpenRouter.
+        const openai_url = compat.getenv("WINTERMOLT_OPENAI_URL") orelse
+            "https://api.openai.com/v1/chat/completions";
         const deepseek_cloud_key = compat.getenv("DEEPSEEK_API_KEY");
         const qwen_api_key = compat.getenv("QWEN_API_KEY");
         const qwen_model = compat.getenv("WINTERMOLT_QWEN_MODEL") orelse
@@ -328,6 +354,8 @@ pub const Config = struct {
             .max_tokens = max_tokens,
             .system_prompt = constitution_text,
             .history_enabled = history_enabled,
+            .fallback_enabled = fallback_enabled,
+            .tools_enabled = tools_enabled,
             .ollama_url = ollama_url,
             .ollama_model = ollama_model,
             .ollama_num_ctx = ollama_num_ctx,
@@ -336,6 +364,7 @@ pub const Config = struct {
             .vision_backend = vision_backend,
             .openai_api_key = openai_api_key,
             .openai_model = openai_model,
+            .openai_url = openai_url,
             .deepseek_cloud_key = deepseek_cloud_key,
             .qwen_api_key = qwen_api_key,
             .qwen_model = qwen_model,
@@ -465,7 +494,7 @@ pub fn buildCapabilities(config: *const Config, alloc: std.mem.Allocator, tool_c
     try w.print("  - Claude (primary): {s}\n", .{config.model});
     try w.print("  - Ollama (local): {s} at {s}\n", .{ config.ollama_model, config.ollama_url });
     if (config.openai_api_key != null)
-        try w.print("  - OpenAI: {s}\n", .{config.openai_model});
+        try w.print("  - OpenAI: {s} at {s}\n", .{ config.openai_model, config.openai_url });
     if (config.deepseek_cloud_key != null)
         try w.writeAll("  - DeepSeek Cloud\n");
     if (config.qwen_api_key != null)

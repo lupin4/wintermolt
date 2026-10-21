@@ -13,7 +13,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/lang-Zig_0.15-f7a41d?style=flat-square&logo=zig&logoColor=white" alt="Zig">
+  <img src="https://img.shields.io/badge/lang-Zig_0.16-f7a41d?style=flat-square&logo=zig&logoColor=white" alt="Zig">
   <img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="License">
   <img src="https://img.shields.io/badge/binary-1%E2%80%9312_MB-brightgreen?style=flat-square" alt="Size">
   <img src="https://img.shields.io/badge/platforms-macOS_%7C_Linux_%7C_Windows-success?style=flat-square" alt="Platforms">
@@ -52,20 +52,19 @@ Tailscale peers:
 
 ## Why Wintermolt?
 
-Most AI coding tools ship hundreds of megabytes of Electron or Node.js runtime just to send API calls and edit files. Wintermolt compiles to a **single native binary** — about 6 MB on macOS Apple Silicon, 11 MB on Linux, 14 MB on Windows (statically-linked HTTP/3 stack) — and cross-compiles to any platform Zig supports, including ARM boards like Jetson and Raspberry Pi.
+Most AI coding tools ship hundreds of megabytes of Electron or Node.js runtime just to send API calls and edit files. Wintermolt compiles to a **single native binary** — about 6 MB on macOS Apple Silicon, 1.6 MB on Linux arm64 (stripped), 11 MB on Linux x86_64, 14 MB on Windows (statically-linked HTTP/3 stack) — and builds natively on macOS, Linux and Windows, including ARM boards like Jetson and Raspberry Pi.
 
 | | Wintermolt | Claude Code | Cursor | Aider |
 |---|:---:|:---:|:---:|:---:|
 | **Binary size** | **6–14 MB** | ~200 MB | ~500 MB | ~50 MB |
 | **Runtime** | **None** | Node.js 18+ | Electron | Python 3.8+ |
-| **Cross-compile** | **One command** | N/A | N/A | N/A |
 | **Runs on Jetson/Pi** | **Yes** | Barely | No | Slow |
 | **Runs on Windows** | **Yes (v0.4+)** | Via WSL | Yes | Yes |
-| **AI backends** | **7** | 1 | Multiple | Multiple |
+| **AI backends** | **8** | 1 | Multiple | Multiple |
 | **Camera + vision** | **Built-in** | No | No | No |
 | **Browser automation** | **Built-in** | No | No | No |
 | **MCP client + server** | **Both** | Client only | Client only | No |
-| **Chat bridges** | **4 platforms** | No | No | No |
+| **Chat bridges** | **18 platforms** | No | No | No |
 | **Cron scheduler** | **Built-in** | No | No | No |
 | **Mesh networking** | **Tailscale** | No | No | No |
 | **Menu bar app** | **macOS native** | No | No | No |
@@ -109,7 +108,8 @@ Invoke-WebRequest `
 **Linux (x86_64 — servers, cloud VMs):**
 
 ```bash
-curl -L -o wintermolt https://github.com/lupin4/wintermolt/raw/main/prebuilt/wintermolt-linux-x86_64 \n  && chmod +x wintermolt
+curl -L -o wintermolt https://github.com/lupin4/wintermolt/raw/main/prebuilt/wintermolt-linux-x86_64 \
+  && chmod +x wintermolt
 ```
 
 ### Step 2 — Install Ollama (optional but recommended)
@@ -146,8 +146,8 @@ That's it. You're running.
 
 | Platform | Binary | Size | Notes |
 |:---|:---|---:|:---|
-| macOS arm64 | [`wintermolt-macos`](prebuilt/wintermolt-macos) | 5.8 MB | Mach-O, dynamic libcurl + sqlite3 |
-| Linux arm64 | [`wintermolt-linux-arm64`](prebuilt/wintermolt-linux-arm64) | 10.6 MB | ELF aarch64, dynamic libcurl + sqlite3 |
+| macOS arm64 | [`wintermolt-macos`](prebuilt/wintermolt-macos) | 5.8 MB | Mach-O arm64, the system libcurl + sqlite3 (nothing to install), stripped. macOS 27.2+ (#5). Baseline arm64: any Apple Silicon Mac. |
+| Linux arm64 | [`wintermolt-linux-arm64`](prebuilt/wintermolt-linux-arm64) | 1.6 MB | ELF aarch64, dynamic libcurl + sqlite3, stripped. glibc 2.34+ (Ubuntu 22.04 / JetPack 6, Debian 12 / Raspberry Pi OS Bookworm, RHEL 9 and later). Baseline aarch64: no SVE, so it runs on Raspberry Pi and older Jetsons. Not musl: on Alpine, [build it](#musl-alpine). |
 | Linux x86_64 | [`wintermolt-linux-x86_64`](prebuilt/wintermolt-linux-x86_64) | 11 MB | ELF x86-64, dynamic libcurl + sqlite3. glibc 2.34+ (Ubuntu 22.04, Debian 12, RHEL 9 and later). x86-64-v3 CPU (Intel Haswell, AMD Zen or newer). |
 | Windows x86_64 | [`wintermolt-windows-x86_64.exe`](prebuilt/wintermolt-windows-x86_64.exe) | 14 MB | PE32+, HTTP/3 and crypto linked in statically. Imports only Windows system DLLs: nothing else to install. x86-64-v3 CPU (Intel Haswell, AMD Zen or newer). |
 
@@ -175,14 +175,74 @@ zig build -Doptimize=ReleaseSmall
 ./zig-out/bin/wintermolt
 ```
 
-### Cross-Compile (one command)
+### Release Builds
+
+Build each platform on a machine of that platform. `-Dtarget=` makes Zig treat
+the build as a cross-compile, and it then stops finding the system libcurl and
+sqlite3 (and, for Windows, the MSYS2 UCRT64 libraries). Set a CPU floor with
+`-Dcpu=` instead, so the binary runs on more than the machine that built it:
 
 ```bash
-zig build -Dtarget=aarch64-linux-gnu   # Linux ARM — Jetson, Pi 5
-zig build -Dtarget=x86_64-linux-gnu    # Linux x86_64 — servers, VMs
-zig build -Dtarget=aarch64-macos-none  # macOS Apple Silicon
-zig build -Dtarget=x86_64-windows-gnu  # Windows (needs MSYS2 UCRT64 on the build host)
+zig build -Doptimize=ReleaseFast -Dcpu=baseline    # aarch64 — Apple Silicon, Jetson, Pi 5, Graviton
+zig build -Doptimize=ReleaseFast -Dcpu=x86_64_v3   # x86_64 — Linux, Windows (MSYS2 UCRT64)
 ```
+
+Add `-Dstrip=true` to leave debug info out of the binary. Crash backtraces then
+lose their file and line numbers.
+
+The glibc floor of a published Linux binary is the floor of the machine that
+built it, so **build the Linux releases in an Ubuntu 22.04 container** (glibc
+2.35) rather than on the host. Building natively on a newer host raises the
+floor silently: `std.Io` binds `arc4random_buf` whenever the target glibc is
+2.36 or newer, and a Thor running Ubuntu 24.04 (glibc 2.39) therefore produced
+an arm64 binary that would not start on JetPack 6 (#2). The container is
+native on an aarch64 host — no emulation:
+
+```bash
+docker run --rm -v "$PWD":/w -v "$(dirname "$(dirname "$(readlink -f "$(which zig)")")")":/zig:ro \
+  -w /w ubuntu:22.04 bash -c '
+    apt-get update -qq && apt-get install -y -qq libcurl4-openssl-dev libsqlite3-dev
+    HOME=/tmp/zh /zig/zig build -Doptimize=ReleaseFast -Dcpu=baseline -Dstrip=true \
+      --cache-dir /tmp/zc --global-cache-dir /tmp/zg --prefix /tmp/out'
+```
+
+Then verify the floor before publishing — the highest version here must be the
+one the platform table claims:
+
+```bash
+objdump -T prebuilt/wintermolt-linux-arm64 | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1
+```
+
+The macOS binary's minimum is likewise the macOS of the machine that built it.
+Zig takes it from the host and ignores `MACOSX_DEPLOYMENT_TARGET` (#5). Check
+it against the platform table, and check that curl is the system one, never
+`/opt/homebrew`:
+
+```bash
+otool -l prebuilt/wintermolt-macos | grep -A3 LC_BUILD_VERSION | grep minos
+otool -L prebuilt/wintermolt-macos | grep curl    # /usr/lib/libcurl.4.dylib
+```
+
+### musl (Alpine)
+
+The Linux prebuilts are glibc builds and do not start on Alpine, even with
+`gcompat`. Build a musl binary instead. The sysroot route below cross-compiles
+from any Linux host; `-Dtarget=` is the one place it is right, because
+`--search-prefix` hands Zig the libcurl and sqlite3 that cross-compiling would
+otherwise stop finding.
+
+Extract Alpine's `curl-dev`, `libcurl`, `sqlite-dev` and `sqlite-libs` apks
+(same Alpine release and arch as the target) into `$SYSROOT`, then:
+
+```bash
+PKG_CONFIG_LIBDIR=/nonexistent zig build \
+  -Dtarget=aarch64-linux-musl -Dcpu=cortex_a53 -Doptimize=ReleaseSmall \
+  --search-prefix "$SYSROOT/usr"
+```
+
+`cortex_a53` is the Pi Zero 2 W / Pi 3; `-Dcpu=baseline` runs on any aarch64.
+Verified on a Pi Zero 2 W under Alpine 3.23: a 961 KB dynamically linked musl
+binary, no preload needed.
 
 ---
 
@@ -224,9 +284,9 @@ All backends support **streaming**. Ollama runs 100% local, air-gapped, no API k
 
 - **Local GGUF inference in-process** (`/model kernel` today on Apple Silicon; `/model forai` on forMetal/forCUDA across macOS/Linux/Windows as engine deliveries land). Unsloth-trained GGUF exports run as-is.
 
-### 79 Model-Agnostic Skills
+### 70 Domain Skills
 
-Wintermolt ships with 79 skill definitions across 11 domains. Each skill defines a specialized agent role with a preferred model — but any skill can run on any backend.
+Wintermolt ships with 70 skill definitions across 11 domains: the house rules and domain knowledge of the forKernels / Zortran stack, written as instructions the model loads when it works in that area.
 
 | Domain | Skills | Default Model |
 |--------|:------:|---------------|
@@ -240,11 +300,11 @@ Wintermolt ships with 79 skill definitions across 11 domains. Each skill defines
 | Agent Architecture | 6 | qwen3:8b |
 | Audio / Music | 8 | qwen3:8b |
 | 3D / VFX | 9 | qwen3:8b |
-| Engineering (general) | 14 | qwen3:8b |
+| Engineering (kernels, release) | 5 | qwen3:30b (devops: 8b) |
 
-Skills live in `skills/` as `skill.json` manifests. Each specifies `backend`, `model`, and `role_prompt` — swap to Claude, GPT, or any Ollama model by editing one field. Subagents automatically switch to the skill's preferred backend when spawned.
+Skills live in `skills/` as `skill.json` manifests and load at startup. The model lists them with the `skills` tool and loads one with `operation='use'`, which puts the skill's `role_prompt` into the conversation on whatever backend is running. The manifests' `backend` and `model` fields are recorded but not used. See [docs/SKILLS.md](docs/SKILLS.md).
 
-### 16 Built-in Tools
+### 20 Built-in Tools
 
 The AI invokes these autonomously. No plugins needed.
 
@@ -265,7 +325,11 @@ The AI invokes these autonomously. No plugins needed.
 | `schedule` | Cron jobs — schedule recurring commands |
 | `tailscale` | Mesh VPN — query peers, devices, connectivity |
 | `canvas_update` | A2UI — render rich UI surfaces in terminal or web |
-| `harness_create` | Generate CLI-Anything harness for any software |
+| `skills` | List skills and the built-in tool catalog |
+| `text_to_speech` | Speech via OpenAI, ElevenLabs or Edge TTS |
+| `image_generate` | DALL-E 3 image generation |
+| `google_workspace` | Gmail, Calendar and Drive via Google APIs |
+| `spawn_agent` | Run a subtask in a child agent with its own context |
 
 ### Cron Scheduler
 
@@ -423,27 +487,15 @@ wintermolt --web     # Serves http://localhost:3000
 
 Real-time streaming via WebSocket. The AI's responses render token-by-token in the browser with tool execution previews.
 
-### CLI-Anything — Make Any Software Agent-Native
+### CLI-Anything — Wintermolt as a Tool for Other Agents
 
-Wintermolt integrates [CLI-Anything](https://github.com/forKernels/CLI-Anything), a framework that turns any software into an AI-controllable tool by generating structured CLI wrappers.
+[CLI-Anything](https://github.com/forKernels/CLI-Anything) is a framework for wrapping software in structured CLIs that AI agents can drive. Wintermolt ships its own harness in `agent-harness/`: a pip-installable Python CLI (Click command groups, `--json` output) that runs the `wintermolt` binary through `-e` and `--mcp-server` and reads its SQLite history read-only, so another agent can use Wintermolt as a tool.
 
-```
-> Create a harness for OBS Studio using its WebSocket API
-
-[harness_create] Generating CLI-Anything harness for "obs"...
-  obs/agent-harness/
-    setup.py
-    cli_anything/obs/obs_cli.py          (Click CLI with --json)
-    cli_anything/obs/core/backend.py     (WebSocket backend)
-    cli_anything/obs/skills/SKILL.md     (AI-discoverable metadata)
-
-[bash] pip install -e obs/agent-harness/
-Done. OBS is now agent-native. Try: cli-anything-obs --json scene list
+```bash
+pip install -e agent-harness/
 ```
 
-The generated harness follows CLI-Anything conventions: `--json` flag for structured output, Click command groups for tool dispatch, and a SKILL.md that lets any AI agent auto-discover the tool's capabilities. Wintermolt discovers installed harnesses automatically via the MCP bridge.
-
-Existing CLI-Anything harnesses include Blender, Audacity, ComfyUI, CloudCompare, and [many more](https://github.com/forKernels/CLI-Anything).
+Wintermolt has no tool that generates harnesses for other software. The `cli_anything_harness` skill (`skills use`) carries the CLI-Anything conventions for writing one by hand. Existing harnesses for Blender, Audacity, ComfyUI, CloudCompare and [more](https://github.com/forKernels/CLI-Anything) are command-line programs the `bash` tool can run like any other.
 
 ### Skills System
 
@@ -472,8 +524,6 @@ Wintermolt ships with [forLearn](https://github.com/forKernels/forLearn), which 
 | Q-Learning | Tabular RL with epsilon-greedy |
 | Curiosity | Intrinsic motivation via forward-model prediction error |
 
-**Harness generation** — scaffolds [CLI-Anything](https://github.com/forKernels/CLI-Anything) projects for connecting to new software. The `harness_create` tool generates a complete pip-installable Python CLI with `--json` support, backend adapter, and SKILL.md — making any application agent-native in one command.
-
 ---
 
 ## All Modes
@@ -482,7 +532,7 @@ Wintermolt ships with [forLearn](https://github.com/forKernels/forLearn), which 
 |:-----|:--------|:------------|
 | Chat (TUI) | `wintermolt` | Full-screen chat when stdin and stdout are a terminal |
 | Plain REPL | `wintermolt --plain` | Line-by-line session; also what you get when input is piped |
-| Single-shot | `wintermolt -e "prompt"` | Run one prompt, print result, exit |
+| Single-shot | `wintermolt -e "prompt"` | Run one prompt, print result, exit; status 1 if no backend answered |
 | Setup | `wintermolt --setup` | Interactive API key + model wizard |
 | Chat | `wintermolt --chat` | Multi-platform messaging bot |
 | Web | `wintermolt --web` | Browser UI at localhost:3000 |
@@ -516,16 +566,18 @@ default, which scrolls the transcript; other terminals may need their
 and the terminal can no longer select (many terminals still select with
 Shift+drag).
 
-**Themes.** Nine palettes from zortui: `dark` (the default), `dracula`, `nord`,
+**Themes.** `terminal` (the default) uses your terminal's own background and
+its 16 colors, so the full-screen view matches whatever scheme the terminal
+has. Nine more palettes come from zortui: `dark`, `dracula`, `nord`,
 `tokyo-night`, `gruvbox`, `matrix`, `monochrome`, `high-contrast` and `light`.
 Either spelling works, in any case (`tokyo-night` or `tokyoNight`). The
-full-screen view and canvas surfaces both use the theme, taken from the first
-of these that names a real theme:
+full-screen view and canvas surfaces both use the theme (canvas surfaces draw
+`terminal` as `dark`), taken from the first of these that names a real theme:
 
 1. `wintermolt --theme <name>`, for that run;
 2. `WINTERMOLT_THEME=<name>` in the environment;
 3. the theme `/theme` saved in `~/.wintermolt/.env`;
-4. `dark`.
+4. `terminal`.
 
 A name that is not a theme is reported with the list of valid names (an
 `[error]` line in the full-screen view) and the next source is used. `/theme`
@@ -575,7 +627,7 @@ full-screen view use `/keys list`, or run `wintermolt --keys`.
 
 | Page | Covers |
 | :--- | :--- |
-| [docs/BACKENDS.md](docs/BACKENDS.md) | All 7 backends, default models, env vars, `--keys` flow. |
+| [docs/BACKENDS.md](docs/BACKENDS.md) | All 8 backends, default models, env vars, `--keys` flow. |
 | [docs/TOOLS.md](docs/TOOLS.md) | The 20 built-in tools (9 core + 11 extended), triggers, safety. |
 | [docs/SKILLS.md](docs/SKILLS.md) | Skill manifest format, built-in catalog, custom skills. |
 | [docs/MCP.md](docs/MCP.md) | MCP client + server, `~/.wintermolt/mcp.json`, Claude Desktop / Zed wiring. |
@@ -670,6 +722,7 @@ wintermolt (one native binary, 6–14 MB)
 | `WINTERMOLT_OLLAMA_KEEP_ALIVE` | `5m` | Model unload timer (`0` = unload after each response) |
 | `WINTERMOLT_MODEL` | `qwen3:0.6b` | Default model |
 | `OPENAI_API_KEY` | — | OpenAI API key (GPT-4o, GPT-4.1) |
+| `WINTERMOLT_OPENAI_URL` | `https://api.openai.com/v1/chat/completions` | OpenAI-compatible Chat Completions URL — point it at LiteLLM, vLLM, llama.cpp server, OpenRouter |
 | `DEEPSEEK_API_KEY` | — | DeepSeek API key (V3, R1) |
 | `QWEN_API_KEY` | — | Qwen API key (Qwen 2.5+) |
 | `GOOGLE_GEMINI_API_KEY` | — | Google Gemini API key |
@@ -680,6 +733,9 @@ wintermolt (one native binary, 6–14 MB)
 |:---------|:--------|:------------|
 | `WINTERMOLT_TOKENS` | `8192` | Max output tokens |
 | `WINTERMOLT_NO_HISTORY` | — | Set `1` to disable SQLite persistence |
+| `WINTERMOLT_NO_FALLBACK` | — | Set `1` so a failed request fails, instead of being answered by Ollama or OpenAI; `-e` then exits 1 |
+| `WINTERMOLT_NO_TOOLS` | — | Set `1` to send no tool definitions, for models without function calling |
+| `WINTERMOLT_STALL_TIMEOUT` | `180` | Seconds a model request may receive nothing before it is dropped; a stream that keeps arriving is never cut off (`0` = never) |
 | `TAILSCALE_API_KEY` | — | Tailscale REST API key (optional) |
 | `PINECONE_API_KEY` | — | Pinecone API key (enables RAG memory) |
 | `PINECONE_HOST` | — | Pinecone index host URL |

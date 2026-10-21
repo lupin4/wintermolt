@@ -103,6 +103,45 @@ test "setenv: a child started through spawnPiped sees values set after fsio.io()
     try testing.expectEqual(std.process.Child.Term{ .exited = 0 }, term);
 }
 
+// The OpenAI backend speaks Chat Completions to whatever URL this names, so any
+// OpenAI-compatible server (LiteLLM, vLLM, llama.cpp, OpenRouter) can stand in.
+test "Config.load: WINTERMOLT_OPENAI_URL names the OpenAI endpoint, api.openai.com when unset" {
+    const key = "WINTERMOLT_OPENAI_URL";
+    if (compat.getenv(key) == null) {
+        const unset = try config.Config.load(null);
+        try testing.expectEqualStrings("https://api.openai.com/v1/chat/completions", unset.openai_url);
+    }
+    try testing.expectEqual(@as(c_int, 0), setenvZ(key, "http://127.0.0.1:4000/v1/chat/completions", 1));
+    const set = try config.Config.load(null);
+    try testing.expectEqualStrings("http://127.0.0.1:4000/v1/chat/completions", set.openai_url);
+}
+
+// A harness that asked for one provider has to see that provider fail. With
+// the fallback on, an Ollama answer stands in for it and `-e` exits 0.
+test "Config.load: WINTERMOLT_NO_FALLBACK=1 turns the fallback chain off; on when unset" {
+    const key = "WINTERMOLT_NO_FALLBACK";
+    if (compat.getenv(key) == null) {
+        const unset = try config.Config.load(null);
+        try testing.expect(unset.fallback_enabled);
+    }
+    try testing.expectEqual(@as(c_int, 0), setenvZ(key, "1", 1));
+    const set = try config.Config.load(null);
+    try testing.expect(!set.fallback_enabled);
+}
+
+// A model without function calling refuses any request that declares tools,
+// so it cannot run in the tool loop at all unless none are sent.
+test "Config.load: WINTERMOLT_NO_TOOLS=1 stops sending tool definitions; sent when unset" {
+    const key = "WINTERMOLT_NO_TOOLS";
+    if (compat.getenv(key) == null) {
+        const unset = try config.Config.load(null);
+        try testing.expect(unset.tools_enabled);
+    }
+    try testing.expectEqual(@as(c_int, 0), setenvZ(key, "1", 1));
+    const set = try config.Config.load(null);
+    try testing.expect(!set.tools_enabled);
+}
+
 test "loadDotEnv: a key only in .env loads and reaches a child; the real environment beats .env" {
     const gpa = testing.allocator;
     var tmp = testing.tmpDir(.{});

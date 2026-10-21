@@ -48,13 +48,34 @@ doesn't see a tool it needs, prompt the trigger word explicitly
 
 ## Disabling a tool
 
-Tools are gated by `isToolPermitted(name)`. Set
-`WINTERMOLT_DISABLE_TOOLS="browser_control,tailscale"` (comma-separated)
-to remove specific tools from every turn.
+Tools are gated by `isToolPermitted(name)`, from two comma-separated
+variables (`--keys` offers the blocklist):
+
+- `WINTERMOLT_TOOL_BLOCKLIST="browser_control,tailscale"` removes those
+  tools from every turn.
+- `WINTERMOLT_TOOL_ALLOWLIST="file_read,grep,glob"` permits only those
+  tools. When set, it takes precedence and the blocklist is ignored.
 
 ## Safety: the `bash` tool
 
-`bash` runs against the user's actual shell. Defaults to an allowlist
-of safe commands (`ls`, `cat`, `grep`, `find`, …) and prompts on
-anything else. Override with `WINTERMOLT_BASH_MODE=auto` (no prompt;
-use only in trusted/sandboxed environments).
+`bash` runs commands in the user's real shell (`/bin/sh` on macOS and
+Linux, `cmd.exe /c` on Windows) without asking. It refuses any command
+containing a destructive pattern: `rm -rf /`, `rm -rf ~`, `dd if=`,
+`mkfs`, `wipefs`, `shutdown`, `reboot`, `halt`, `init 0`, `init 6`,
+`git push --force`, `git push -f`, `git reset --hard`, `git clean -f`.
+This is a substring check, not a sandbox.
+
+For isolation, set `WINTERMOLT_SANDBOX=docker` (or `1`). Each command then
+runs in `docker run --rm` with the working directory mounted read-only at
+`/workspace`:
+
+| Variable                     | Default                     |
+| :--------------------------- | :-------------------------- |
+| `WINTERMOLT_SANDBOX_IMAGE`   | `wintermolt-sandbox:latest` |
+| `WINTERMOLT_SANDBOX_NETWORK` | `none`                      |
+| `WINTERMOLT_SANDBOX_MEMORY`  | `256m`                      |
+| `WINTERMOLT_SANDBOX_TIMEOUT` | `30` (seconds)              |
+
+If Docker cannot run, Wintermolt prints
+`[sandbox] Docker unavailable (...), falling back to host execution` and
+runs the command on the host.

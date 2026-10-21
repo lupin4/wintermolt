@@ -66,6 +66,10 @@ pub const AgentLoop = struct {
     message_sequence: u32,
     tool_errors_this_turn: u32,
     last_message_ts: i64,
+    /// The last processInput gave up without an answer: every backend failed,
+    /// or the retry after compacting did. The error is already on stderr; `-e`
+    /// turns this into its exit status, the only thing a script can check.
+    turn_failed: bool = false,
 
     // Subagent hierarchy
     depth: u8, // 0 = root agent, >0 = subagent
@@ -134,6 +138,7 @@ pub const AgentLoop = struct {
         // Initialize skill loader
         var skill_registry: ?skill_loader.SkillRegistry = null;
         skill_registry = skill_loader.SkillRegistry.init(alloc);
+        skill_registry.?.loadFromDirectories();
 
         // Initialize scheduler (SQLite-persisted cron jobs)
         var scheduler: ?scheduler_mod.Scheduler = null;
@@ -255,6 +260,7 @@ pub const AgentLoop = struct {
 
         self.last_message_ts = fsio.milliTimestamp();
         self.tool_errors_this_turn = 0;
+        self.turn_failed = false;
 
         // Wire subagent manager into tools module for spawn_agent tool
         if (self.subagent_manager) |mgr_opaque| {
@@ -264,8 +270,14 @@ pub const AgentLoop = struct {
         }
         defer tools.setSubagentManager(null, 0);
 
-        // Get relevant tool definitions based on user message
-        const relevant_tools = tools.getRelevantDefinitions(user_text);
+        // Get relevant tool definitions based on user message. None at all with
+        // WINTERMOLT_NO_TOOLS=1: a model without function calling refuses any
+        // request that declares tools, and every client omits the field when
+        // the list is empty.
+        const relevant_tools: []const protocol.ToolDefinition = if (self.config.tools_enabled)
+            tools.getRelevantDefinitions(user_text)
+        else
+            &.{};
 
         var iteration: usize = 0;
         while (iteration < MAX_ITERATIONS) : (iteration += 1) {
@@ -292,6 +304,7 @@ pub const AgentLoop = struct {
                         text_cb,
                         relevant_tools,
                     ) catch |e2| {
+                        self.turn_failed = true;
                         try stderr.print("\n[Error] Retry failed: {s}\n", .{@errorName(e2)});
                         return;
                     };
@@ -314,6 +327,7 @@ pub const AgentLoop = struct {
                         .unknown => return,
                     }
                 }
+                self.turn_failed = true;
                 try stderr.print("\n[Error] API call failed: {s}\n", .{@errorName(e)});
                 return;
             };
@@ -469,6 +483,15 @@ pub const AgentLoop = struct {
                 .kernel => "Kernel",
                 .forai => "forAI",
             };
+
+            // WINTERMOLT_NO_FALLBACK=1: the backend that was asked is the only one
+            // that may answer, so a harness sees its failure in the exit status
+            // instead of an Ollama answer standing in for it.
+            if (!self.config.fallback_enabled) {
+                stderr.print("\n[fallback] off (WINTERMOLT_NO_FALLBACK=1): {s} failed ({s})\n", .{ backend_name, @errorName(primary_err) }) catch {};
+                return primary_err;
+            }
+
             stderr.print("\n[fallback] {s} failed ({s}), trying alternatives...\n", .{ backend_name, @errorName(primary_err) }) catch {};
 
             // Fallback: try Ollama (local, free)
@@ -499,7 +522,7 @@ pub const AgentLoop = struct {
                         api_key,
                         self.config.openai_model,
                     );
-                    openai_client.api_url = "https://api.openai.com/v1/chat/completions";
+                    openai_client.api_url = self.config.openai_url;
                     if (openai_client.sendMessage(system_prompt, messages, tool_defs, effective_cb)) |resp| {
                         stderr.writeAll("[fallback] OpenAI succeeded\n") catch {};
                         succeeded = true;
@@ -570,7 +593,7 @@ pub const AgentLoop = struct {
                 api_key,
                 model_name orelse self.config.openai_model,
             );
-            client.api_url = "https://api.openai.com/v1/chat/completions";
+            client.api_url = self.config.openai_url;
             self.backend = .{ .openai = client };
             stderr.print("[backend] Switched to OpenAI ({s})\n", .{model_name orelse self.config.openai_model}) catch {};
         } else if (std.mem.eql(u8, backend_name, "deepseek")) {

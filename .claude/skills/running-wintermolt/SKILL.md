@@ -15,9 +15,27 @@ Claude, OpenAI-compat, local Metal "kernel"), with tools, MCP, and skills.
 zig build                # → zig-out/bin/wintermolt (silent on success)
 ```
 
-Needs system libcurl + sqlite3 (preinstalled on macOS). Zig 0.15.x
-(via zigup at ~/.local/share/zigup/). Cross-compile:
-`zig build -Dtarget=aarch64-linux-gnu` (Jetson/Pi) or `x86_64-linux-gnu`.
+Needs system libcurl + sqlite3 (preinstalled on macOS). Zig 0.16.0
+(via zigup at ~/.local/share/zigup/); 0.15.2 no longer builds wintermolt.
+Cross-compile: `zig build -Dtarget=aarch64-linux-gnu` (Jetson/Pi) or
+`x86_64-linux-gnu`.
+
+A PUBLISHED binary is built differently — never a plain `zig build`, which
+bakes in native CPU features. See the rule at build.zig:48:
+
+```bash
+zig build -Doptimize=ReleaseFast -Dcpu=baseline -Dstrip=true   # aarch64
+zig build -Doptimize=ReleaseFast -Dcpu=x86_64_v3 -Dstrip=true  # x86_64
+```
+
+`-Dcpu=` is the knob, not `-Dtarget=`: naming a target makes Zig treat the
+build as a cross-compile and stop finding libcurl/libsqlite3. On aarch64,
+verify before publishing — this must print 0:
+
+```bash
+objdump -d zig-out/bin/wintermolt \
+  | grep -cE '\b(ptrue|movprfx|whilelo|ld1d|st1d|cntd)\b'
+```
 
 ## Run + verify (the smoke test)
 

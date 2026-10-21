@@ -459,6 +459,21 @@ fn executeSkills(alloc: Allocator, input_json: []const u8) ![]u8 {
             return std.fmt.allocPrint(alloc, "Error: 'detail' operation requires a 'name' field", .{});
         return skills_mod.getSkillDetail(alloc, name);
     }
+    if (std.mem.eql(u8, operation, "use")) {
+        const name = sse.findJsonString(input_json, "name") orelse
+            return std.fmt.allocPrint(alloc, "Error: 'use' operation requires a 'name' field", .{});
+        const registry = skill_registry_ptr orelse
+            return std.fmt.allocPrint(alloc, "Error: no runtime skills are loaded", .{});
+        const text = registry.useSkill(name) catch |err| return switch (err) {
+            error.SkillNotFound => std.fmt.allocPrint(alloc, "Error: no skill named '{s}'. Use operation='list' to see them.", .{name}),
+            error.NoRolePrompt => std.fmt.allocPrint(alloc, "Error: skill '{s}' has no role prompt; call it as a tool instead.", .{name}),
+            error.OutOfMemory => error.OutOfMemory,
+        };
+        // `text` comes from the registry's allocator; the caller frees what
+        // this returns with `alloc`.
+        defer registry.alloc.free(text);
+        return alloc.dupe(u8, text);
+    }
     // Default: list all skills (comptime catalog + runtime plugins)
     var buf: std.Io.Writer.Allocating = .init(alloc);
     defer buf.deinit();
@@ -472,6 +487,7 @@ fn executeSkills(alloc: Allocator, input_json: []const u8) ![]u8 {
     if (skill_registry_ptr) |registry| {
         if (registry.skills.items.len > 0) {
             try w.writeAll("\n\n--- Runtime Plugins ---\n");
+            try w.writeAll("(operation='use' with name='<skill>' loads a skill's instructions)\n");
             for (registry.skills.items) |sk| {
                 try w.print("  [{s}] {s} — {s}\n", .{ sk.category, sk.name, sk.description });
             }
@@ -700,9 +716,9 @@ pub const tool_definitions = [_]protocol.ToolDefinition{
     },
     .{
         .name = "skills",
-        .description = "Browse available tool capabilities. Use operation='list' for overview or operation='detail' with name='<tool>' for full docs.",
+        .description = "Browse available tool capabilities and skills. Use operation='list' for overview, operation='detail' with name='<tool>' for full docs, or operation='use' with name='<skill>' to load a skill's instructions before working in its domain.",
         .input_schema_json =
-        \\{"type":"object","properties":{"operation":{"type":"string","enum":["list","detail"],"description":"List all skills or get detail for one"},"name":{"type":"string","description":"Skill name (for detail operation)"}},"required":[]}
+        \\{"type":"object","properties":{"operation":{"type":"string","enum":["list","detail","use"],"description":"List all skills, get detail for one tool, or load a skill's instructions"},"name":{"type":"string","description":"Tool name (for detail) or skill name (for use)"}},"required":[]}
         ,
     },
     .{

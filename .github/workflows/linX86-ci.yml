@@ -29,7 +29,8 @@ env:
   GCS_PREBUILTS: gs://forkernels-prebuilts/linX86
   # Where this workflow publishes the Wintermolt binary.
   GCS_BIN_DEST: gs://forkernels-prebuilts/linX86/Wintermolt
-  ZIG_VERSION: "0.15.2"
+  # 0.15.2 no longer builds wintermolt (main takes a std.process.Init).
+  ZIG_VERSION: "0.16.0"
   # Wintermolt only needs forAgent + forLearn (pure-Zig static archives,
   # no Fortran runtime). Adding more here only if the build.zig grows
   # additional sibling imports.

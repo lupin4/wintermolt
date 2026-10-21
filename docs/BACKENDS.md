@@ -1,19 +1,20 @@
 # Backends
 
-Wintermolt routes prompts through a single `Backend` enum. Seven backends
+Wintermolt routes prompts through a single `Backend` enum. Eight backends
 are supported. The default is Ollama (local, no API key).
 
 ## Backend matrix
 
 | Backend  | Default model              | Auth                    | Notes                                          |
 | :------- | :------------------------- | :---------------------- | :--------------------------------------------- |
-| `ollama` | `qwen3:0.6b`               | None — local            | Requires `ollama serve` on `WINTERMOLT_OLLAMA_URL` (default `http://localhost:11434`). |
+| `ollama` | `qwen3:8b`                 | None — local            | Requires `ollama serve` on `WINTERMOLT_OLLAMA_URL` (default `http://localhost:11434`). |
 | `claude` | `claude-sonnet-4-20250514` | `ANTHROPIC_API_KEY`     | Anthropic Messages API.                        |
-| `openai` | `gpt-4o-mini`              | `OPENAI_API_KEY`        | Chat Completions API.                          |
+| `openai` | `gpt-4o-mini`              | `OPENAI_API_KEY`        | Chat Completions API at `WINTERMOLT_OPENAI_URL` (default `https://api.openai.com/v1/chat/completions`) — any OpenAI-compatible server works. |
 | `deepseek` | `deepseek-chat`          | `DEEPSEEK_API_KEY`      | OpenAI-compatible endpoint.                    |
 | `qwen`   | `qwen-plus`                | `QWEN_API_KEY`          | Alibaba DashScope OpenAI-compatible endpoint.  |
 | `gemini` | `gemini-2.0-flash`         | `GOOGLE_GEMINI_API_KEY` | Google Gemini REST API.                        |
-| `forai`  | (GGUF in `~/.wintermolt/models`) | None — in-process | In-process inference engine: forAI + forNLP on forMetal (macOS) / forCUDA (Linux, Windows). No external model loader. Engine ships when the forAI rebuild lands; until then `/model forai` reports not-yet-delivered. Previous HTTP mode: use `openai` backend with a custom URL. |
+| `kernel` | `qwen3:0.6b` (GGUF in `~/.wintermolt/models`) | None — in-process | llama.cpp on Metal, in-process. macOS Apple Silicon only; other builds report "darwin-arm64 only". `WINTERMOLT_KERNEL_DEFAULT` sets the default alias, `WINTERMOLT_KERNEL_MODEL_DIR` the model directory. |
+| `forai`  | (GGUF in `~/.wintermolt/models`) | None — in-process | In-process inference engine: forAI + forNLP on forMetal (macOS) / forCUDA (Linux, Windows). No external model loader. Engine ships when the forAI rebuild lands; until then `/model forai` reports not-yet-delivered. Previous HTTP mode: use the `openai` backend with `WINTERMOLT_OPENAI_URL`. |
 
 ## Switching at runtime
 
@@ -38,11 +39,12 @@ WINTERMOLT_MODEL=qwen3:14b ./wintermolt
 WINTERMOLT_OLLAMA_URL=http://localhost:11434   # base URL
 WINTERMOLT_OLLAMA_CTX=4096                     # context window cap
 WINTERMOLT_OLLAMA_KEEP_ALIVE=5m                # unload timer (0 = unload immediately)
-WINTERMOLT_MODEL=qwen3:0.6b                    # model tag
+WINTERMOLT_MODEL=qwen3:8b                      # model tag
 
 # OpenAI
 OPENAI_API_KEY=sk-...
 WINTERMOLT_OPENAI_MODEL=gpt-4o-mini
+WINTERMOLT_OPENAI_URL=https://api.openai.com/v1/chat/completions   # full URL, not a base URL
 
 # Anthropic Claude
 ANTHROPIC_API_KEY=sk-ant-...
@@ -62,6 +64,23 @@ WINTERMOLT_GEMINI_MODEL=gemini-2.0-flash
 WINTERMOLT_VISION_BACKEND=ollama   # or "openai"
 WINTERMOLT_VISION_MODEL=qwen2.5vl
 ```
+
+## When a request fails
+
+A failed request is retried on Ollama, then on the `openai` backend if
+`OPENAI_API_KEY` is set, skipping whichever of the two just failed (`deepseek`,
+`qwen` and `gemini` count as `openai`). `[fallback]` on stderr names each
+attempt. If nothing answers, `-e` exits 1.
+
+```bash
+WINTERMOLT_NO_FALLBACK=1    # no retry: the backend you chose answers or the run fails
+WINTERMOLT_NO_TOOLS=1       # send no tool definitions (models without function calling)
+WINTERMOLT_STALL_TIMEOUT=180  # seconds with nothing received before a request is dropped
+```
+
+Every backend drops a request only when it goes quiet. A long answer that
+keeps streaming, or a local engine still warming up within the stall window,
+is never cut off. `0` waits forever.
 
 ## Interactive setup
 

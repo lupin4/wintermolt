@@ -2,3 +2,7 @@
 # (the Windows default) git wrote scripts/*.sh with CRLF, and bash failed on its
 # first option: "set: pipefail\r: invalid option name".
 *.sh text eol=lf
+
+# The banner art is embedded byte for byte, and each .roles file must line up
+# with its .txt column for column. A CRLF checkout would put '\r' in both.
+src/banner/* text eol=lf

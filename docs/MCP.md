@@ -80,5 +80,8 @@ Wintermolt implements MCP protocol revision `2024-11-05`. See
 
 ## Debugging
 
-Set `WINTERMOLT_MCP_DEBUG=1` to log every JSON-RPC frame to stderr.
-Useful when a client connects but doesn't see tools.
+In `--mcp-server` mode, stdout carries only JSON-RPC responses. Everything
+else goes to stderr, always: the `.env` load, each request's method
+(`[mcp] Request: tools/call`), each tool called (`[mcp] Calling tool: bash`)
+and the disconnect. Read stderr when a client connects but doesn't see
+tools.
