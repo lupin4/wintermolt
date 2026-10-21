@@ -6,6 +6,26 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **The Linux arm64 prebuilt drops to glibc 2.34+** (was 2.36+), so it starts
+  on Ubuntu 22.04 / JetPack 6, Debian 12 and RHEL 9 — the same floor the
+  x86_64 prebuilt already had (#2). The 2.36 import was `arc4random_buf`,
+  which `std.Io` binds only when the TARGET glibc is 2.36 or newer
+  (`std/c.zig`); a native build on a Thor running Ubuntu 24.04 (glibc 2.39)
+  passed that check, so the symbol was an artifact of the build machine, not
+  of any code. The arm64 release is now built in an Ubuntu 22.04 container,
+  as the x86_64 one already was, and `std.Io` falls through to `getrandom`.
+  Verified: the dep archives were NOT the cause — rebuilding
+  forMCP/forNet/forNLP against a 2.34 target produced a byte-identical
+  binary, because the members that reference `arc4random_buf` are never
+  linked in.
+
+### Changed
+
+- **The Linux arm64 prebuilt ships stripped**: 10.6 MB → 1.6 MB (#2). Crash
+  backtraces lose file and line numbers, as `-Dstrip=true` documents.
+
 ## [0.6.0] — 2026-10-21
 
 ### Added
