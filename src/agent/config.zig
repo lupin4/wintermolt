@@ -6,6 +6,12 @@
 //   WINTERMOLT_MODEL         — Optional. Model ID (default: qwen3:8b via Ollama)
 //   WINTERMOLT_TOKENS        — Optional. Max response tokens (default: 8192)
 //   WINTERMOLT_NO_HISTORY    — Optional. Set to "1" to disable SQLite history
+//   WINTERMOLT_NO_FALLBACK   — Optional. Set to "1": a failed request fails (no Ollama/OpenAI retry)
+//   WINTERMOLT_NO_TOOLS      — Optional. Set to "1": send no tool definitions (models without
+//                              function calling)
+//   WINTERMOLT_STALL_TIMEOUT — Optional. Seconds a model request may receive nothing before it
+//                              is dropped (default: 180; 0 = never). Read per request by
+//                              api/curl_timeouts.zig
 //   WINTERMOLT_OLLAMA_URL    — Optional. Ollama base URL (default: http://localhost:11434)
 //   WINTERMOLT_OLLAMA_MODEL  — Optional. Ollama model (default: qwen3:8b)
 //   WINTERMOLT_OLLAMA_CTX    — Optional. Context window cap (default: 4096). Prevents OOM.
@@ -185,6 +191,10 @@ pub const Config = struct {
     max_tokens: u32,
     system_prompt: []const u8,
     history_enabled: bool,
+    // False: a failed request fails, instead of being retried on Ollama/OpenAI.
+    fallback_enabled: bool,
+    // False: no tool definitions are sent, for models without function calling.
+    tools_enabled: bool,
     ollama_url: []const u8,
     ollama_model: []const u8,
     ollama_num_ctx: u32,
@@ -254,6 +264,16 @@ pub const Config = struct {
         const history_enabled = blk: {
             const no_hist = compat.getenv("WINTERMOLT_NO_HISTORY") orelse break :blk true;
             break :blk !std.mem.eql(u8, no_hist, "1");
+        };
+
+        const fallback_enabled = blk: {
+            const no_fallback = compat.getenv("WINTERMOLT_NO_FALLBACK") orelse break :blk true;
+            break :blk !std.mem.eql(u8, no_fallback, "1");
+        };
+
+        const tools_enabled = blk: {
+            const no_tools = compat.getenv("WINTERMOLT_NO_TOOLS") orelse break :blk true;
+            break :blk !std.mem.eql(u8, no_tools, "1");
         };
 
         const ollama_url = compat.getenv("WINTERMOLT_OLLAMA_URL") orelse
@@ -334,6 +354,8 @@ pub const Config = struct {
             .max_tokens = max_tokens,
             .system_prompt = constitution_text,
             .history_enabled = history_enabled,
+            .fallback_enabled = fallback_enabled,
+            .tools_enabled = tools_enabled,
             .ollama_url = ollama_url,
             .ollama_model = ollama_model,
             .ollama_num_ctx = ollama_num_ctx,

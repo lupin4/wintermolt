@@ -499,7 +499,7 @@ Wintermolt ships with [forLearn](https://github.com/forKernels/forLearn), which 
 |:-----|:--------|:------------|
 | Chat (TUI) | `wintermolt` | Full-screen chat when stdin and stdout are a terminal |
 | Plain REPL | `wintermolt --plain` | Line-by-line session; also what you get when input is piped |
-| Single-shot | `wintermolt -e "prompt"` | Run one prompt, print result, exit |
+| Single-shot | `wintermolt -e "prompt"` | Run one prompt, print result, exit; status 1 if no backend answered |
 | Setup | `wintermolt --setup` | Interactive API key + model wizard |
 | Chat | `wintermolt --chat` | Multi-platform messaging bot |
 | Web | `wintermolt --web` | Browser UI at localhost:3000 |
@@ -533,16 +533,18 @@ default, which scrolls the transcript; other terminals may need their
 and the terminal can no longer select (many terminals still select with
 Shift+drag).
 
-**Themes.** Nine palettes from zortui: `dark` (the default), `dracula`, `nord`,
+**Themes.** `terminal` (the default) uses your terminal's own background and
+its 16 colors, so the full-screen view matches whatever scheme the terminal
+has. Nine more palettes come from zortui: `dark`, `dracula`, `nord`,
 `tokyo-night`, `gruvbox`, `matrix`, `monochrome`, `high-contrast` and `light`.
 Either spelling works, in any case (`tokyo-night` or `tokyoNight`). The
-full-screen view and canvas surfaces both use the theme, taken from the first
-of these that names a real theme:
+full-screen view and canvas surfaces both use the theme (canvas surfaces draw
+`terminal` as `dark`), taken from the first of these that names a real theme:
 
 1. `wintermolt --theme <name>`, for that run;
 2. `WINTERMOLT_THEME=<name>` in the environment;
 3. the theme `/theme` saved in `~/.wintermolt/.env`;
-4. `dark`.
+4. `terminal`.
 
 A name that is not a theme is reported with the list of valid names (an
 `[error]` line in the full-screen view) and the next source is used. `/theme`
@@ -699,6 +701,9 @@ wintermolt (one native binary, 6–14 MB)
 |:---------|:--------|:------------|
 | `WINTERMOLT_TOKENS` | `8192` | Max output tokens |
 | `WINTERMOLT_NO_HISTORY` | — | Set `1` to disable SQLite persistence |
+| `WINTERMOLT_NO_FALLBACK` | — | Set `1` so a failed request fails, instead of being answered by Ollama or OpenAI; `-e` then exits 1 |
+| `WINTERMOLT_NO_TOOLS` | — | Set `1` to send no tool definitions, for models without function calling |
+| `WINTERMOLT_STALL_TIMEOUT` | `180` | Seconds a model request may receive nothing before it is dropped; a stream that keeps arriving is never cut off (`0` = never) |
 | `TAILSCALE_API_KEY` | — | Tailscale REST API key (optional) |
 | `PINECONE_API_KEY` | — | Pinecone API key (enables RAG memory) |
 | `PINECONE_HOST` | — | Pinecone index host URL |

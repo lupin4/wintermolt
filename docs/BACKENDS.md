@@ -88,6 +88,23 @@ WINTERMOLT_VISION_BACKEND=ollama   # or "openai"
 WINTERMOLT_VISION_MODEL=qwen2.5vl
 ```
 
+## When a request fails
+
+A failed request is retried on Ollama, then on the `openai` backend if
+`OPENAI_API_KEY` is set, skipping whichever of the two just failed (`deepseek`,
+`qwen` and `gemini` count as `openai`). `[fallback]` on stderr names each
+attempt. If nothing answers, `-e` exits 1.
+
+```bash
+WINTERMOLT_NO_FALLBACK=1    # no retry: the backend you chose answers or the run fails
+WINTERMOLT_NO_TOOLS=1       # send no tool definitions (models without function calling)
+WINTERMOLT_STALL_TIMEOUT=180  # seconds with nothing received before a request is dropped
+```
+
+Every backend drops a request only when it goes quiet. A long answer that
+keeps streaming, or a local engine still warming up within the stall window,
+is never cut off. `0` waits forever.
+
 ## Provider errors inside a `200` stream
 
 OpenAI-compatible servers often answer `200` and put the failure in an SSE
@@ -96,7 +113,7 @@ server does not serve:
 
 ```
 data: {"type":"error","error":{"message":"Insufficient credits for request"}}
-data: {"error":{"message":"Model not found","type":"invalid_request_error"}}
+data: {"error": {"message":"Model not found","type":"invalid_request_error"}}
 ```
 
 Wintermolt treats either shape as a failed request: it prints

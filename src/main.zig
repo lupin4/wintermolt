@@ -42,9 +42,10 @@ const setup = @import("setup.zig");
 const export_mod = @import("agent/export.zig");
 const tui = @import("tui.zig");
 const theme_pref = @import("theme_pref.zig");
+const banner = @import("banner.zig");
 const zortui = @import("zortui");
 
-const VERSION = "0.5.0";
+const VERSION = "0.6.0";
 
 /// A panic while the TUI owns the terminal would leave the shell in raw mode on
 /// the alternate screen, with the panic message drawn somewhere invisible. Put
@@ -463,6 +464,13 @@ pub fn main(init: std.process.Init) !void {
     if (exec_prompt) |prompt| {
         agent.startConversation();
         try agent.processInput(prompt);
+        // Nothing answered: a script running `-e` sees only the exit status.
+        // The agent is freed first because exit() runs static destructors,
+        // and the kernel backend must be gone before ggml-metal's runs.
+        if (agent.turn_failed) {
+            agent.deinit();
+            std.process.exit(1);
+        }
         return;
     }
 
@@ -693,7 +701,7 @@ fn saveTheme(alloc: std.mem.Allocator, name: []const u8) !void {
     try theme_pref.save(alloc, fsio.io(), fsio.cwd(), path, name);
 }
 
-/// "[theme] Unknown theme 'x' (from --theme). Themes: .... Using dark (the default)."
+/// "[theme] Unknown theme 'x' (from --theme). Themes: .... Using terminal (the default)."
 fn reportThemeRejections(w: anytype, choice: *const theme_pref.Resolved) !void {
     for (choice.rejected()) |r| {
         try w.writeAll("[theme] ");
@@ -812,6 +820,7 @@ fn runTui(
         gpa,
         tui.appOptions(.fromEnviron(&init.minimal.environ), fsio.monoNs, tuiMouseRequestedByEnv(), theme_choice.name),
     ) catch return error.TuiUnavailable;
+    tui.applyTheme(&app, theme_choice.name);
 
     // Theme names that were given but are not themes: [error] lines up top.
     for (theme_choice.rejected()) |r| {
@@ -853,7 +862,7 @@ fn tuiLoop(app: *zortui.App, session: *tui.Session) !void {
         // sink's back. Ctrl+L does the same on demand.
         if (session.pump() or session.takeRedraw()) app.redraw();
         // /theme: the next frame is drawn, in full, in the new palette.
-        if (session.takeThemeChange()) |name| app.setTheme(name);
+        if (session.takeThemeChange()) |name| tui.applyTheme(app, name);
         _ = try app.draw(zortui.Body.with(session, tui.Session.view));
     }
 }
@@ -1475,14 +1484,12 @@ fn handleTailscale(alloc: std.mem.Allocator, w: anytype, _stderr: anytype) !void
 // Banner and help
 // ---------------------------------------------------------------------------
 
-fn printBanner(w: anytype) !void {
-    try w.writeAll(
-        \\
-        \\  ╦ ╦┬┌┐┌┌┬┐┌─┐┬─┐┌┬┐┌─┐┬ ┌┬┐
-        \\  ║║║││││ │ ├┤ ├┬┘││││ ││  │
-        \\  ╚╩╝┴┘└┘ ┴ └─┘┴└─┴ ┴└─┘┴─┘┴
-        \\
-    );
+/// The banner sized to the window and painted in the terminal's own colors;
+/// piped output and NO_COLOR get the plain lettering (banner.zig).
+fn printBanner(w: *std.Io.Writer) !void {
+    const color = banner.colorWanted(compat.stdoutIsTerminal(), compat.getenv("NO_COLOR"), compat.getenv("TERM"));
+    const size: ?banner.Size = if (compat.terminalSize()) |s| .{ .columns = s.columns, .rows = s.rows } else null;
+    try banner.write(w, banner.forPlain(size, color));
     try w.print("  v{s} — Lite AI Agent CLI (MIT)\n", .{VERSION});
     try w.writeAll("  Type /help for commands, /quit to exit.\n\n");
 }
@@ -1520,8 +1527,8 @@ fn printHelp(w: anytype) !void {
         \\  wintermolt --theme NAME — Theme for the full-screen view and canvas (this run):
         \\                            dark, dracula, nord, tokyo-night, gruvbox, matrix,
         \\                            monochrome, high-contrast, light
-        \\  wintermolt -e "prompt"  — Single-shot execution
-        \\  wintermolt --keys       — Configure API keys
+        \\  wintermolt -e "prompt"  — Single-shot execution (exits 1 if no backend answers)
+        \\  wintermolt --keys      — Configure API keys
         \\  wintermolt --setup      — Alias for --keys
         \\  wintermolt --chat       — Chat bridge (18 platforms)
         \\  wintermolt --web        — Web UI
@@ -1562,11 +1569,16 @@ fn printHelp(w: anytype) !void {
         \\  DEEPSEEK_API_KEY     — DeepSeek API key
         \\  QWEN_API_KEY         — Qwen API key
         \\  TAILSCALE_API_KEY    — Tailscale API key (optional, for device list)
+        \\  WINTERMOLT_NO_FALLBACK=1 — A failed request fails (-e exits 1) instead of
+        \\                         being answered by Ollama or OpenAI
+        \\  WINTERMOLT_NO_TOOLS=1  — Send no tool definitions (models without function calling)
+        \\  WINTERMOLT_STALL_TIMEOUT=SECS — Drop a model request after SECS with nothing
+        \\                         received (default: 180; 0 = never)
         \\  WINTERMOLT_PLAIN=1   — Same as --plain: never open the full-screen view
         \\  WINTERMOLT_TUI_MOUSE=1 — Full-screen view takes the mouse (wheel, clicks);
         \\                         the terminal can then no longer select text
         \\  WINTERMOLT_THEME=NAME  — Theme, below --theme and above the one /theme saved
-        \\                         in ~/.wintermolt/.env (default: dark)
+        \\                         in ~/.wintermolt/.env (default: terminal)
         \\
     );
 }

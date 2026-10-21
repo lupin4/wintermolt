@@ -10,7 +10,7 @@ keep them running.
 | _(none)_         | Interactive chat: full-screen view in a terminal, plain REPL otherwise. |
 | `--plain`        | Plain line-by-line REPL in a terminal (also `WINTERMOLT_PLAIN=1`). |
 | `--theme <name>` | Full-screen view theme (also `WINTERMOLT_THEME`, `/theme`). |
-| `-e "<prompt>"`  | One-shot execution; prints response, exits.              |
+| `-e "<prompt>"`  | One-shot execution; prints response, exits. Status 1 if no backend answered. |
 | `--version`, `--help` | Print the version, or usage, and exit.              |
 | `--keys`         | Interactive credential setup (also `--setup`).           |
 | `--chat`         | Spawn the chat-bridge sidecar (18 platforms).            |

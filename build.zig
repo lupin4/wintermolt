@@ -378,6 +378,30 @@ pub fn build(b: *std.Build) void {
     });
     test_step.dependOn(&b.addRunArtifact(tool_status_test).step);
 
+    // How long a model request may go quiet (WINTERMOLT_STALL_TIMEOUT). Its own
+    // root for the same reason, kept in src/ so the file can reach compat.zig;
+    // libc for getenv.
+    const curl_timeouts_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/curl_timeouts_tests.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+    });
+    test_step.dependOn(&b.addRunArtifact(curl_timeouts_test).step);
+
+    // The startup banner: which size fits, and how roles become colors. Pure,
+    // rooted on its own for the same reason.
+    const banner_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/banner.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    test_step.dependOn(&b.addRunArtifact(banner_test).step);
+
     // Skill manifests, and `skills use` handing a skill's role prompt to the
     // model. Its own root for the same reason; libc for fsio and bash.zig.
     const skill_loader_test = b.addTest(.{
@@ -405,6 +429,44 @@ pub fn build(b: *std.Build) void {
     const run_env_tests = b.addRunArtifact(env_tests);
     test_step.dependOn(&run_env_tests.step);
     b.step("test-env", "Run the environment tests (setenv, .env, child processes)").dependOn(&run_env_tests.step);
+
+    // `-e` end to end, on the real binary: a request no backend answers must
+    // fail the process, or a script cannot tell it from an answer. The
+    // environment is emptied (no key, no HOME, nothing of the user's) and
+    // Ollama is a dead port, so this can never reach a real or local model.
+    // Windows keeps SystemRoot, which its socket layer reads.
+    const cli_unanswered = b.addRunArtifact(exe);
+    cli_unanswered.setName("run wintermolt -e with every backend down");
+    cli_unanswered.addArgs(&.{ "-e", "hi" });
+    cli_unanswered.clearEnvironment();
+    if (b.graph.environ_map.get("SystemRoot")) |root| {
+        cli_unanswered.setEnvironmentVariable("SystemRoot", root);
+    }
+    cli_unanswered.setEnvironmentVariable("WINTERMOLT_OLLAMA_URL", "http://127.0.0.1:9");
+    cli_unanswered.setEnvironmentVariable("WINTERMOLT_NO_HISTORY", "1");
+    cli_unanswered.expectExitCode(1);
+    test_step.dependOn(&cli_unanswered.step);
+    const test_cli = b.step("test-cli", "Run the binary end to end (-e exit status, fallback off)");
+    test_cli.dependOn(&cli_unanswered.step);
+
+    // The same run with WINTERMOLT_NO_FALLBACK=1: the primary's failure is the
+    // run's failure, and stderr says the chain was skipped rather than
+    // exhausted. That nothing else was ASKED is checked against a stub that
+    // would answer (see the commit), which a build step has no server for.
+    const cli_no_fallback = b.addRunArtifact(exe);
+    cli_no_fallback.setName("run wintermolt -e with the fallback off");
+    cli_no_fallback.addArgs(&.{ "-e", "hi" });
+    cli_no_fallback.clearEnvironment();
+    if (b.graph.environ_map.get("SystemRoot")) |root| {
+        cli_no_fallback.setEnvironmentVariable("SystemRoot", root);
+    }
+    cli_no_fallback.setEnvironmentVariable("WINTERMOLT_OLLAMA_URL", "http://127.0.0.1:9");
+    cli_no_fallback.setEnvironmentVariable("WINTERMOLT_NO_HISTORY", "1");
+    cli_no_fallback.setEnvironmentVariable("WINTERMOLT_NO_FALLBACK", "1");
+    cli_no_fallback.addCheck(.{ .expect_stderr_match = "[fallback] off" });
+    cli_no_fallback.expectExitCode(1);
+    test_step.dependOn(&cli_no_fallback.step);
+    test_cli.dependOn(&cli_no_fallback.step);
 }
 
 fn getShortTargetName(t: std.Target) []const u8 {

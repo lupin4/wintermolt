@@ -1,10 +1,12 @@
 # Vendored: zortui
 
 - Upstream: https://github.com/lupin4/zortui
-- Commit: `c47945c37ab499b8c0d7c532f989964486602e5b` (c47945c, "zortui: an app
-  without mouse reporting keeps Windows Quick Edit"), v0.1.0 plus the clock
-  hook (9261fe1) and that fix. Previously 9261fe1, before that f601d1e.
-- Copied with `git archive c47945c build.zig build.zig.zon src LICENSE NOTICE README.md`.
+- Commit: `8f6df19efd291fa97b22545f623539c6b75220d0` (8f6df19, "zortui: a
+  palette index stays a palette index at truecolor depth"), v0.1.0 plus the
+  clock hook (9261fe1), the Quick Edit fix (c47945c) and that fix. wintermolt's
+  "terminal" theme is built from palette indices, which is what found it.
+  Previously c47945c, before that 9261fe1, before that f601d1e.
+- Copied with `git archive 8f6df19 build.zig build.zig.zon src LICENSE NOTICE README.md`.
 - wintermolt sets the hook: `src/tui.zig` `appOptions` takes the clock, and
   `src/main.zig` passes `fsio.monoNs` (forTime's `ftim_mono_ns`).
 - License: MIT (derived from hqtui, MIT). `LICENSE` and `NOTICE` are carried

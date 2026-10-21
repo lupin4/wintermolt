@@ -11,6 +11,7 @@
 
 const std = @import("std");
 const curl_tls = @import("../curl_tls.zig");
+const curl_timeouts = @import("curl_timeouts.zig");
 const fsio = @import("../fsio.zig");
 const stdio = @import("../stdio.zig");
 const Allocator = std.mem.Allocator;
@@ -44,8 +45,6 @@ const CURLOPT_POSTFIELDSIZE: c_int = 60;
 const CURLOPT_WRITEFUNCTION: c_int = 20011;
 const CURLOPT_WRITEDATA: c_int = 10001;
 const CURLOPT_POST: c_int = 47;
-const CURLOPT_TIMEOUT: c_int = 13;
-const CURLOPT_CONNECTTIMEOUT: c_int = 78;
 const CURLINFO_RESPONSE_CODE: c_int = 0x200002;
 
 // ---------------------------------------------------------------------------
@@ -135,9 +134,8 @@ pub const DeepSeekClient = struct {
         _ = curl_easy_setopt(handle, CURLOPT_WRITEFUNCTION, &writeCallback);
         _ = curl_easy_setopt(handle, CURLOPT_WRITEDATA, &parser);
 
-        // Timeouts: 10s to connect, 90s total (shorter than Claude — non-primary)
-        _ = curl_easy_setopt(handle, CURLOPT_CONNECTTIMEOUT, @as(c_long, 10));
-        _ = curl_easy_setopt(handle, CURLOPT_TIMEOUT, @as(c_long, 90));
+        // 10s to connect; after that only a stream gone quiet is dropped
+        curl_timeouts.apply(handle, 10);
 
         // Perform with retry for rate limits
         const max_retries: usize = 3;

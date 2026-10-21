@@ -138,6 +138,33 @@ pub fn stdioIsTerminal() bool {
 }
 
 // =============================================================================
+// stdoutIsTerminal / terminalSize — for the plain REPL's banner (banner.zig),
+// which colors only a terminal and sizes itself to the window.
+// =============================================================================
+
+pub fn stdoutIsTerminal() bool {
+    if (comptime builtin.os.tag == .windows) {
+        return win32.isConsole(win32.stdHandle(win32.STD_OUTPUT_HANDLE));
+    }
+    return std.c.isatty(std.posix.STDOUT_FILENO) != 0;
+}
+
+pub const TermSize = struct { columns: usize, rows: usize };
+
+/// The visible window, in cells. Null when stdout is not a terminal, or when
+/// the kernel reports zero (some ptys do).
+pub fn terminalSize() ?TermSize {
+    if (comptime builtin.os.tag == .windows) {
+        const s = win32.consoleWindowSize() orelse return null;
+        return .{ .columns = s.columns, .rows = s.rows };
+    }
+    var ws: std.posix.winsize = undefined;
+    if (std.c.ioctl(std.posix.STDOUT_FILENO, @intCast(std.posix.T.IOCGWINSZ), &ws) != 0) return null;
+    if (ws.col == 0 or ws.row == 0) return null;
+    return .{ .columns = ws.col, .rows = ws.row };
+}
+
+// =============================================================================
 // stdinReadyToRead — non-blocking "is there input on stdin?" check.
 //
 // On POSIX this is poll() with a 0ms timeout. On Windows we use

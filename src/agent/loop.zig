@@ -66,6 +66,10 @@ pub const AgentLoop = struct {
     message_sequence: u32,
     tool_errors_this_turn: u32,
     last_message_ts: i64,
+    /// The last processInput gave up without an answer: every backend failed,
+    /// or the retry after compacting did. The error is already on stderr; `-e`
+    /// turns this into its exit status, the only thing a script can check.
+    turn_failed: bool = false,
 
     // Subagent hierarchy
     depth: u8, // 0 = root agent, >0 = subagent
@@ -256,6 +260,7 @@ pub const AgentLoop = struct {
 
         self.last_message_ts = fsio.milliTimestamp();
         self.tool_errors_this_turn = 0;
+        self.turn_failed = false;
 
         // Wire subagent manager into tools module for spawn_agent tool
         if (self.subagent_manager) |mgr_opaque| {
@@ -265,8 +270,14 @@ pub const AgentLoop = struct {
         }
         defer tools.setSubagentManager(null, 0);
 
-        // Get relevant tool definitions based on user message
-        const relevant_tools = tools.getRelevantDefinitions(user_text);
+        // Get relevant tool definitions based on user message. None at all with
+        // WINTERMOLT_NO_TOOLS=1: a model without function calling refuses any
+        // request that declares tools, and every client omits the field when
+        // the list is empty.
+        const relevant_tools: []const protocol.ToolDefinition = if (self.config.tools_enabled)
+            tools.getRelevantDefinitions(user_text)
+        else
+            &.{};
 
         var iteration: usize = 0;
         while (iteration < MAX_ITERATIONS) : (iteration += 1) {
@@ -293,6 +304,7 @@ pub const AgentLoop = struct {
                         text_cb,
                         relevant_tools,
                     ) catch |e2| {
+                        self.turn_failed = true;
                         try stderr.print("\n[Error] Retry failed: {s}\n", .{@errorName(e2)});
                         return;
                     };
@@ -315,6 +327,7 @@ pub const AgentLoop = struct {
                         .unknown => return,
                     }
                 }
+                self.turn_failed = true;
                 try stderr.print("\n[Error] API call failed: {s}\n", .{@errorName(e)});
                 return;
             };
@@ -470,6 +483,15 @@ pub const AgentLoop = struct {
                 .kernel => "Kernel",
                 .forai => "forAI",
             };
+
+            // WINTERMOLT_NO_FALLBACK=1: the backend that was asked is the only one
+            // that may answer, so a harness sees its failure in the exit status
+            // instead of an Ollama answer standing in for it.
+            if (!self.config.fallback_enabled) {
+                stderr.print("\n[fallback] off (WINTERMOLT_NO_FALLBACK=1): {s} failed ({s})\n", .{ backend_name, @errorName(primary_err) }) catch {};
+                return primary_err;
+            }
+
             stderr.print("\n[fallback] {s} failed ({s}), trying alternatives...\n", .{ backend_name, @errorName(primary_err) }) catch {};
 
             // Fallback: try Ollama (local, free)

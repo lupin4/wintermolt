@@ -65,7 +65,7 @@ pub const Color = enum(u32) {
         return self == .default;
     }
 
-    fn isIndexed(self: Color) bool {
+    pub fn isIndexed(self: Color) bool {
         return self.raw() & idx_flag != 0;
     }
 
