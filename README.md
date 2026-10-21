@@ -213,6 +213,16 @@ one the platform table claims:
 objdump -T prebuilt/wintermolt-linux-arm64 | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1
 ```
 
+The macOS binary's minimum is likewise the macOS of the machine that built it.
+Zig takes it from the host and ignores `MACOSX_DEPLOYMENT_TARGET` (#5). Check
+it against the platform table, and check that curl is the system one, never
+`/opt/homebrew`:
+
+```bash
+otool -l prebuilt/wintermolt-macos | grep -A3 LC_BUILD_VERSION | grep minos
+otool -L prebuilt/wintermolt-macos | grep curl    # /usr/lib/libcurl.4.dylib
+```
+
 ### musl (Alpine)
 
 The Linux prebuilts are glibc builds and do not start on Alpine, even with

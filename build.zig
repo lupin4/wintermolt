@@ -144,7 +144,11 @@ pub fn build(b: *std.Build) void {
         exe_mod.addLibraryPath(.{ .cwd_relative = "C:/msys64/ucrt64/lib/gcc/x86_64-w64-mingw32/15.2.0" });
     }
 
-    exe_mod.linkSystemLibrary("curl", .{});
+    // macOS: the SDK's libcurl, never pkg-config's answer. With Homebrew's curl
+    // installed, pkg-config returns /opt/homebrew/opt/curl, and a binary linked
+    // to that does not start on a Mac without it. The SDK's libcurl.tbd
+    // resolves to /usr/lib/libcurl.4.dylib, which every Mac has.
+    exe_mod.linkSystemLibrary("curl", .{ .use_pkg_config = if (t.os.tag == .macos) .no else .yes });
     exe_mod.linkSystemLibrary("sqlite3", .{});
 
     // Windows / MSYS2: libcurl is built with HTTP/3 (QUIC) and pulls in a

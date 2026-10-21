@@ -20,6 +20,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   forMCP/forNet/forNLP against a 2.34 target produced a byte-identical
   binary, because the members that reference `arc4random_buf` are never
   linked in.
+- **The macOS prebuilt links the system libcurl** (`/usr/lib/libcurl.4.dylib`),
+  so it starts on a Mac without Homebrew's curl. `build.zig` skips pkg-config
+  for curl on macOS: with Homebrew's curl installed, pkg-config had pointed the
+  link at `/opt/homebrew/opt/curl`, and the 0.5.0 binary carried that path. It
+  still requires macOS 27.2+, the version of the machine that built it. A
+  floor of 26 waits on six dep archives that were compiled for 26.4–27.0 (#5).
 
 ### Changed
 
