@@ -1,19 +1,27 @@
 // Copyright The Fantastic Planet - By David Clabaugh
 //
-// theme_pref.zig -- which zortui theme the full-screen view and the canvas use.
+// theme_pref.zig -- which theme the full-screen view and the canvas use.
 //
 // SOURCES, highest first:
 //   --theme <name>     the command line
 //   WINTERMOLT_THEME   the environment (read BEFORE config.loadDotEnv copies
 //                      ~/.wintermolt/.env into it, so the two stay distinct)
 //   ~/.wintermolt/.env WINTERMOLT_THEME=<name>, written by /theme
-//   "dark"             zortui's default
-// A name that is not a built-in theme is reported and skipped, and the next
-// source decides. Nothing here fails a start-up.
+//   "terminal"         the default
+// A name that is not a theme is reported and skipped, and the next source
+// decides. Nothing here fails a start-up.
 //
-// NAMES. Every built-in has a key (tokyoNight) and a name (tokyo-night);
-// either spelling, in any case, reaches it. The name is the canonical form,
-// the one stored and shown.
+// THEMES. "terminal" is wintermolt's own, listed first: the terminal's own
+// background and text, and its 16 palette colors for every other slot, so the
+// full-screen view takes on whatever scheme the terminal has. After it come
+// zortui's built-ins. zortui's copy stays unmodified (vendor/zortui/
+// VENDORED.md), so "terminal" lives here, and the App is handed its palette
+// directly (tui.applyTheme) rather than by name. The canvas still renders
+// through zortui by name, so under "terminal" it falls back to zortui's dark.
+//
+// NAMES. Every theme has a key (tokyoNight) and a name (tokyo-night); either
+// spelling, in any case, reaches it. The name is the canonical form, the one
+// stored and shown.
 //
 // STORAGE is the existing ~/.wintermolt/.env: the one WINTERMOLT_THEME line is
 // replaced in place, or appended, and every other byte of the file is kept.
@@ -25,21 +33,56 @@ const std = @import("std");
 const zortui = @import("zortui");
 
 pub const env_key = "WINTERMOLT_THEME";
-pub const default_name = "dark";
+pub const default_name = "terminal";
 
-const themes = zortui.theme.themes;
+const ansi = zortui.Color.ansi256;
 
-/// The canonical name of a built-in theme, from its name or key in any case.
+/// The terminal's own colors. The palette indices match the 16-color codes
+/// banner.zig prints in the plain REPL, so the banner looks the same in both.
+pub const terminal: zortui.theme.Theme = .{
+    .name = "terminal",
+    .background = .default,
+    .surface = .default,
+    .foreground = .default,
+    .muted = ansi(8),
+    .primary = ansi(4),
+    .secondary = ansi(5),
+    .accent = ansi(6),
+    .success = ansi(2),
+    .warning = ansi(3),
+    .danger = ansi(1),
+    .info = ansi(6),
+    .border = ansi(8),
+    .border_focused = ansi(6),
+    .title = ansi(4),
+    .selection = ansi(8),
+    .selection_text = ansi(15),
+    .cursor = ansi(6),
+    .graph = &.{ ansi(4), ansi(2), ansi(5), ansi(3), ansi(6), ansi(1) },
+    .heat = &.{ ansi(2), ansi(3), ansi(9), ansi(1) },
+};
+
+/// Every theme, wintermolt's first. Same entry type as zortui's table.
+pub const all = [_]@TypeOf(zortui.theme.themes[0]){.{ .key = "terminal", .theme = terminal }} ++ zortui.theme.themes;
+
+/// The canonical name of a theme, from its name or key in any case.
 /// Surrounding spaces and quotes are ignored. Null for anything else.
 pub fn canonical(name: []const u8) ?[]const u8 {
     const i = indexOf(name) orelse return null;
-    return themes[i].theme.name;
+    return all[i].theme.name;
+}
+
+/// A theme's palette by name or key. Unknown names get the default, the way
+/// zortui falls back rather than refusing to start.
+pub fn lookup(name: []const u8) zortui.theme.Theme {
+    const i = indexOf(name) orelse return all[0].theme;
+    return all[i].theme;
 }
 
 fn indexOf(name: []const u8) ?usize {
     const trimmed = std.mem.trim(u8, name, " \t\r\n\"'");
     if (trimmed.len == 0) return null;
-    for (themes, 0..) |t, i| {
+    for (all, 0..) |t, i| {
         if (std.ascii.eqlIgnoreCase(t.theme.name, trimmed) or std.ascii.eqlIgnoreCase(t.key, trimmed)) return i;
     }
     return null;
@@ -47,13 +90,13 @@ fn indexOf(name: []const u8) ?usize {
 
 // ── the process-wide selection ────────────────────────────────────────────
 
-/// An index into zortui's table rather than a slice, so a reader on another
-/// thread (the canvas renders on the TUI's worker) never sees half a write.
+/// An index into `all` rather than a slice, so a reader on another thread
+/// (the canvas renders on the TUI's worker) never sees half a write.
 var selected_index = std.atomic.Value(usize).init(0);
 
-/// The selected theme's canonical name. "dark" until something selects.
+/// The selected theme's canonical name. "terminal" until something selects.
 pub fn selected() []const u8 {
-    return themes[selected_index.load(.acquire)].theme.name;
+    return all[selected_index.load(.acquire)].theme.name;
 }
 
 /// Select a theme by name or key. False, and no change, for an unknown name.
@@ -111,9 +154,9 @@ pub fn sourceLabel(source: Source) []const u8 {
 
 // ── messages ──────────────────────────────────────────────────────────────
 
-/// "dark, dracula, nord, ..." -- every canonical name, in zortui's order.
+/// "terminal, dark, dracula, ..." -- every canonical name, in `all`'s order.
 pub fn writeNames(w: anytype) !void {
-    for (themes, 0..) |t, i| {
+    for (all, 0..) |t, i| {
         if (i > 0) try w.writeAll(", ");
         try w.writeAll(t.theme.name);
     }
@@ -133,7 +176,7 @@ pub fn writeUnknown(w: anytype, value: []const u8, source: ?Source) !void {
 /// with `*`, and the other spelling shown where the key differs from the name.
 pub fn writeList(w: anytype, current: []const u8) !void {
     try w.writeAll("Themes (* current; /theme <name> switches and saves):\n");
-    for (themes) |t| {
+    for (all) |t| {
         const mark: []const u8 = if (std.mem.eql(u8, t.theme.name, current)) "* " else "  ";
         try w.writeAll(mark);
         try w.writeAll(t.theme.name);

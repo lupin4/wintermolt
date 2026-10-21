@@ -35,6 +35,7 @@ const zortui = @import("zortui");
 // (and of fsio's POSIX-only tests) so the headless tests build everywhere.
 const stdio = @import("stdio.zig");
 const theme_pref = @import("theme_pref.zig");
+const banner = @import("banner.zig");
 
 const Allocator = std.mem.Allocator;
 const Container = zortui.Container;
@@ -42,8 +43,9 @@ const Surface = zortui.Surface;
 
 pub const Stream = stdio.Stream;
 
-/// How a transcript line is drawn.
-pub const Kind = enum { user, assistant, tool, info, err };
+/// How a transcript line is drawn. A `banner` line carries no text: it stands
+/// for the startup banner, sized to the transcript when it is drawn.
+pub const Kind = enum { user, assistant, tool, info, err, banner };
 
 pub const Line = struct {
     kind: Kind,
@@ -98,7 +100,8 @@ pub fn emergencyRestore() void {
 /// into Up/Down on the alternate screen, which scroll too.
 ///
 /// `theme` is the canonical name theme_pref resolved (--theme, WINTERMOLT_THEME,
-/// ~/.wintermolt/.env, then dark); /theme changes it later through App.setTheme.
+/// ~/.wintermolt/.env, then terminal). zortui resolves only its own names, so
+/// main follows App.init with applyTheme, and /theme goes through it too.
 pub fn appOptions(env: zortui.capabilities.Env, clock: zortui.Clock, mouse: bool, theme: []const u8) zortui.AppOptions {
     return .{
         .terminal = .{ .env = env, .title = "wintermolt", .mouse = mouse },
@@ -108,6 +111,13 @@ pub fn appOptions(env: zortui.capabilities.Env, clock: zortui.Clock, mouse: bool
         .focus_navigation = false,
         .clock = clock,
     };
+}
+
+/// Hand the App a theme by name. zortui's App.setTheme knows only zortui's
+/// built-ins and would draw "terminal" as dark, so the palette goes in directly.
+pub fn applyTheme(app: *zortui.App, name: []const u8) void {
+    app.theme = theme_pref.lookup(name);
+    app.force_repaint = true;
 }
 
 // ── inbox ──────────────────────────────────────────────────────────────────
@@ -453,7 +463,7 @@ pub const Session = struct {
             .editor = .init(gpa),
         };
         self.refreshInfo();
-        self.transcript.add(.info, banner);
+        self.transcript.add(.banner, "");
         self.transcript.add(.info, "  Type /help for commands. Esc, Ctrl+C or /quit exits. PgUp/PgDn or the mouse wheel scroll.");
         self.transcript.add(.info, "");
         return self;
@@ -743,9 +753,13 @@ pub const Session = struct {
             tail_count += 1;
         }
 
+        // The banner takes the largest size that fits with the help line and a
+        // blank line under it. Decided every frame, so a resize re-picks it.
+        const art = banner.pick(text_w, height -| 2);
+
         var total: usize = 0;
-        for (self.transcript.lines.items) |l| total += rowsOf(l.kind, l.text, text_w);
-        for (tails[0..tail_count]) |e| total += rowsOf(e.kind, e.text, text_w);
+        for (self.transcript.lines.items) |l| total += rowsOf(l.kind, l.text, text_w, art);
+        for (tails[0..tail_count]) |e| total += rowsOf(e.kind, e.text, text_w, art);
 
         self.scroll = @min(self.scroll, total -| height);
         self.view_rows = height;
@@ -755,11 +769,11 @@ pub const Session = struct {
         var row: usize = 0;
         for (self.transcript.lines.items) |l| {
             if (row >= end_row) break;
-            row = try self.drawEntry(s, .{ .kind = l.kind, .text = l.text }, row, first, end_row, text_w);
+            row = try self.drawEntry(s, .{ .kind = l.kind, .text = l.text }, row, first, end_row, text_w, art);
         }
         for (tails[0..tail_count]) |e| {
             if (row >= end_row) break;
-            row = try self.drawEntry(s, e, row, first, end_row, text_w);
+            row = try self.drawEntry(s, e, row, first, end_row, text_w, art);
         }
 
         zortui.widgets.drawScrollbarWidget(s.sub(@intCast(text_w), 0, 1, height), .{
@@ -770,8 +784,8 @@ pub const Session = struct {
     }
 
     /// Draw the visible rows of one entry. Returns the row after it.
-    fn drawEntry(self: *Session, s: Surface, e: Entry, row: usize, first: usize, end_row: usize, w: usize) !usize {
-        const n = rowsOf(e.kind, e.text, w);
+    fn drawEntry(self: *Session, s: Surface, e: Entry, row: usize, first: usize, end_row: usize, w: usize, art: *const banner.Art) !usize {
+        const n = rowsOf(e.kind, e.text, w, art);
         if (row + n <= first) return row + n;
 
         const theme = s.theme;
@@ -781,6 +795,10 @@ pub const Session = struct {
             .tool => .{ .fg = theme.secondary, .ellipsis = false },
             .info => .{ .fg = theme.muted, .ellipsis = false },
             .err => .{ .fg = theme.danger, .ellipsis = false },
+            .banner => {
+                drawBanner(s, art, row, first, end_row);
+                return row + n;
+            },
         };
         const shown = if (e.kind == .user)
             try std.fmt.allocPrint(self.frame_alloc, "> {s}", .{e.text})
@@ -795,7 +813,29 @@ pub const Session = struct {
         return row + n;
     }
 
-    fn rowsOf(kind: Kind, text: []const u8, w: usize) usize {
+    /// The banner, each run of characters in its role's theme color.
+    fn drawBanner(s: Surface, art: *const banner.Art, row: usize, first: usize, end_row: usize) void {
+        var lines = std.mem.splitScalar(u8, art.text, '\n');
+        var role_lines = std.mem.splitScalar(u8, art.roles, '\n');
+        var r = row;
+        while (lines.next()) |line| : (r += 1) {
+            const roles = role_lines.next() orelse "";
+            if (r < first or r >= end_row) continue;
+            var x: usize = 0;
+            while (x < line.len) {
+                const role = if (x < roles.len) roles[x] else ' ';
+                var end = x + 1;
+                while (end < line.len and end < roles.len and roles[end] == role) end += 1;
+                if (banner.roleOf(role)) |slot| {
+                    _ = s.text(@intCast(x), @intCast(r - first), line[x..end], .{ .fg = roleColor(s.theme, slot), .ellipsis = false });
+                }
+                x = end;
+            }
+        }
+    }
+
+    fn rowsOf(kind: Kind, text: []const u8, w: usize, art: *const banner.Art) usize {
+        if (kind == .banner) return art.height;
         // "> " is added to user lines when drawn; count it the same way.
         const extra: usize = if (kind == .user) 2 else 0;
         if (text.len + extra == 0) return 1;
@@ -833,11 +873,17 @@ pub const Session = struct {
 
 const spinner = [_][]const u8{ "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" };
 
-const banner =
-    \\  ╦ ╦┬┌┐┌┌┬┐┌─┐┬─┐┌┬┐┌─┐┬ ┌┬┐
-    \\  ║║║││││ │ ├┤ ├┬┘││││ ││  │
-    \\  ╚╩╝┴┘└┘ ┴ └─┘┴└─┴ ┴└─┘┴─┘┴
-;
+/// The theme slot a banner role is painted in.
+fn roleColor(theme: *const zortui.theme.Theme, role: banner.Role) zortui.Color {
+    return switch (role) {
+        .accent => theme.accent,
+        .primary => theme.primary,
+        .secondary => theme.secondary,
+        .foreground => theme.foreground,
+        .muted => theme.muted,
+        .warning => theme.warning,
+    };
+}
 
 // ── tests ──────────────────────────────────────────────────────────────────
 // Headless: zortui's testing module renders to cells, no terminal involved.
@@ -1081,7 +1127,7 @@ test "a streamed partial line is visible before its newline, and scrolling clamp
     {
         var screen = try render(&session);
         defer screen.deinit();
-        try testing.expect(screen.contains("╦ ╦")); // clamped to the top: the banner
+        try testing.expect(screen.contains("_       _______")); // clamped to the top: the banner
     }
     session.handleEvent(keyNamed("pagedown"));
     session.scroll = 0;
@@ -1161,7 +1207,80 @@ test "a failed tool call is drawn as an error, a successful one as a tool line" 
 
 // ── themes ─────────────────────────────────────────────────────────────────
 
-test "theme precedence: --theme, then WINTERMOLT_THEME, then saved, then dark" {
+test "the terminal theme is the default, and paints in the terminal's own colors" {
+    try testing.expectEqualStrings("terminal", theme_pref.resolve(null, null, null).name);
+    const t = theme_pref.lookup("terminal");
+    // The terminal's own background and text, not a palette laid over them.
+    try testing.expectEqual(zortui.Color.default, t.background);
+    try testing.expectEqual(zortui.Color.default, t.foreground);
+    // Every other slot is one of the terminal's 16 palette colors, so the
+    // user's scheme decides the hue.
+    inline for (@typeInfo(zortui.theme.Theme).@"struct".fields) |f| {
+        if (f.type == zortui.Color) try expectTerminalColor(@field(t, f.name));
+        if (f.type == []const zortui.Color) for (@field(t, f.name)) |c| try expectTerminalColor(c);
+    }
+}
+
+fn expectTerminalColor(c: zortui.Color) !void {
+    if (c == .default) return;
+    var i: u8 = 0;
+    while (i < 16) : (i += 1) if (c == zortui.Color.ansi256(i)) return;
+    return error.NotATerminalColor;
+}
+
+test "lookup: a zortui theme by name comes back as zortui's palette" {
+    try testing.expectEqual(zortui.theme.dracula.primary, theme_pref.lookup("dracula").primary);
+    try testing.expectEqual(zortui.theme.light.background, theme_pref.lookup("light").background);
+}
+
+test "the banner's colors agree: plain mode's codes are the terminal theme's palette slots" {
+    const t = theme_pref.lookup("terminal");
+    for ([_]u8{ 'A', 'P', 'S', 'F', 'M', 'W' }) |r| {
+        const art: banner.Art = .{ .name = "t", .text = "x", .roles = &[_]u8{r}, .width = 1, .height = 1 };
+        var out: std.Io.Writer.Allocating = .init(testing.allocator);
+        defer out.deinit();
+        try banner.writeAnsi(&out.writer, &art);
+        const s = out.written(); // "\x1b[<n>mx\x1b[0m\n"
+        const code = try std.fmt.parseInt(u8, s[2..std.mem.indexOfScalar(u8, s, 'm').?], 10);
+        const want: zortui.Color = switch (code) {
+            30...37 => .ansi256(code - 30),
+            90...97 => .ansi256(code - 90 + 8),
+            39 => .default,
+            else => return error.UnexpectedCode,
+        };
+        try testing.expectEqual(want, roleColor(&t, banner.roleOf(r).?));
+    }
+}
+
+test "the banner: the ship and its planet when the transcript has room, colored by the theme" {
+    var fake: FakeAgent = .{ .alloc = testing.allocator };
+    defer fake.received.deinit(testing.allocator);
+    var session = Session.init(testing.allocator, fake.runner(), "0.5.0");
+    defer session.deinit();
+    session.theme = "dracula";
+
+    var screen = try zortui.renderToScreen(testing.allocator, 100, 45, session.theme, zortui.Body.with(&session, Session.view));
+    defer screen.deinit();
+    try testing.expect(screen.contains("_.-'''''-._")); // the planet's top: the full banner
+    const name = screen.find("_       _______") orelse return error.NameMissing;
+    try testing.expectEqual(zortui.theme.dracula.accent, screen.cell(name.x, name.y).fg);
+    const palace = screen.find("||::|") orelse return error.WindowsMissing;
+    try testing.expectEqual(zortui.theme.dracula.warning, screen.cell(palace.x + 2, palace.y).fg);
+}
+
+test "the banner: a short transcript gets the lettering alone" {
+    var fake: FakeAgent = .{ .alloc = testing.allocator };
+    defer fake.received.deinit(testing.allocator);
+    var session = Session.init(testing.allocator, fake.runner(), "0.5.0");
+    defer session.deinit();
+
+    var screen = try render(&session); // 80x24: a 17-row transcript
+    defer screen.deinit();
+    try testing.expect(screen.contains("|__/|__/___/_/ |_/")); // the lettering's last row
+    try testing.expect(!screen.contains("_.-'''''-._"));
+}
+
+test "theme precedence: --theme, then WINTERMOLT_THEME, then saved, then terminal" {
     const flag = theme_pref.resolve("nord", "dracula", "gruvbox");
     try testing.expectEqualStrings("nord", flag.name);
     try testing.expectEqual(theme_pref.Source.flag, flag.source);
@@ -1175,13 +1294,13 @@ test "theme precedence: --theme, then WINTERMOLT_THEME, then saved, then dark" {
     try testing.expectEqual(theme_pref.Source.saved, saved.source);
 
     const none = theme_pref.resolve(null, null, null);
-    try testing.expectEqualStrings("dark", none.name);
+    try testing.expectEqualStrings("terminal", none.name);
     try testing.expectEqual(theme_pref.Source.default, none.source);
     try testing.expectEqual(@as(usize, 0), none.rejected().len);
 
     // Blank is "not given", not an unknown name.
     const blank = theme_pref.resolve("", "  ", null);
-    try testing.expectEqualStrings("dark", blank.name);
+    try testing.expectEqualStrings("terminal", blank.name);
     try testing.expectEqual(@as(usize, 0), blank.rejected().len);
 
     // The app starts in whatever was resolved.
@@ -1199,6 +1318,7 @@ test "theme names: the name or the key, in any case" {
         .{ .given = "highcontrast", .want = "high-contrast" },
         .{ .given = " Dracula ", .want = "dracula" },
         .{ .given = "\"light\"", .want = "light" },
+        .{ .given = "Terminal", .want = "terminal" },
     };
     for (cases) |c| {
         const got = theme_pref.canonical(c.given) orelse return error.NameNotResolved;
@@ -1217,7 +1337,7 @@ test "an unknown theme is reported and the next source decides" {
     try testing.expectEqualStrings("solarized", r.rejected()[0].value);
 
     const all_bad = theme_pref.resolve("a", "b", "c");
-    try testing.expectEqualStrings("dark", all_bad.name);
+    try testing.expectEqualStrings("terminal", all_bad.name);
     try testing.expectEqual(@as(usize, 3), all_bad.rejected().len);
     try testing.expectEqual(theme_pref.Source.saved, all_bad.rejected()[2].source);
 
@@ -1225,7 +1345,7 @@ test "an unknown theme is reported and the next source decides" {
     defer msg.deinit();
     try theme_pref.writeUnknown(&msg.writer, "solarized", .flag);
     try testing.expectEqualStrings(
-        "Unknown theme 'solarized' (from --theme). Themes: dark, dracula, nord, tokyo-night, gruvbox, matrix, monochrome, high-contrast, light.",
+        "Unknown theme 'solarized' (from --theme). Themes: terminal, dark, dracula, nord, tokyo-night, gruvbox, matrix, monochrome, high-contrast, light.",
         msg.written(),
     );
 
@@ -1238,14 +1358,14 @@ test "an unknown theme is reported and the next source decides" {
     session.handleEvent(keyNamed("enter"));
     const last = session.transcript.lines.items[session.transcript.lines.items.len - 1];
     try testing.expectEqual(Kind.err, last.kind);
-    try testing.expect(std.mem.startsWith(u8, last.text, "[error] Unknown theme 'solarized'. Themes: dark, dracula,"));
-    try testing.expectEqualStrings("dark", session.theme);
+    try testing.expect(std.mem.startsWith(u8, last.text, "[error] Unknown theme 'solarized'. Themes: terminal, dark,"));
+    try testing.expectEqualStrings("terminal", session.theme);
     try testing.expect(session.takeThemeChange() == null);
     try testing.expect(fake.theme_saved == null);
     try testing.expect(!session.busy);
 }
 
-test "/theme lists all nine themes with the current one marked" {
+test "/theme lists all ten themes with the current one marked" {
     var fake: FakeAgent = .{ .alloc = testing.allocator };
     defer fake.received.deinit(testing.allocator);
     var session = Session.init(testing.allocator, fake.runner(), "0.5.0");
@@ -1269,7 +1389,7 @@ test "/theme lists all nine themes with the current one marked" {
 
     var marked: usize = 0;
     var found: usize = 0;
-    for (zortui.theme.themes) |t| {
+    for (theme_pref.all) |t| {
         for (listing[1..]) |l| {
             const name = std.mem.trimStart(u8, l.text[2..], " ");
             if (!std.mem.startsWith(u8, name, t.theme.name)) continue;
@@ -1281,9 +1401,9 @@ test "/theme lists all nine themes with the current one marked" {
             }
         }
     }
-    try testing.expectEqual(@as(usize, 9), found);
+    try testing.expectEqual(@as(usize, 10), found);
     try testing.expectEqual(@as(usize, 1), marked);
-    try testing.expectEqual(@as(usize, 10), listing.len); // the heading and nine themes
+    try testing.expectEqual(@as(usize, 11), listing.len); // the heading and ten themes
 }
 
 test "/theme <name> switches live: the next render uses the new palette, and it is saved" {
@@ -1291,6 +1411,7 @@ test "/theme <name> switches live: the next render uses the new palette, and it 
     defer fake.received.deinit(testing.allocator);
     var session = Session.init(testing.allocator, fake.runner(), "0.5.0");
     defer session.deinit();
+    session.theme = "dark"; // a zortui palette, so this render can draw it
     session.transcript.push(.user, "hello");
 
     const before = blk: {

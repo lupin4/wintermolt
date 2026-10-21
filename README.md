@@ -533,16 +533,18 @@ default, which scrolls the transcript; other terminals may need their
 and the terminal can no longer select (many terminals still select with
 Shift+drag).
 
-**Themes.** Nine palettes from zortui: `dark` (the default), `dracula`, `nord`,
+**Themes.** `terminal` (the default) uses your terminal's own background and
+its 16 colors, so the full-screen view matches whatever scheme the terminal
+has. Nine more palettes come from zortui: `dark`, `dracula`, `nord`,
 `tokyo-night`, `gruvbox`, `matrix`, `monochrome`, `high-contrast` and `light`.
 Either spelling works, in any case (`tokyo-night` or `tokyoNight`). The
-full-screen view and canvas surfaces both use the theme, taken from the first
-of these that names a real theme:
+full-screen view and canvas surfaces both use the theme (canvas surfaces draw
+`terminal` as `dark`), taken from the first of these that names a real theme:
 
 1. `wintermolt --theme <name>`, for that run;
 2. `WINTERMOLT_THEME=<name>` in the environment;
 3. the theme `/theme` saved in `~/.wintermolt/.env`;
-4. `dark`.
+4. `terminal`.
 
 A name that is not a theme is reported with the list of valid names (an
 `[error]` line in the full-screen view) and the next source is used. `/theme`

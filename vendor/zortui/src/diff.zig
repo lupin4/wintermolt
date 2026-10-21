@@ -79,7 +79,11 @@ pub const Encoder = struct {
         }
         const col = if (self.monochrome) c.grayscale() else c;
         switch (self.colors) {
-            .truecolor => try ansi.fgTrue(&self.parts, self.allocator, col.red(), col.green(), col.blue()),
+            // A palette index names the terminal's own color; it stays an index.
+            .truecolor => if (col.isIndexed())
+                try ansi.fg256(&self.parts, self.allocator, col.to256())
+            else
+                try ansi.fgTrue(&self.parts, self.allocator, col.red(), col.green(), col.blue()),
             .ansi256 => try ansi.fg256(&self.parts, self.allocator, col.to256()),
             else => try ansi.fg16(&self.parts, self.allocator, col.to16()),
         }
@@ -93,7 +97,10 @@ pub const Encoder = struct {
         }
         const col = if (self.monochrome) c.grayscale() else c;
         switch (self.colors) {
-            .truecolor => try ansi.bgTrue(&self.parts, self.allocator, col.red(), col.green(), col.blue()),
+            .truecolor => if (col.isIndexed())
+                try ansi.bg256(&self.parts, self.allocator, col.to256())
+            else
+                try ansi.bgTrue(&self.parts, self.allocator, col.red(), col.green(), col.blue()),
             .ansi256 => try ansi.bg256(&self.parts, self.allocator, col.to256()),
             else => try ansi.bg16(&self.parts, self.allocator, col.to16()),
         }
@@ -277,4 +284,18 @@ pub fn encodeFull(
     defer encoder.deinit();
     const result = try encoder.encode(&empty, buf, true);
     return allocator.dupe(u8, result.output);
+}
+
+test "a palette index stays a palette index at truecolor depth" {
+    // Read as RGB, ansi256(8)'s packed bits are 0,0,8: near-black, where the
+    // terminal's own color 8 was asked for.
+    const gpa = std.testing.allocator;
+    var fb = try FrameBuffer.init(gpa, 2, 1);
+    defer fb.deinit();
+    _ = fb.write(0, 0, "hi", .{ .fg = Color.ansi256(8), .bg = Color.ansi256(4) });
+    const out = try encodeFull(gpa, &fb, .{ .colors = .truecolor });
+    defer gpa.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\x1b[38;5;8m") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\x1b[48;5;4m") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "38;2;") == null);
 }

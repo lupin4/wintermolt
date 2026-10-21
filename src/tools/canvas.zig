@@ -46,6 +46,7 @@ fn handleCreateOrUpdate(alloc: Allocator, surface_id: []const u8, input_json: []
 
     // Terminal mode: render with TUI, in the theme the user selected
     // (--theme, WINTERMOLT_THEME, ~/.wintermolt/.env, /theme; theme_pref.zig).
+    // zortui renders by name, so "terminal" falls back to zortui's dark here.
     const rendered = tui.renderSurfaceThemed(alloc, input_json, theme_pref.selected()) catch |e| {
         return std.fmt.allocPrint(alloc, "Canvas TUI render error: {s}", .{@errorName(e)});
     };

@@ -378,6 +378,17 @@ pub fn build(b: *std.Build) void {
     });
     test_step.dependOn(&b.addRunArtifact(tool_status_test).step);
 
+    // The startup banner: which size fits, and how roles become colors. Pure,
+    // rooted on its own for the same reason.
+    const banner_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/banner.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    test_step.dependOn(&b.addRunArtifact(banner_test).step);
+
     // Skill manifests, and `skills use` handing a skill's role prompt to the
     // model. Its own root for the same reason; libc for fsio and bash.zig.
     const skill_loader_test = b.addTest(.{

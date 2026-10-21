@@ -39,6 +39,16 @@ extern "kernel32" fn GetConsoleOutputCP() callconv(.winapi) u32;
 extern "kernel32" fn SetConsoleOutputCP(wCodePageID: u32) callconv(.winapi) c_int;
 extern "kernel32" fn GetConsoleCP() callconv(.winapi) u32;
 extern "kernel32" fn SetConsoleCP(wCodePageID: u32) callconv(.winapi) c_int;
+const COORD = extern struct { X: i16, Y: i16 };
+const SMALL_RECT = extern struct { Left: i16, Top: i16, Right: i16, Bottom: i16 };
+const CONSOLE_SCREEN_BUFFER_INFO = extern struct {
+    dwSize: COORD,
+    dwCursorPosition: COORD,
+    wAttributes: u16,
+    srWindow: SMALL_RECT,
+    dwMaximumWindowSize: COORD,
+};
+extern "kernel32" fn GetConsoleScreenBufferInfo(hConsoleOutput: HANDLE, lpConsoleScreenBufferInfo: *CONSOLE_SCREEN_BUFFER_INFO) callconv(.winapi) c_int;
 extern "kernel32" fn GetEnvironmentVariableW(lpName: [*:0]const u16, lpBuffer: ?[*]u16, nSize: u32) callconv(.winapi) u32;
 extern "kernel32" fn SetEnvironmentVariableW(lpName: [*:0]const u16, lpValue: ?[*:0]const u16) callconv(.winapi) c_int;
 
@@ -56,6 +66,18 @@ pub fn isConsole(handle: ?HANDLE) bool {
     const h = handle orelse return false;
     var mode: u32 = 0;
     return GetConsoleMode(h, &mode) != 0;
+}
+
+/// The visible part of stdout's console, in cells: srWindow, not dwSize, which
+/// is the whole buffer with its scrollback. Null when stdout is not a console.
+pub fn consoleWindowSize() ?struct { columns: usize, rows: usize } {
+    const h = stdHandle(STD_OUTPUT_HANDLE) orelse return null;
+    var info: CONSOLE_SCREEN_BUFFER_INFO = undefined;
+    if (GetConsoleScreenBufferInfo(h, &info) == 0) return null;
+    const columns = @as(i32, info.srWindow.Right) - info.srWindow.Left + 1;
+    const rows = @as(i32, info.srWindow.Bottom) - info.srWindow.Top + 1;
+    if (columns <= 0 or rows <= 0) return null;
+    return .{ .columns = @intCast(columns), .rows = @intCast(rows) };
 }
 
 pub const IoError = error{IoFailed};

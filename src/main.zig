@@ -42,6 +42,7 @@ const setup = @import("setup.zig");
 const export_mod = @import("agent/export.zig");
 const tui = @import("tui.zig");
 const theme_pref = @import("theme_pref.zig");
+const banner = @import("banner.zig");
 const zortui = @import("zortui");
 
 const VERSION = "0.5.0";
@@ -683,7 +684,7 @@ fn saveTheme(alloc: std.mem.Allocator, name: []const u8) !void {
     try theme_pref.save(alloc, fsio.io(), fsio.cwd(), path, name);
 }
 
-/// "[theme] Unknown theme 'x' (from --theme). Themes: .... Using dark (the default)."
+/// "[theme] Unknown theme 'x' (from --theme). Themes: .... Using terminal (the default)."
 fn reportThemeRejections(w: anytype, choice: *const theme_pref.Resolved) !void {
     for (choice.rejected()) |r| {
         try w.writeAll("[theme] ");
@@ -802,6 +803,7 @@ fn runTui(
         gpa,
         tui.appOptions(.fromEnviron(&init.minimal.environ), fsio.monoNs, tuiMouseRequestedByEnv(), theme_choice.name),
     ) catch return error.TuiUnavailable;
+    tui.applyTheme(&app, theme_choice.name);
 
     // Theme names that were given but are not themes: [error] lines up top.
     for (theme_choice.rejected()) |r| {
@@ -843,7 +845,7 @@ fn tuiLoop(app: *zortui.App, session: *tui.Session) !void {
         // sink's back. Ctrl+L does the same on demand.
         if (session.pump() or session.takeRedraw()) app.redraw();
         // /theme: the next frame is drawn, in full, in the new palette.
-        if (session.takeThemeChange()) |name| app.setTheme(name);
+        if (session.takeThemeChange()) |name| tui.applyTheme(app, name);
         _ = try app.draw(zortui.Body.with(session, tui.Session.view));
     }
 }
@@ -1465,14 +1467,12 @@ fn handleTailscale(alloc: std.mem.Allocator, w: anytype, _stderr: anytype) !void
 // Banner and help
 // ---------------------------------------------------------------------------
 
-fn printBanner(w: anytype) !void {
-    try w.writeAll(
-        \\
-        \\  ╦ ╦┬┌┐┌┌┬┐┌─┐┬─┐┌┬┐┌─┐┬ ┌┬┐
-        \\  ║║║││││ │ ├┤ ├┬┘││││ ││  │
-        \\  ╚╩╝┴┘└┘ ┴ └─┘┴└─┴ ┴└─┘┴─┘┴
-        \\
-    );
+/// The banner sized to the window and painted in the terminal's own colors;
+/// piped output and NO_COLOR get the plain lettering (banner.zig).
+fn printBanner(w: *std.Io.Writer) !void {
+    const color = banner.colorWanted(compat.stdoutIsTerminal(), compat.getenv("NO_COLOR"), compat.getenv("TERM"));
+    const size: ?banner.Size = if (compat.terminalSize()) |s| .{ .columns = s.columns, .rows = s.rows } else null;
+    try banner.write(w, banner.forPlain(size, color));
     try w.print("  v{s} — Lite AI Agent CLI (MIT)\n", .{VERSION});
     try w.writeAll("  Type /help for commands, /quit to exit.\n\n");
 }
@@ -1554,7 +1554,7 @@ fn printHelp(w: anytype) !void {
         \\  WINTERMOLT_TUI_MOUSE=1 — Full-screen view takes the mouse (wheel, clicks);
         \\                         the terminal can then no longer select text
         \\  WINTERMOLT_THEME=NAME  — Theme, below --theme and above the one /theme saved
-        \\                         in ~/.wintermolt/.env (default: dark)
+        \\                         in ~/.wintermolt/.env (default: terminal)
         \\
     );
 }
