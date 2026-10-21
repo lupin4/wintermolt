@@ -45,7 +45,7 @@ const theme_pref = @import("theme_pref.zig");
 const banner = @import("banner.zig");
 const zortui = @import("zortui");
 
-const VERSION = "0.5.0";
+const VERSION = "0.6.0";
 
 /// A panic while the TUI owns the terminal would leave the shell in raw mode on
 /// the alternate screen, with the panic message drawn somewhere invisible. Put

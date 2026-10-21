@@ -6,8 +6,33 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-10-21
+
 ### Added
 
+- **Any OpenAI-compatible server.** `WINTERMOLT_OPENAI_URL` is the full Chat
+  Completions URL the `openai` backend calls (default
+  `https://api.openai.com/v1/chat/completions`), so LiteLLM, vLLM, a
+  llama.cpp server, OpenRouter or a hosted gateway can stand in, with its
+  token in `OPENAI_API_KEY` (#1).
+- **`WINTERMOLT_NO_FALLBACK=1`**: a failed request fails, instead of being
+  answered by Ollama or OpenAI. `-e` then exits 1, so a harness that asked
+  for one provider sees that provider fail.
+- **`WINTERMOLT_NO_TOOLS=1`**: no tool definitions are sent, so a model
+  without function calling can run. Before, any request declaring tools was
+  refused by such a model's server.
+- **`WINTERMOLT_STALL_TIMEOUT`**: seconds a model request may receive
+  nothing before it is dropped (default 180, `0` = never). See Changed.
+- **A Straylight startup banner.** WINTERMOLT in slant lettering in front of
+  an ASCII Villa Straylight and its planet, colored from the terminal's own
+  16 colors in the plain REPL and from the active theme in the full-screen
+  view. The largest of three sizes that fits is shown; piped output and
+  `NO_COLOR` get the lettering, uncolored. The generator and its source image
+  are in `docs/ANSI_art/wintermolt`.
+- **A `terminal` theme, now the default.** The full-screen view uses the
+  terminal's own palette and background, so it matches whatever scheme the
+  terminal has. zortui's nine themes are still a `/theme` away.
+- **`-Dstrip=true`** builds a binary without debug info.
 - **Full-screen chat is the default interactive mode in a terminal.** When
   stdin and stdout are both a terminal (GetConsoleMode on Windows, isatty
   elsewhere), `wintermolt` opens a TUI built on zortui. It has a scrolling
@@ -31,7 +56,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `monochrome`, `high-contrast`, `light`) with `--theme <name>`,
   `WINTERMOLT_THEME`, or `/theme <name>`, which switches the running view at
   once and saves `WINTERMOLT_THEME=<name>` in `~/.wintermolt/.env`. Precedence
-  is flag, environment, saved, then `dark`; an unknown name lists the valid
+  is flag, environment, saved, then `terminal`; an unknown name lists the valid
   ones and the next source is used. `/theme` alone lists them. Canvas surfaces
   follow the same theme (`canvas/tui.zig` gains `renderSurfaceThemed`).
 - **Linux x86_64 binary.** `prebuilt/wintermolt-linux-x86_64` ships for the
@@ -39,6 +64,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **A model request is dropped only when it stalls.** Each client capped the
+  whole request (90 s for the OpenAI-compatible ones, 120 s for Claude, 180 s
+  for Ollama), so a long answer that was still streaming, or a local engine
+  still warming up, ended in "Timeout was reached". Now nothing caps the
+  total; a request is dropped after `WINTERMOLT_STALL_TIMEOUT` seconds with
+  nothing received. Connect timeouts are unchanged.
+- **The `forai` backend is in-process only.** Its old HTTP mode is the
+  `openai` backend with `WINTERMOLT_OPENAI_URL`; `WINTERMOLT_FORAI_URL` and
+  `WINTERMOLT_FORAI_MODEL` are no longer read.
+- **Zig 0.16 everywhere it is named**: the README badge, and the linX86 CI
+  pin, which was still 0.15.2. The first Zig 0.17 blocker (the `**`
+  array-repeat operator) is gone; 0.17 does not build yet.
+- **Linux binaries state their glibc floor**, and the README has a musl
+  (Alpine) build route (#2).
 - **Skills take effect.** The `skills` tool gains `operation='use'`, which
   hands a skill's `role_prompt` to the model as instructions for the current
   task, on whatever backend is running; calling a prompt skill by name does
@@ -82,6 +121,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **`-e` exited 0 when no backend answered**, so a script could not tell a
+  failure from an answer. It now exits 1.
+- **The full-screen view drew palette colors as near-black.** At truecolor
+  depth zortui sent a palette index as 24-bit RGB; it now sends `38;5;n`
+  (vendored zortui 8f6df19).
 - **Runtime skills never loaded.** `AgentLoop` created the skill registry
   and never filled it, so no skill from `./skills`, `~/.wintermolt/skills` or
   a plugin reached the model in any mode, bash and MCP skills included.
