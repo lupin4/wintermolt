@@ -14,6 +14,7 @@
 
 const std = @import("std");
 const curl_tls = @import("../curl_tls.zig");
+const curl_timeouts = @import("curl_timeouts.zig");
 const stdio = @import("../stdio.zig");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
@@ -193,9 +194,9 @@ pub const OllamaClient = struct {
         _ = curl_easy_setopt(handle, CURLOPT_WRITEFUNCTION, &writeCallback);
         _ = curl_easy_setopt(handle, CURLOPT_WRITEDATA, &parser);
 
-        // Timeouts: 5s connect (local), 180s total (local models can be slow to generate)
-        _ = curl_easy_setopt(handle, CURLOPT_CONNECTTIMEOUT, @as(c_long, 5));
-        _ = curl_easy_setopt(handle, CURLOPT_TIMEOUT, @as(c_long, 180));
+        // 5s connect (local); after that only a stream gone quiet is dropped,
+        // so a slow model can generate for as long as it keeps generating
+        curl_timeouts.apply(handle, 5);
 
         // Perform request
         const result = curl_easy_perform(handle);

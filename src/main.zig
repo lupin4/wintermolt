@@ -1557,6 +1557,11 @@ fn printHelp(w: anytype) !void {
         \\  DEEPSEEK_API_KEY     — DeepSeek API key
         \\  QWEN_API_KEY         — Qwen API key
         \\  TAILSCALE_API_KEY    — Tailscale API key (optional, for device list)
+        \\  WINTERMOLT_NO_FALLBACK=1 — A failed request fails (-e exits 1) instead of
+        \\                         being answered by Ollama or OpenAI
+        \\  WINTERMOLT_NO_TOOLS=1  — Send no tool definitions (models without function calling)
+        \\  WINTERMOLT_STALL_TIMEOUT=SECS — Drop a model request after SECS with nothing
+        \\                         received (default: 180; 0 = never)
         \\  WINTERMOLT_PLAIN=1   — Same as --plain: never open the full-screen view
         \\  WINTERMOLT_TUI_MOUSE=1 — Full-screen view takes the mouse (wheel, clicks);
         \\                         the terminal can then no longer select text

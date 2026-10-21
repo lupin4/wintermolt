@@ -700,6 +700,9 @@ wintermolt (one native binary, 6–14 MB)
 |:---------|:--------|:------------|
 | `WINTERMOLT_TOKENS` | `8192` | Max output tokens |
 | `WINTERMOLT_NO_HISTORY` | — | Set `1` to disable SQLite persistence |
+| `WINTERMOLT_NO_FALLBACK` | — | Set `1` so a failed request fails, instead of being answered by Ollama or OpenAI; `-e` then exits 1 |
+| `WINTERMOLT_NO_TOOLS` | — | Set `1` to send no tool definitions, for models without function calling |
+| `WINTERMOLT_STALL_TIMEOUT` | `180` | Seconds a model request may receive nothing before it is dropped; a stream that keeps arriving is never cut off (`0` = never) |
 | `TAILSCALE_API_KEY` | — | Tailscale REST API key (optional) |
 | `PINECONE_API_KEY` | — | Pinecone API key (enables RAG memory) |
 | `PINECONE_HOST` | — | Pinecone index host URL |

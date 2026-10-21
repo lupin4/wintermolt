@@ -378,6 +378,19 @@ pub fn build(b: *std.Build) void {
     });
     test_step.dependOn(&b.addRunArtifact(tool_status_test).step);
 
+    // How long a model request may go quiet (WINTERMOLT_STALL_TIMEOUT). Its own
+    // root for the same reason, kept in src/ so the file can reach compat.zig;
+    // libc for getenv.
+    const curl_timeouts_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/curl_timeouts_tests.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+    });
+    test_step.dependOn(&b.addRunArtifact(curl_timeouts_test).step);
+
     // The startup banner: which size fits, and how roles become colors. Pure,
     // rooted on its own for the same reason.
     const banner_test = b.addTest(.{
@@ -433,7 +446,27 @@ pub fn build(b: *std.Build) void {
     cli_unanswered.setEnvironmentVariable("WINTERMOLT_NO_HISTORY", "1");
     cli_unanswered.expectExitCode(1);
     test_step.dependOn(&cli_unanswered.step);
-    b.step("test-cli", "Run the binary end to end (-e exit status)").dependOn(&cli_unanswered.step);
+    const test_cli = b.step("test-cli", "Run the binary end to end (-e exit status, fallback off)");
+    test_cli.dependOn(&cli_unanswered.step);
+
+    // The same run with WINTERMOLT_NO_FALLBACK=1: the primary's failure is the
+    // run's failure, and stderr says the chain was skipped rather than
+    // exhausted. That nothing else was ASKED is checked against a stub that
+    // would answer (see the commit), which a build step has no server for.
+    const cli_no_fallback = b.addRunArtifact(exe);
+    cli_no_fallback.setName("run wintermolt -e with the fallback off");
+    cli_no_fallback.addArgs(&.{ "-e", "hi" });
+    cli_no_fallback.clearEnvironment();
+    if (b.graph.environ_map.get("SystemRoot")) |root| {
+        cli_no_fallback.setEnvironmentVariable("SystemRoot", root);
+    }
+    cli_no_fallback.setEnvironmentVariable("WINTERMOLT_OLLAMA_URL", "http://127.0.0.1:9");
+    cli_no_fallback.setEnvironmentVariable("WINTERMOLT_NO_HISTORY", "1");
+    cli_no_fallback.setEnvironmentVariable("WINTERMOLT_NO_FALLBACK", "1");
+    cli_no_fallback.addCheck(.{ .expect_stderr_match = "[fallback] off" });
+    cli_no_fallback.expectExitCode(1);
+    test_step.dependOn(&cli_no_fallback.step);
+    test_cli.dependOn(&cli_no_fallback.step);
 }
 
 fn getShortTargetName(t: std.Target) []const u8 {

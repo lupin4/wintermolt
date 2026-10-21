@@ -270,8 +270,14 @@ pub const AgentLoop = struct {
         }
         defer tools.setSubagentManager(null, 0);
 
-        // Get relevant tool definitions based on user message
-        const relevant_tools = tools.getRelevantDefinitions(user_text);
+        // Get relevant tool definitions based on user message. None at all with
+        // WINTERMOLT_NO_TOOLS=1: a model without function calling refuses any
+        // request that declares tools, and every client omits the field when
+        // the list is empty.
+        const relevant_tools: []const protocol.ToolDefinition = if (self.config.tools_enabled)
+            tools.getRelevantDefinitions(user_text)
+        else
+            &.{};
 
         var iteration: usize = 0;
         while (iteration < MAX_ITERATIONS) : (iteration += 1) {
@@ -477,6 +483,15 @@ pub const AgentLoop = struct {
                 .kernel => "Kernel",
                 .forai => "forAI",
             };
+
+            // WINTERMOLT_NO_FALLBACK=1: the backend that was asked is the only one
+            // that may answer, so a harness sees its failure in the exit status
+            // instead of an Ollama answer standing in for it.
+            if (!self.config.fallback_enabled) {
+                stderr.print("\n[fallback] off (WINTERMOLT_NO_FALLBACK=1): {s} failed ({s})\n", .{ backend_name, @errorName(primary_err) }) catch {};
+                return primary_err;
+            }
+
             stderr.print("\n[fallback] {s} failed ({s}), trying alternatives...\n", .{ backend_name, @errorName(primary_err) }) catch {};
 
             // Fallback: try Ollama (local, free)
