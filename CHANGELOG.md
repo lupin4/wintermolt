@@ -31,6 +31,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - **The Linux arm64 prebuilt ships stripped**: 10.6 MB → 1.6 MB (#2). Crash
   backtraces lose file and line numbers, as `-Dstrip=true` documents.
+- **The macOS prebuilt ships stripped**: 6.2 MB → 5.8 MB, with the same
+  backtrace trade-off.
 
 ## [0.6.0] — 2026-10-21
 
