@@ -29,10 +29,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
-- **The Linux arm64 prebuilt ships stripped**: 10.6 MB → 1.6 MB (#2). Crash
+- **The Linux arm64 prebuilt ships stripped**: 11.1 MB → 1.6 MB (#2). Crash
   backtraces lose file and line numbers, as `-Dstrip=true` documents.
-- **The macOS prebuilt ships stripped**: 6.2 MB → 5.8 MB, with the same
+- **The macOS prebuilt ships stripped**: 6.5 MB → 6.1 MB, with the same
   backtrace trade-off.
+- **The Linux x86_64 prebuilt ships stripped**: 11.0 MB → 1.8 MB, with the
+  same trade-off. It is now built by `.github/workflows/linX86-release.yml`, in
+  the Ubuntu 22.04 container that the Release Builds section prescribes.
 
 ## [0.6.0] — 2026-10-21
 
