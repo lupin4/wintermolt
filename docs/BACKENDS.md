@@ -74,7 +74,12 @@ refusal looks like on stderr:
   <provider text>` and does fall back (see below).
 
 An HTTP failure prints the status, not the provider's own error body; the `200`
-error frame is the one shape whose message is relayed.
+error frame is the one shape whose message is relayed. For a local engine that
+body is where the models it does serve are named, and it is dropped too: an
+engine holding only `Ornith-1.5-9B-MLX-4bit` answers a
+`WINTERMOLT_MODEL=qwen3:8b` request with `404` and that list, and wintermolt
+prints `[openai HTTP 404] Request failed` in its place. Ask the engine for the
+names it will answer to — `GET /v1/models` on the OpenAI-compatible route.
 
 Setting the variable is an explicit request, so a backend that cannot be built —
 a mistyped name, a cloud backend without its key, `forai` on a build without the
