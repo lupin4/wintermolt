@@ -1,0 +1,81 @@
+name: Wintermolt linX86 release binary
+
+# Builds the binary published as prebuilt/wintermolt-linux-x86_64, the way the
+# README's "Release Builds" section says to: natively in an Ubuntu 22.04
+# container, whose glibc 2.35 gives a 2.34 floor (#2), with -Dcpu=x86_64_v3,
+# stripped like the arm64 and macOS releases, and never -Dtarget=, which makes
+# Zig stop finding libcurl and libsqlite3
+# (build.zig:48). The dep kernels are the committed prebuilt/linX86/lib archives.
+#
+# Each check below is one the last linX86 release (41b974a) recorded by hand.
+# The binary is uploaded as an artifact only. Committing it to prebuilt/ and
+# attaching it to a release stays a manual step, after review.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: ubuntu:22.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Install build and check tools
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends \
+            libcurl4-openssl-dev libsqlite3-dev \
+            ca-certificates curl xz-utils zstd git file binutils
+
+      - uses: actions/checkout@v4
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Build
+        run: zig build -Doptimize=ReleaseFast -Dcpu=x86_64_v3 -Dstrip=true
+
+      - name: Test
+        run: zig build test --summary all
+
+      - name: Check the binary
+        run: |
+          set -eu
+          B=zig-out/bin/wintermolt
+          file "$B"
+          ls -l "$B"
+          "$B" --version
+
+          floor=$(objdump -T "$B" | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)
+          echo "highest glibc import: $floor"
+          [ "$(printf '%s\nGLIBC_2.34\n' "$floor" | sort -V | tail -1)" = GLIBC_2.34 ]
+
+          zmm=$(objdump -d "$B" | grep -c zmm || true)
+          echo "zmm (AVX-512) instructions: $zmm"
+          [ "$zmm" -eq 0 ]
+          echo "ymm (AVX2) instructions: $(objdump -d "$B" | grep -c ymm || true)"
+
+          readelf -d "$B" | grep NEEDED
+          if readelf -d "$B" | grep -E 'RUNPATH|RPATH'; then exit 1; fi
+
+          printf '/stats\n/quit\n' | "$B"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wintermolt-linux-x86_64
+          path: zig-out/bin/wintermolt
+          retention-days: 14
+
+      - name: Agent loop against local Ollama
+        run: |
+          set -eu
+          curl -fsSL https://ollama.com/install.sh | sh
+          ollama serve > /tmp/ollama.log 2>&1 &
+          for i in $(seq 30); do curl -fs http://localhost:11434/api/tags > /dev/null && break; sleep 1; done
+          ollama pull qwen3:0.6b
+          WINTERMOLT_MODEL=qwen3:0.6b zig-out/bin/wintermolt -e "Reply with exactly: WINTERMOLT OK"

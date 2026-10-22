@@ -6,6 +6,37 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **The Linux arm64 prebuilt drops to glibc 2.34+** (was 2.36+), so it starts
+  on Ubuntu 22.04 / JetPack 6, Debian 12 and RHEL 9 — the same floor the
+  x86_64 prebuilt already had (#2). The 2.36 import was `arc4random_buf`,
+  which `std.Io` binds only when the TARGET glibc is 2.36 or newer
+  (`std/c.zig`); a native build on a Thor running Ubuntu 24.04 (glibc 2.39)
+  passed that check, so the symbol was an artifact of the build machine, not
+  of any code. The arm64 release is now built in an Ubuntu 22.04 container,
+  as the x86_64 one already was, and `std.Io` falls through to `getrandom`.
+  Verified: the dep archives were NOT the cause — rebuilding
+  forMCP/forNet/forNLP against a 2.34 target produced a byte-identical
+  binary, because the members that reference `arc4random_buf` are never
+  linked in.
+- **The macOS prebuilt links the system libcurl** (`/usr/lib/libcurl.4.dylib`),
+  so it starts on a Mac without Homebrew's curl. `build.zig` skips pkg-config
+  for curl on macOS: with Homebrew's curl installed, pkg-config had pointed the
+  link at `/opt/homebrew/opt/curl`, and the 0.5.0 binary carried that path. It
+  still requires macOS 27.2+, the version of the machine that built it. A
+  floor of 26 waits on six dep archives that were compiled for 26.4–27.0 (#5).
+
+### Changed
+
+- **The Linux arm64 prebuilt ships stripped**: 11.1 MB → 1.6 MB (#2). Crash
+  backtraces lose file and line numbers, as `-Dstrip=true` documents.
+- **The macOS prebuilt ships stripped**: 6.5 MB → 6.1 MB, with the same
+  backtrace trade-off.
+- **The Linux x86_64 prebuilt ships stripped**: 11.0 MB → 1.8 MB, with the
+  same trade-off. It is now built by `.github/workflows/linX86-release.yml`, in
+  the Ubuntu 22.04 container that the Release Builds section prescribes.
+
 ## [0.6.0] — 2026-10-21
 
 ### Added

@@ -15,7 +15,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/lang-Zig_0.16-f7a41d?style=flat-square&logo=zig&logoColor=white" alt="Zig">
   <img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="License">
-  <img src="https://img.shields.io/badge/binary-1%E2%80%9312_MB-brightgreen?style=flat-square" alt="Size">
+  <img src="https://img.shields.io/badge/binary-1%E2%80%9314_MB-brightgreen?style=flat-square" alt="Size">
   <img src="https://img.shields.io/badge/platforms-macOS_%7C_Linux_%7C_Windows-success?style=flat-square" alt="Platforms">
   <img src="https://img.shields.io/badge/deps-2_(libcurl%2C_sqlite3)-orange?style=flat-square" alt="Dependencies">
   <img src="https://img.shields.io/badge/backends-7_(Ollama%2C_Claude%2C_GPT%2C_DeepSeek%2C_Qwen%2C_Gemini%2C_forAI)-purple?style=flat-square" alt="Backends">
@@ -52,11 +52,11 @@ Tailscale peers:
 
 ## Why Wintermolt?
 
-Most AI coding tools ship hundreds of megabytes of Electron or Node.js runtime just to send API calls and edit files. Wintermolt compiles to a **single native binary** — about 6 MB on macOS Apple Silicon, 11 MB on Linux, 14 MB on Windows (statically-linked HTTP/3 stack) — and builds natively on macOS, Linux and Windows, including ARM boards like Jetson and Raspberry Pi.
+Most AI coding tools ship hundreds of megabytes of Electron or Node.js runtime just to send API calls and edit files. Wintermolt compiles to a **single native binary** — about 6 MB on macOS Apple Silicon, 1.6 MB on Linux arm64 and 1.8 MB on Linux x86_64 (stripped), 14 MB on Windows (statically-linked HTTP/3 stack) — and builds natively on macOS, Linux and Windows, including ARM boards like Jetson and Raspberry Pi.
 
 | | Wintermolt | Claude Code | Cursor | Aider |
 |---|:---:|:---:|:---:|:---:|
-| **Binary size** | **6–14 MB** | ~200 MB | ~500 MB | ~50 MB |
+| **Binary size** | **1.6–14 MB** | ~200 MB | ~500 MB | ~50 MB |
 | **Runtime** | **None** | Node.js 18+ | Electron | Python 3.8+ |
 | **Runs on Jetson/Pi** | **Yes** | Barely | No | Slow |
 | **Runs on Windows** | **Yes (v0.4+)** | Via WSL | Yes | Yes |
@@ -146,9 +146,9 @@ That's it. You're running.
 
 | Platform | Binary | Size | Notes |
 |:---|:---|---:|:---|
-| macOS arm64 | [`wintermolt-macos`](prebuilt/wintermolt-macos) | 6.2 MB | Mach-O, dynamic libcurl + sqlite3 |
-| Linux arm64 | [`wintermolt-linux-arm64`](prebuilt/wintermolt-linux-arm64) | 10.6 MB | ELF aarch64, dynamic libcurl + sqlite3. glibc 2.36+ (Debian 12 / Raspberry Pi OS Bookworm, Ubuntu 24.04 / JetPack 7 and later) — it imports `arc4random_buf`, which Ubuntu 22.04 / JetPack 6 lack. Not musl: on Alpine, [build it](#musl-alpine). |
-| Linux x86_64 | [`wintermolt-linux-x86_64`](prebuilt/wintermolt-linux-x86_64) | 11 MB | ELF x86-64, dynamic libcurl + sqlite3. glibc 2.34+ (Ubuntu 22.04, Debian 12, RHEL 9 and later). x86-64-v3 CPU (Intel Haswell, AMD Zen or newer). |
+| macOS arm64 | [`wintermolt-macos`](prebuilt/wintermolt-macos) | 6.1 MB | Mach-O arm64, the system libcurl + sqlite3 (nothing to install), stripped. macOS 27.2+ (#5). Baseline arm64: any Apple Silicon Mac. |
+| Linux arm64 | [`wintermolt-linux-arm64`](prebuilt/wintermolt-linux-arm64) | 1.6 MB | ELF aarch64, dynamic libcurl + sqlite3, stripped. glibc 2.34+ (Ubuntu 22.04 / JetPack 6, Debian 12 / Raspberry Pi OS Bookworm, RHEL 9 and later). Baseline aarch64: no SVE, so it runs on Raspberry Pi and older Jetsons. Not musl: on Alpine, [build it](#musl-alpine). |
+| Linux x86_64 | [`wintermolt-linux-x86_64`](prebuilt/wintermolt-linux-x86_64) | 1.8 MB | ELF x86-64, dynamic libcurl + sqlite3, stripped. glibc 2.34+ (Ubuntu 22.04, Debian 12, RHEL 9 and later). x86-64-v3 CPU (Intel Haswell, AMD Zen or newer). |
 | Windows x86_64 | [`wintermolt-windows-x86_64.exe`](prebuilt/wintermolt-windows-x86_64.exe) | 14 MB | PE32+, HTTP/3 and crypto linked in statically. Imports only Windows system DLLs: nothing else to install. x86-64-v3 CPU (Intel Haswell, AMD Zen or newer). |
 
 ---
@@ -189,6 +189,39 @@ zig build -Doptimize=ReleaseFast -Dcpu=x86_64_v3   # x86_64 — Linux, Windows (
 
 Add `-Dstrip=true` to leave debug info out of the binary. Crash backtraces then
 lose their file and line numbers.
+
+The glibc floor of a published Linux binary is the floor of the machine that
+built it, so **build the Linux releases in an Ubuntu 22.04 container** (glibc
+2.35) rather than on the host. Building natively on a newer host raises the
+floor silently: `std.Io` binds `arc4random_buf` whenever the target glibc is
+2.36 or newer, and a Thor running Ubuntu 24.04 (glibc 2.39) therefore produced
+an arm64 binary that would not start on JetPack 6 (#2). The container is
+native on an aarch64 host — no emulation:
+
+```bash
+docker run --rm -v "$PWD":/w -v "$(dirname "$(dirname "$(readlink -f "$(which zig)")")")":/zig:ro \
+  -w /w ubuntu:22.04 bash -c '
+    apt-get update -qq && apt-get install -y -qq libcurl4-openssl-dev libsqlite3-dev
+    HOME=/tmp/zh /zig/zig build -Doptimize=ReleaseFast -Dcpu=baseline -Dstrip=true \
+      --cache-dir /tmp/zc --global-cache-dir /tmp/zg --prefix /tmp/out'
+```
+
+Then verify the floor before publishing — the highest version here must be the
+one the platform table claims:
+
+```bash
+objdump -T prebuilt/wintermolt-linux-arm64 | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1
+```
+
+The macOS binary's minimum is likewise the macOS of the machine that built it.
+Zig takes it from the host and ignores `MACOSX_DEPLOYMENT_TARGET` (#5). Check
+it against the platform table, and check that curl is the system one, never
+`/opt/homebrew`:
+
+```bash
+otool -l prebuilt/wintermolt-macos | grep -A3 LC_BUILD_VERSION | grep minos
+otool -L prebuilt/wintermolt-macos | grep curl    # /usr/lib/libcurl.4.dylib
+```
 
 ### musl (Alpine)
 
@@ -605,7 +638,7 @@ full-screen view use `/keys list`, or run `wintermolt --keys`.
 ## Architecture
 
 ```
-wintermolt (one native binary, 6–14 MB)
+wintermolt (one native binary, 1.6–14 MB)
 │
 ├── src/main.zig                 Entry point — REPL, CLI, mode dispatch
 ├── src/setup.zig                OOBE setup wizard
