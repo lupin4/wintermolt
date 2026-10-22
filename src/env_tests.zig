@@ -116,6 +116,43 @@ test "Config.load: WINTERMOLT_OPENAI_URL names the OpenAI endpoint, api.openai.c
     try testing.expectEqualStrings("http://127.0.0.1:4000/v1/chat/completions", set.openai_url);
 }
 
+// A non-interactive run (-e, --web, --gateway, --chat) has no /model command to
+// type, so the backend it starts on has to come from the environment. AgentLoop
+// .init builds it from this, which is what makes every loop of the run follow
+// it. Empty means unset: a `WINTERMOLT_BACKEND=` line in .env is not a request.
+test "Config.load: WINTERMOLT_BACKEND names the startup backend; null when unset or empty" {
+    const key = "WINTERMOLT_BACKEND";
+    if (compat.getenv(key) == null) {
+        const unset = try config.Config.load(null);
+        try testing.expect(unset.backend == null);
+    }
+    try testing.expectEqual(@as(c_int, 0), setenvZ(key, "openai", 1));
+    const set = try config.Config.load(null);
+    try testing.expectEqualStrings("openai", set.backend orelse "");
+
+    try testing.expectEqual(@as(c_int, 0), setenvZ(key, "", 1));
+    const empty = try config.Config.load(null);
+    try testing.expect(empty.backend == null);
+}
+
+// WINTERMOLT_BACKEND picks where a request goes, not which model it asks for:
+// a named model is used as-is by whichever backend is selected, and only then
+// does the backend's own variable and documented default apply. AgentLoop.init
+// passes config.model for this flag; switchBackend's per-backend defaults need
+// it to be null.
+test "Config.load: a named model outranks the backend's default; unnamed when WINTERMOLT_MODEL is unset" {
+    const key = "WINTERMOLT_MODEL";
+    if (compat.getenv(key) == null) {
+        const unnamed = try config.Config.load(null);
+        try testing.expect(!unnamed.model_named);
+        try testing.expectEqualStrings(config.default_local_model, unnamed.model);
+    }
+    try testing.expectEqual(@as(c_int, 0), setenvZ(key, "stub-model", 1));
+    const named = try config.Config.load(null);
+    try testing.expect(named.model_named);
+    try testing.expectEqualStrings("stub-model", named.model);
+}
+
 // A harness that asked for one provider has to see that provider fail. With
 // the fallback on, an Ollama answer stands in for it and `-e` exits 0.
 test "Config.load: WINTERMOLT_NO_FALLBACK=1 turns the fallback chain off; on when unset" {

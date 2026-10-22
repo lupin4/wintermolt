@@ -32,9 +32,67 @@ Or set the default for the session via env:
 WINTERMOLT_MODEL=qwen3:14b ./wintermolt
 ```
 
+## Selecting the startup backend
+
+`/model` is the REPL's command, and `--web` has its own `/model` endpoint, so a
+run that reaches neither — `-e`, `--gateway`, `--chat` — has no way to leave the
+Ollama default. `WINTERMOLT_BACKEND` picks the backend the run starts on, in
+every mode:
+
+```bash
+# one-shot prompt through the OpenAI backend, no REPL to type /model in
+WINTERMOLT_BACKEND=openai OPENAI_API_KEY=sk-... ./wintermolt -e "summarise README.md"
+
+# gateway server in front of Claude
+WINTERMOLT_BACKEND=claude ANTHROPIC_API_KEY=sk-ant-... ./wintermolt --gateway
+```
+
+Every loop the run builds starts on that backend, including the `--chat` agent
+pool and the subagents of `spawn_agent`.
+
+The variable chooses only *where* a request goes. A model named by
+`WINTERMOLT_MODEL`, or by the cloud override `wintermolt.json` can select, is
+used as-is by whichever backend is chosen; without one, the backend's own
+variable applies (`WINTERMOLT_OPENAI_MODEL`, `WINTERMOLT_QWEN_MODEL`,
+`WINTERMOLT_GEMINI_MODEL`, `WINTERMOLT_OLLAMA_MODEL`,
+`WINTERMOLT_KERNEL_DEFAULT`, `WINTERMOLT_FORAI_DEFAULT`), and then the default
+in the table above.
+
+A named model is not translated for the chosen backend: it goes out as written,
+so `WINTERMOLT_BACKEND=openai WINTERMOLT_MODEL=qwen3:8b` asks OpenAI for a model
+called `qwen3:8b`. The provider refuses it, and the refusal fails the request:
+the usual fallback chain runs, and `-e` exits 1 when nothing answers. What that
+refusal looks like on stderr:
+
+- `404`: `[openai HTTP 404] Request failed`, then `[fallback] Trying Ollama
+  ...`, and exit 1 when that fails too. With `WINTERMOLT_NO_FALLBACK=1` it is
+  `[fallback] off (WINTERMOLT_NO_FALLBACK=1): OpenAI failed (HttpError)`.
+- `400` is read as context overflow, not as a refused model: wintermolt
+  compacts history, retries the request once, and ends at `[Error] Retry
+  failed: ContextOverflow` without falling back.
+- A `200` whose stream carries an error frame is `[openai] stream error:
+  <provider text>` and does fall back (see below).
+
+An HTTP failure prints the status, not the provider's own error body; the `200`
+error frame is the one shape whose message is relayed. For a local engine that
+body is where the models it does serve are named, and it is dropped too: an
+engine holding only `Ornith-1.5-9B-MLX-4bit` answers a
+`WINTERMOLT_MODEL=qwen3:8b` request with `404` and that list, and wintermolt
+prints `[openai HTTP 404] Request failed` in its place. Ask the engine for the
+names it will answer to — `GET /v1/models` on the OpenAI-compatible route.
+
+Setting the variable is an explicit request, so a backend that cannot be built —
+a mistyped name, a cloud backend without its key, `forai` on a build without the
+engine — prints the reason and exits 1 before the first request. It never
+quietly answers from Ollama. It also wins over the `models.chat.prefer` routing
+in `wintermolt.json`.
+
 ## Per-backend env vars
 
 ```bash
+# Startup backend for every mode, not only the REPL
+WINTERMOLT_BACKEND=ollama                      # ollama (default), claude, openai, ...
+
 # Ollama (default)
 WINTERMOLT_OLLAMA_URL=http://localhost:11434   # base URL
 WINTERMOLT_OLLAMA_CTX=4096                     # context window cap
@@ -81,6 +139,26 @@ WINTERMOLT_STALL_TIMEOUT=180  # seconds with nothing received before a request i
 Every backend drops a request only when it goes quiet. A long answer that
 keeps streaming, or a local engine still warming up within the stall window,
 is never cut off. `0` waits forever.
+
+## Provider errors inside a `200` stream
+
+OpenAI-compatible servers often answer `200` and put the failure in an SSE
+frame instead of an HTTP status — a quota refusal, a rate limit, or a model the
+server does not serve:
+
+```
+data: {"type":"error","error":{"message":"Insufficient credits for request"}}
+data: {"error": {"message":"Model not found","type":"invalid_request_error"}}
+```
+
+Wintermolt treats either shape as a failed request: it prints
+`[<backend>] stream error: <provider text>` on stderr — naming the backend that
+was asked, not the client it happens to share — and falls back, rather than
+reporting a blank answer. Only a top-level `error` key or a top-level
+`"type":"error"` counts, so the `error` object Azure documents inside
+`content_filter_results` on a chunk of a *successful* answer does not throw the
+answer away. A model that merely prints the text is not affected either, because
+a quote inside a JSON string arrives escaped.
 
 ## Interactive setup
 

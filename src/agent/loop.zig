@@ -155,7 +155,7 @@ pub const AgentLoop = struct {
         // Set tool policies from config
         tools.setPolicy(config.tool_allowlist, config.tool_blocklist);
 
-        return .{
+        var agent: AgentLoop = .{
             .alloc = alloc,
             .backend = backend,
             .history = history,
@@ -180,6 +180,21 @@ pub const AgentLoop = struct {
             .perspective_callback = null,
             .web_message_id = null,
         };
+
+        // WINTERMOLT_BACKEND: build the named backend here rather than in
+        // main(), so every loop follows the choice. The --chat pool
+        // (agent/pool.zig) and subagent children (spawnSubagent) call this init
+        // too, and used to start on Ollama whatever the run had been asked for.
+        // The variable is an explicit request, so a backend that cannot be
+        // built fails the run instead of answering from Ollama: main() turns
+        // the error into exit status 1 before the first request.
+        if (config.backend) |backend_name| {
+            agent.switchBackend(backend_name, if (config.model_named) config.model else null) catch {
+                return error.BackendUnavailable;
+            };
+        }
+
+        return agent;
     }
 
     pub fn deinit(self: *AgentLoop) void {
@@ -558,8 +573,15 @@ pub const AgentLoop = struct {
         }
     }
 
-    /// Switch backend at runtime (/model command).
-    pub fn switchBackend(self: *AgentLoop, backend_name: []const u8, model_name_arg: ?[]const u8) void {
+    /// Switch backend at runtime (/model command, the web /model endpoint, a
+    /// subagent's backend override).
+    ///
+    /// A backend that cannot be built — an unknown name, a missing key, an
+    /// engine this build does not carry — prints the reason on stderr and
+    /// returns error.BackendUnavailable. AgentLoop.init treats that as a
+    /// startup failure, so a WINTERMOLT_BACKEND that names such a backend ends
+    /// the run at exit 1 instead of quietly answering from Ollama.
+    pub fn switchBackend(self: *AgentLoop, backend_name: []const u8, model_name_arg: ?[]const u8) !void {
         const stderr = stdio.stderr();
         // Own the model name — callers pass a slice into a reused input
         // buffer (REPL line_buf), which the next read would overwrite,
@@ -586,7 +608,7 @@ pub const AgentLoop = struct {
         } else if (std.mem.eql(u8, backend_name, "openai")) {
             const api_key = self.config.openai_api_key orelse {
                 stderr.writeAll("[backend] OPENAI_API_KEY not set. Free local instead: /model ollama (default, no key)\n") catch {};
-                return;
+                return error.BackendUnavailable;
             };
             var client = deepseek_mod.DeepSeekClient.init(
                 self.alloc,
@@ -599,39 +621,43 @@ pub const AgentLoop = struct {
         } else if (std.mem.eql(u8, backend_name, "deepseek")) {
             const api_key = self.config.deepseek_cloud_key orelse {
                 stderr.writeAll("[backend] DEEPSEEK_API_KEY not set. Free local instead: /model ollama (default, no key)\n") catch {};
-                return;
+                return error.BackendUnavailable;
             };
-            self.backend = .{ .openai = deepseek_mod.DeepSeekClient.init(
+            var client = deepseek_mod.DeepSeekClient.init(
                 self.alloc,
                 api_key,
                 model_name orelse "deepseek-chat",
-            ) };
+            );
+            client.label = "deepseek";
+            self.backend = .{ .openai = client };
             stderr.print("[backend] Switched to DeepSeek Cloud ({s})\n", .{model_name orelse "deepseek-chat"}) catch {};
         } else if (std.mem.eql(u8, backend_name, "qwen")) {
             const api_key = self.config.qwen_api_key orelse {
                 // Common trap: "qwen" here is the Qwen Cloud API. The free
                 // local qwen3 models run via Ollama/kernel with no key.
                 stderr.writeAll("[backend] QWEN_API_KEY not set (qwen = Qwen Cloud API). The FREE local qwen3 needs no key: /model ollama qwen3:0.6b (default) or /model kernel qwen3:0.6b\n") catch {};
-                return;
+                return error.BackendUnavailable;
             };
             var client = deepseek_mod.DeepSeekClient.init(
                 self.alloc,
                 api_key,
                 model_name orelse self.config.qwen_model,
             );
+            client.label = "qwen";
             client.api_url = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions";
             self.backend = .{ .openai = client };
             stderr.print("[backend] Switched to Qwen Cloud ({s})\n", .{model_name orelse self.config.qwen_model}) catch {};
         } else if (std.mem.eql(u8, backend_name, "gemini")) {
             const api_key = self.config.gemini_api_key orelse {
                 stderr.writeAll("[backend] GOOGLE_GEMINI_API_KEY not set. Free local instead: /model ollama (default, no key)\n") catch {};
-                return;
+                return error.BackendUnavailable;
             };
             var client = deepseek_mod.DeepSeekClient.init(
                 self.alloc,
                 api_key,
                 model_name orelse self.config.gemini_model,
             );
+            client.label = "gemini";
             client.api_url = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions";
             self.backend = .{ .openai = client };
             stderr.print("[backend] Switched to Gemini ({s})\n", .{model_name orelse self.config.gemini_model}) catch {};
@@ -642,41 +668,41 @@ pub const AgentLoop = struct {
             // a custom URL.
             if (!forai_mod.is_supported) {
                 stderr.writeAll("[backend] forAI engine not delivered yet (forAI rebuild in flight) — use /model kernel for local inference meanwhile\n") catch {};
-                return;
+                return error.BackendUnavailable;
             }
             const default_alias = compat.getenv("WINTERMOLT_FORAI_DEFAULT") orelse "qwen3:0.6b";
             const alias = model_name orelse default_alias;
             const model_dir = forai_mod.defaultModelDir(self.alloc) catch {
                 stderr.writeAll("[backend] could not resolve WINTERMOLT_KERNEL_MODEL_DIR or $HOME\n") catch {};
-                return;
+                return error.BackendUnavailable;
             };
             const path = forai_mod.resolveModelPath(self.alloc, alias, model_dir) catch |err| {
                 stderr.print("[backend] forai: could not resolve {s} ({s})\n", .{ alias, @errorName(err) }) catch {};
-                return;
+                return error.BackendUnavailable;
             };
             self.backend = .{ .forai = forai_mod.ForAIClient.init(self.alloc, path, alias) };
             stderr.print("[backend] Switched to forAI in-process ({s})\n", .{alias}) catch {};
         } else if (std.mem.eql(u8, backend_name, "kernel")) {
             if (!kernel_mod.is_supported) {
                 stderr.writeAll("[backend] kernel backend is darwin-arm64 only on this build\n") catch {};
-                return;
+                return error.BackendUnavailable;
             }
             const default_alias = compat.getenv("WINTERMOLT_KERNEL_DEFAULT") orelse "qwen3:0.6b";
             const alias = model_name orelse default_alias;
             const model_dir = kernel_mod.defaultModelDir(self.alloc) catch {
                 stderr.writeAll("[backend] could not resolve WINTERMOLT_KERNEL_MODEL_DIR or $HOME\n") catch {};
-                return;
+                return error.BackendUnavailable;
             };
             const gguf_path = kernel_mod.resolveModelPath(self.alloc, alias, model_dir) catch |err| {
                 stderr.print("[backend] kernel: could not resolve {s} ({s})\n", .{ alias, @errorName(err) }) catch {};
-                return;
+                return error.BackendUnavailable;
             };
             self.backend = .{ .kernel = kernel_mod.KernelClient.init(self.alloc, gguf_path, alias) };
             stderr.print("[backend] Switched to kernel ({s} via Metal — {s})\n", .{ alias, gguf_path }) catch {};
         } else if (std.mem.eql(u8, backend_name, "claude")) {
             if (self.config.api_key.len == 0) {
                 stderr.writeAll("[backend] ANTHROPIC_API_KEY not set. Use /keys to configure, or stay free/local: /model ollama (default, no key)\n") catch {};
-                return;
+                return error.BackendUnavailable;
             }
             self.backend = .{ .claude = client_mod.Client.init(
                 self.alloc,
@@ -686,6 +712,7 @@ pub const AgentLoop = struct {
             stderr.print("[backend] Switched to Claude ({s})\n", .{model_name orelse "claude-sonnet-4-20250514"}) catch {};
         } else {
             stderr.print("[backend] Unknown: {s}. Free local (no key): ollama (default), kernel, forai · Cloud (API key): claude, openai, deepseek, qwen, gemini\n", .{backend_name}) catch {};
+            return error.BackendUnavailable;
         }
     }
 
