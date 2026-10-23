@@ -9,6 +9,9 @@ name: Wintermolt linMusl release binaries
 #   - -Dtarget= is deliberately NOT passed. Naming a target makes Zig treat the
 #     build as a cross-compile and stop finding libcurl and libsqlite3
 #     (build.zig:48). Natively on Alpine the target is already *-linux-musl.
+#   - -Doptimize=ReleaseSmall, not the ReleaseFast of the glibc release: the musl
+#     targets are the small boards (Pi Zero 2 W), and both the README's musl
+#     section and the #2 reporter's binary are ReleaseSmall. Size is the point.
 #   - The result links /lib/ld-musl-<arch>.so.1, carries no GLIBC_* imports at
 #     all, and runs on Alpine with neither gcompat nor LD_PRELOAD. That is the
 #     #2 fix, and the check step fails the lane if a GLIBC_ import ever returns.
