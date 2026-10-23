@@ -244,6 +244,12 @@ PKG_CONFIG_LIBDIR=/nonexistent zig build \
 Verified on a Pi Zero 2 W under Alpine 3.23: a 961 KB dynamically linked musl
 binary, no preload needed.
 
+GitHub Actions builds these musl binaries in
+`.github/workflows/linMusl-release.yml`, natively in an `alpine:3.23` container
+for `arm64` and `x86_64`. On Alpine the target is already `*-linux-musl`, so no
+`-Dtarget=` or `--search-prefix` is needed, and the lane fails if the result
+carries a `GLIBC_` import.
+
 ---
 
 ## Features
