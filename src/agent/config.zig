@@ -4,6 +4,9 @@
 //
 // Reads configuration from environment variables:
 //   WINTERMOLT_MODEL         — Optional. Model ID (default: qwen3:8b via Ollama)
+//   WINTERMOLT_BACKEND       — Optional. Backend a run starts on: ollama (default),
+//                              claude, openai, deepseek, qwen, gemini, kernel, forai.
+//                              AgentLoop.init builds it, so every mode follows it
 //   WINTERMOLT_TOKENS        — Optional. Max response tokens (default: 8192)
 //   WINTERMOLT_NO_HISTORY    — Optional. Set to "1" to disable SQLite history
 //   WINTERMOLT_NO_FALLBACK   — Optional. Set to "1": a failed request fails (no Ollama/OpenAI retry)
@@ -188,6 +191,15 @@ const libc_setenv = @extern(*const fn ([*:0]const u8, [*:0]const u8, c_int) call
 pub const Config = struct {
     api_key: []const u8,
     model: []const u8,
+    // WINTERMOLT_BACKEND: the backend a run starts on. null keeps the Ollama
+    // default. AgentLoop.init builds it, so --chat, --web, --gateway and
+    // subagent children follow the same choice; a name that cannot be built
+    // fails startup instead of falling back to Ollama.
+    backend: ?[]const u8,
+    // True when WINTERMOLT_MODEL, or wintermolt.json's cloud override, named
+    // the model: the startup backend then uses `model` as-is instead of its own
+    // variable and default. See backend above.
+    model_named: bool,
     max_tokens: u32,
     system_prompt: []const u8,
     history_enabled: bool,
@@ -255,6 +267,20 @@ pub const Config = struct {
             profile.chat_cloud.?
         else
             (profile.chat_local orelse compat.getenv("WINTERMOLT_MODEL") orelse default_local_model);
+
+        // Empty is unset: `WINTERMOLT_BACKEND=` in a .env must not fail startup.
+        const backend = blk: {
+            const name = compat.getenv("WINTERMOLT_BACKEND") orelse break :blk null;
+            break :blk if (name.len > 0) name else null;
+        };
+
+        // A named model outranks the selected backend's own model variable and
+        // default, so WINTERMOLT_BACKEND only picks where a request goes. The
+        // cloud override counts as named: wintermolt.json chose that model.
+        const model_named = prefer_cloud or blk: {
+            const named = compat.getenv("WINTERMOLT_MODEL") orelse break :blk false;
+            break :blk named.len > 0;
+        };
 
         const max_tokens: u32 = blk: {
             const tokens_str = compat.getenv("WINTERMOLT_TOKENS") orelse break :blk 8192;
@@ -351,6 +377,8 @@ pub const Config = struct {
         return .{
             .api_key = api_key,
             .model = model,
+            .backend = backend,
+            .model_named = model_named,
             .max_tokens = max_tokens,
             .system_prompt = constitution_text,
             .history_enabled = history_enabled,

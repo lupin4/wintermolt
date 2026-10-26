@@ -421,7 +421,10 @@ pub const WebBridge = struct {
         if (std.mem.startsWith(u8, command, "/model")) {
             const arg = std.mem.trim(u8, command[6..], " \t");
             if (arg.len > 0) {
-                self.agent.switchBackend(arg, null);
+                // switchBackend prints why (unknown name, missing key) on the
+                // server's stderr; the panel says the switch did not happen.
+                self.agent.switchBackend(arg, null) catch
+                    return std.fmt.bufPrint(buf, "Could not switch to {s} — see the server log", .{arg}) catch "Could not switch backend";
                 return std.fmt.bufPrint(buf, "Backend switched to {s}", .{arg}) catch "Switched";
             }
             return "Usage: /model ollama|openai|deepseek|qwen|gemini";
