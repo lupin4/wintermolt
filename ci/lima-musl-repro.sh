@@ -7,8 +7,9 @@
 #
 # The script runs the SAME alpine:3.23 container steps, in workflow order,
 # with the same pins:
-#   - stage this checkout (no .git, no caches, no build output, so the repro
-#     builds from the source the workflow would check out)
+#   - stage the committed tree (git archive: no .git dir, no caches, no
+#     build output, no uncommitted edits, and a tar format the alpine
+#     container's busybox tar extracts byte-exact)
 #   - pull alpine:3.23 by tag and print the digest the tag resolved to, so a
 #     re-run is comparable at the image level
 #   - install the same apk package set
@@ -108,12 +109,15 @@ fi
 
 # --- Locate this checkout. ------------------------------------------------
 repo=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd -P)
-# Record which source this repro builds, so a captured log names the exact
-# commit its verdicts belong to. unknown is acceptable where git is missing.
-commit=unknown
-if command -v git >/dev/null 2>&1; then
-  commit=$(git -C "$repo" rev-parse --verify HEAD 2>/dev/null || echo unknown)
+# git is required twice below (recording the commit, archiving its tree), so
+# fail fast with a clear message when it is missing.
+if ! command -v git >/dev/null 2>&1; then
+  echo "FAIL: git is required to stage the committed tree" >&2
+  exit 1
 fi
+# Record which source this repro builds, so a captured log names the exact
+# commit its verdicts belong to.
+commit=$(git -C "$repo" rev-parse --verify HEAD)
 
 # --- Lima VM lifecycle (lima runner only). --------------------------------
 # Start the VM if it is not running; remember whether this run owns it, so the
@@ -127,9 +131,12 @@ if [ "$runner" = lima ]; then
 fi
 
 # --- Host-side staging. ---------------------------------------------------
-# Stage this checkout out of the repo: the repro must build from the
-# checked-out source, not from a .git dir, a compiler cache, or a stale
-# zig-out.
+# Stage the committed tree with git archive: the repro must build exactly what
+# the workflow would check out, not a .git dir, a compiler cache, a stale
+# zig-out, or uncommitted local edits. git archive also emits a plain ustar
+# stream, which the busybox tar inside the alpine container extracts
+# byte-exact -- a macOS bsdtar archive does not survive that handoff (its
+# sparse/PAX entries come out as GNUSparseFile.0 and silently lose files).
 stage=$(mktemp -d "${TMPDIR:-/tmp}/wintermolt-musl-repro.XXXXXXXX")
 cleanup() {
   # Remove the staged source and, in lima mode, the two files copied into the
@@ -147,8 +154,7 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-tar -cf "$stage/src.tar" \
-  --exclude=.git --exclude=.zig-cache --exclude=zig-out -C "$repo" .
+git -C "$repo" archive --format=tar -o "$stage/src.tar" HEAD
 
 cat > "$stage/inner.sh" <<'INNER'
 #!/bin/sh
