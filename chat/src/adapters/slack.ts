@@ -11,7 +11,7 @@ export function createAdapter(): ChatAdapter {
     socketMode: !!process.env.SLACK_APP_TOKEN,
   });
 
-  app.message(async ({ message, say }) => {
+  app.message(async ({ message, say, context }: any) => {
     if (!('text' in message) || message.subtype) return;
     const m = message as any;
 
@@ -23,6 +23,9 @@ export function createAdapter(): ChatAdapter {
       text: m.text ?? '',
       threadId: m.thread_ts ?? undefined,
       replyTo: m.thread_ts ?? undefined,
+      // 'im' is a DM; 'mpim' (a group DM), 'channel' and 'group' have members.
+      chatType: m.channel_type === 'im' ? 'direct' : 'group',
+      mentioned: !!context.botUserId && (m.text ?? '').includes(`<@${context.botUserId}>`),
     });
   });
 

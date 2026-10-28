@@ -26,6 +26,9 @@ export function createAdapter(): ChatAdapter {
       fromName: tags['display-name'] ?? tags.username ?? undefined,
       channel,
       text: message,
+      // Channel chat only; whispers are not read.
+      chatType: 'group',
+      mentioned: message.toLowerCase().includes('@' + username.toLowerCase()),
     });
   });
 

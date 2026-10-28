@@ -24,16 +24,24 @@ export function createAdapter(): ChatAdapter {
           const data = JSON.parse(line);
           if (data.method === 'receive') {
             const envelope = data.params?.envelope;
-            if (!envelope?.dataMessage?.message) return;
+            const dm = envelope?.dataMessage;
+            if (!dm?.message || !envelope.source) return;
 
+            // A group message is answered in the group: channel "group:<id>",
+            // which sendReply sends with groupId rather than to the sender.
+            const groupId: string | undefined = dm.groupInfo?.groupId;
+            const quote = dm.quote;
             sendToAgent({
               type: 'message',
               platform: 'signal',
-              from: envelope.source ?? 'unknown',
+              from: envelope.source,
               fromName: envelope.sourceName ?? undefined,
-              channel: envelope.source ?? 'dm',
-              text: envelope.dataMessage.message,
-              guild: envelope.dataMessage.groupInfo?.groupId ?? undefined,
+              channel: groupId ? `group:${groupId}` : envelope.source,
+              text: dm.message,
+              guild: groupId,
+              chatType: groupId ? 'group' : 'direct',
+              mentioned: (dm.mentions ?? []).some((m: any) => m.number === phone) ||
+                (quote?.authorNumber ?? quote?.author) === phone,
             });
           }
         } catch {
@@ -55,7 +63,9 @@ export function createAdapter(): ChatAdapter {
       const req = {
         jsonrpc: '2.0',
         method: 'send',
-        params: { recipient: [to], message: text },
+        params: to.startsWith('group:')
+          ? { groupId: to.slice('group:'.length), message: text }
+          : { recipient: [to], message: text },
       };
       proc.stdin.write(JSON.stringify(req) + '\n');
     },

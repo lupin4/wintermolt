@@ -6,7 +6,57 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Security
+
+- **`--chat` admits nobody until you allow them**, with OpenClaw's rules and
+  defaults. Before, every message from anyone on any connected platform went
+  to an agent that can run `bash`. Now:
+  - an unknown sender's direct message gets a one-hour pairing code, and
+    nothing they write reaches the agent until
+    `wintermolt --pairing approve <platform> <code>`;
+  - a group must be listed in `WINTERMOLT_CHAT_GROUPS`, the sender allowed
+    there, and the bot mentioned.
+
+  `WINTERMOLT_CHAT_DM_POLICY`, `_ALLOW_FROM`, `_GROUP_POLICY`, `_GROUPS`,
+  `_GROUP_ALLOW_FROM` and `_REQUIRE_MENTION` set the rules (see
+  docs/DEPLOYMENT.md). A value that is not one of the documented ones stops
+  `--chat` at startup instead of falling back to a default.
+- **Webhook adapters authenticate what they receive.** LINE checks
+  `X-Line-Signature` against the channel secret. Feishu checks the event's
+  verification token, which needs the new `FEISHU_VERIFICATION_TOKEN`.
+  Teams and Google Chat checked nothing, so anyone who could reach their port
+  could post as any user; they no longer start until they verify their
+  platform's JWT. They never sent their replies either.
+- **iMessage reads the Messages database as JSON.** It split rows on `|`, and
+  the text column came before the sender's, so a message containing `|`
+  could name any sender. Replies go to `osascript` without a shell.
+
 ### Fixed
+
+- **`--chat` processes messages.** It had not since 0.4, for three reasons:
+  - the loop stopped at the sidecar's first status event, which every
+    adapter sends when it connects;
+  - a reader made per line dropped whatever arrived in the same read as the
+    line before it;
+  - the reply was never captured, so the agent's answer was empty and
+    nothing was sent.
+- **Replies go to the conversation.** A reply was sent to the sender's ID, so
+  a group's answer went to a member's DM, or nowhere on Discord, Mattermost,
+  Matrix and Rocket.Chat.
+- **The gateway and `spawn_agent` return the model's answer.** Both read
+  the same never-filled capture buffer, and returned `(no response)` and
+  `(Subagent produced no output)`.
+- **Each adapter reports a direct message from a group message, and whether
+  the bot was mentioned.** Along the way:
+  - a WhatsApp group message names its author rather than the group;
+  - a Signal group message is answered in the group;
+  - IRC no longer hands each line to the agent twice, once as a DM, or
+    answers NOTICEs;
+  - Zulip no longer answers its own replies.
+- **A sidecar line is parsed as JSON.** The key search it replaced unescaped
+  every field into one shared buffer, so a Discord message with an
+  attachment had its text replaced by the attachment list. Lines may now be
+  up to 4 MiB (was 8 KiB, past which `--chat` stopped).
 
 - **The Linux arm64 prebuilt drops to glibc 2.34+** (was 2.36+), so it starts
   on Ubuntu 22.04 / JetPack 6, Debian 12 and RHEL 9 — the same floor the

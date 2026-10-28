@@ -12,7 +12,7 @@
 //   wintermolt --help       — show help
 //   wintermolt -e "prompt"  — single-shot execution
 //   wintermolt --keys       — configure API keys
-//   wintermolt --chat       — chat bridge mode (18 platforms)
+//   wintermolt --chat       — chat bridge mode (16 platforms)
 //   wintermolt --web        — web UI mode
 //   wintermolt --mcp-server — MCP JSON-RPC server over stdio
 
@@ -24,6 +24,7 @@ const ArrayList = std.ArrayList;
 const config_mod = @import("agent/config.zig");
 const loop_mod = @import("agent/loop.zig");
 const chat_bridge = @import("chat/bridge.zig");
+const chat_access = @import("chat/access.zig");
 const web_bridge = @import("web/bridge.zig");
 const menubar_bridge = @import("menubar/bridge.zig");
 const router_mod = @import("agent/router.zig");
@@ -112,6 +113,8 @@ pub fn main(init: std.process.Init) !void {
     var gateway_mode = false;
     var extension_cmd: ?[]const u8 = null;
     var extension_arg: ?[]const u8 = null;
+    var pairing_cmd: ?[]const u8 = null;
+    var pairing_args: [2]?[]const u8 = .{ null, null };
     var run_setup = false;
     var plain_mode = false;
     var theme_flag: ?[]const u8 = null;
@@ -156,6 +159,10 @@ pub fn main(init: std.process.Init) !void {
         if (std.mem.eql(u8, arg, "--extension")) {
             extension_cmd = args.next();
             extension_arg = args.next();
+        }
+        if (std.mem.eql(u8, arg, "--pairing")) {
+            pairing_cmd = args.next() orelse "";
+            pairing_args = .{ args.next(), args.next() };
         }
         if (std.mem.eql(u8, arg, "-e")) {
             exec_prompt = args.next();
@@ -209,6 +216,60 @@ pub fn main(init: std.process.Init) !void {
             try stdout.writeByte('\n');
         } else {
             try stdout.writeAll("Usage: wintermolt --extension <list|available|install|remove> [name]\n");
+        }
+        return;
+    }
+
+    // --pairing: approve who may message the agent through --chat (chat/access.zig).
+    // Runs beside a live --chat process; both share ~/.wintermolt/chat_access.db.
+    if (pairing_cmd) |cmd| {
+        const usage =
+            \\Usage: wintermolt --pairing list [platform]
+            \\       wintermolt --pairing approve <platform> <code>
+            \\       wintermolt --pairing revoke <platform> <sender>
+            \\
+        ;
+        var store = chat_access.Store.openDefault(alloc) catch |e| {
+            try stderr.print("[pairing] Cannot open ~/.wintermolt/chat_access.db: {s}\n", .{@errorName(e)});
+            std.process.exit(1);
+        };
+        defer store.close();
+        const now = fsio.timestamp();
+        if (std.mem.eql(u8, cmd, "list")) {
+            try store.writeList(stdout, pairing_args[0], now);
+        } else if (std.mem.eql(u8, cmd, "approve")) {
+            const platform = pairing_args[0] orelse {
+                try stderr.writeAll(usage);
+                std.process.exit(1);
+            };
+            const code = pairing_args[1] orelse {
+                try stderr.writeAll(usage);
+                std.process.exit(1);
+            };
+            const sender = (try store.approve(alloc, platform, code, now)) orelse {
+                try stderr.print("[pairing] No live {s} request with code {s}. `wintermolt --pairing list` shows them.\n", .{ platform, code });
+                std.process.exit(1);
+            };
+            defer alloc.free(sender);
+            try stdout.print("Approved {s}:{s} for direct messages.\n", .{ platform, sender });
+        } else if (std.mem.eql(u8, cmd, "revoke")) {
+            const platform = pairing_args[0] orelse {
+                try stderr.writeAll(usage);
+                std.process.exit(1);
+            };
+            const sender = pairing_args[1] orelse {
+                try stderr.writeAll(usage);
+                std.process.exit(1);
+            };
+            if (try store.revoke(platform, sender)) {
+                try stdout.print("Revoked {s}:{s}.\n", .{ platform, sender });
+            } else {
+                try stderr.print("[pairing] {s}:{s} was not approved.\n", .{ platform, sender });
+                std.process.exit(1);
+            }
+        } else {
+            try stderr.writeAll(usage);
+            std.process.exit(1);
         }
         return;
     }
@@ -324,6 +385,24 @@ pub fn main(init: std.process.Init) !void {
     // Chat mode — multi-agent routing
     if (chat_mode) {
         try stderr.writeAll("[wintermolt] Starting chat mode (multi-agent)...\n");
+
+        // Who may reach the agent (chat/access.zig). Read before the sidecar
+        // starts, so a mistyped setting stops the run instead of opening it.
+        const chat_policy = chat_access.parsePolicy(chat_access.Env.read()) catch |e| {
+            try stderr.print("[chat] {s}: run `wintermolt --help` for the WINTERMOLT_CHAT_* values\n", .{@errorName(e)});
+            std.process.exit(1);
+        };
+        var access_store = chat_access.Store.openDefault(alloc) catch |e| {
+            try stderr.print("[chat] Cannot open ~/.wintermolt/chat_access.db: {s}\n", .{@errorName(e)});
+            std.process.exit(1);
+        };
+        defer access_store.close();
+        try stderr.print("[chat] Direct messages: {s}. Groups: {s}{s}.\n", .{
+            @tagName(chat_policy.dm),
+            @tagName(chat_policy.group),
+            if (chat_policy.require_mention) ", mention required" else "",
+        });
+
         var bridge = chat_bridge.ChatBridge.init(alloc) catch |e| {
             try stderr.print("[wintermolt] Failed to start chat sidecar: {s}\n", .{@errorName(e)});
             std.process.exit(1);
@@ -346,6 +425,51 @@ pub fn main(init: std.process.Init) !void {
 
         while (bridge.readMessage()) |msg| {
             try stderr.print("[{s}] {s}: {s}\n", .{ msg.platform, msg.from, msg.text });
+
+            // Approvals count only for direct messages under the pairing
+            // policy, so the store is read only then. A store that cannot be
+            // read approves no one.
+            const approved = if (msg.chat_type == .direct and chat_policy.dm == .pairing)
+                access_store.isApproved(msg.platform, msg.from) catch |e| blk: {
+                    try stderr.print("[chat] Pairing store: {s}; {s}:{s} treated as not approved\n", .{ @errorName(e), msg.platform, msg.from });
+                    break :blk false;
+                }
+            else
+                false;
+            const inbound = chat_access.Inbound{
+                .platform = msg.platform,
+                .from = msg.from,
+                .channel = msg.channel,
+                .guild = msg.guild,
+                .chat_type = msg.chat_type,
+                .mentioned = msg.mentioned,
+            };
+            switch (chat_access.decide(&chat_policy, inbound, approved)) {
+                .process => {},
+                .drop => |why| {
+                    try stderr.print("[chat] Ignored {s}:{s}: {s}\n", .{ msg.platform, msg.from, why.describe() });
+                    continue;
+                },
+                .pair => {
+                    const outcome = access_store.requestPairing(msg.platform, msg.from, msg.from_name, fsio.timestamp()) catch |e| {
+                        try stderr.print("[chat] Pairing store: {s}; {s}:{s} ignored\n", .{ @errorName(e), msg.platform, msg.from });
+                        continue;
+                    };
+                    switch (outcome) {
+                        .issued => |code| {
+                            const reply = try chat_access.pairingReply(alloc, msg.platform, msg.from, &code);
+                            defer alloc.free(reply);
+                            bridge.sendReplyThreaded(msg.platform, msg.channel, reply, msg.thread_id) catch |e| {
+                                try stderr.print("[Error] Reply failed: {s}\n", .{@errorName(e)});
+                            };
+                            try stderr.print("[chat] Pairing code sent to {s}:{s}. Approve with: wintermolt --pairing approve {s} {s}\n", .{ msg.platform, msg.from, msg.platform, code });
+                        },
+                        .pending => try stderr.print("[chat] Ignored {s}:{s}: pairing code already sent, not yet approved\n", .{ msg.platform, msg.from }),
+                        .full => try stderr.print("[chat] Ignored {s}:{s}: {s} already has {d} pending pairing requests\n", .{ msg.platform, msg.from, msg.platform, chat_access.MAX_PENDING_PER_PLATFORM }),
+                    }
+                    continue;
+                },
+            }
 
             // Build routing context from the incoming message
             const route_ctx = router_mod.RouteContext{
@@ -392,7 +516,9 @@ pub fn main(init: std.process.Init) !void {
             };
 
             if (response_buf.items.len > 0) {
-                bridge.sendReplyThreaded(msg.platform, msg.from, response_buf.items, msg.thread_id) catch |e| {
+                // To the conversation, not the person: in a group, `from` is
+                // a member and `channel` is the group.
+                bridge.sendReplyThreaded(msg.platform, msg.channel, response_buf.items, msg.thread_id) catch |e| {
                     try stderr.print("[Error] Reply failed: {s}\n", .{@errorName(e)});
                 };
             }
@@ -1530,7 +1656,11 @@ fn printHelp(w: anytype) !void {
         \\  wintermolt -e "prompt"  — Single-shot execution (exits 1 if no backend answers)
         \\  wintermolt --keys      — Configure API keys
         \\  wintermolt --setup      — Alias for --keys
-        \\  wintermolt --chat       — Chat bridge (18 platforms)
+        \\  wintermolt --chat       — Chat bridge (16 platforms; access rules below)
+        \\  wintermolt --pairing list [platform]
+        \\  wintermolt --pairing approve <platform> <code>
+        \\  wintermolt --pairing revoke <platform> <sender>
+        \\                          — Who may message the agent through --chat
         \\  wintermolt --web        — Web UI
         \\  wintermolt --menubar    — macOS menu bar sidecar
         \\  wintermolt --gateway    — OpenAI-compatible API gateway
@@ -1546,16 +1676,25 @@ fn printHelp(w: anytype) !void {
         \\  iMessage       IMESSAGE_APPLEID (macOS only)
         \\  IRC            IRC_SERVER + IRC_NICK + IRC_CHANNELS
         \\  Matrix         MATRIX_HOMESERVER + MATRIX_ACCESS_TOKEN + MATRIX_USER_ID
-        \\  Teams          TEAMS_APP_ID + TEAMS_APP_PASSWORD
-        \\  Google Chat    GOOGLE_CHAT_CREDENTIALS
+        \\  Teams          not available yet (inbound is not authenticated)
+        \\  Google Chat    not available yet (inbound is not authenticated)
         \\  LINE           LINE_CHANNEL_SECRET + LINE_CHANNEL_TOKEN
-        \\  Feishu/Lark    FEISHU_APP_ID + FEISHU_APP_SECRET
+        \\  Feishu/Lark    FEISHU_APP_ID + FEISHU_APP_SECRET + FEISHU_VERIFICATION_TOKEN
         \\  Mattermost     MATTERMOST_URL + MATTERMOST_TOKEN
         \\  Twitch         TWITCH_ACCESS_TOKEN + TWITCH_CHANNELS
         \\  Nostr          NOSTR_PRIVATE_KEY (+ NOSTR_RELAYS)
         \\  XMPP/Jabber    XMPP_JID + XMPP_PASSWORD
         \\  Zulip          ZULIP_EMAIL + ZULIP_API_KEY + ZULIP_SITE
         \\  Rocket.Chat    ROCKETCHAT_URL + ROCKETCHAT_TOKEN + ROCKETCHAT_USER_ID
+        \\
+        \\Chat access (lists are platform:id,... or *; docs/DEPLOYMENT.md):
+        \\  WINTERMOLT_CHAT_DM_POLICY     pairing (default) | allowlist | open | disabled
+        \\  WINTERMOLT_CHAT_ALLOW_FROM    Who may send direct messages
+        \\  WINTERMOLT_CHAT_GROUP_POLICY  allowlist (default) | open | disabled
+        \\  WINTERMOLT_CHAT_GROUPS        Which groups (or Discord servers, Zulip streams)
+        \\  WINTERMOLT_CHAT_GROUP_ALLOW_FROM  Who may trigger it in a group
+        \\                                (default: WINTERMOLT_CHAT_ALLOW_FROM)
+        \\  WINTERMOLT_CHAT_REQUIRE_MENTION=0  Answer group messages without a mention
         \\
         \\Environment:
         \\  ANTHROPIC_API_KEY    — Claude API key (optional)
