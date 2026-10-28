@@ -418,6 +418,20 @@ pub fn build(b: *std.Build) void {
     });
     test_step.dependOn(&b.addRunArtifact(skill_loader_test).step);
 
+    // --chat: who may reach the agent (the policy decision, and the pairing
+    // store on an in-memory database) and how a sidecar line is read. Its own
+    // root for the same reason; libc and sqlite3 for the store.
+    const chat_access_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/chat_tests.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+    });
+    chat_access_test.root_module.linkSystemLibrary("sqlite3", .{});
+    test_step.dependOn(&b.addRunArtifact(chat_access_test).step);
+
     // The environment, end to end: a value setenv puts there at runtime (every
     // ~/.wintermolt/.env key does) must reach getenv and each child spawned
     // afterwards. Its own root for the reason the compat files have theirs; also

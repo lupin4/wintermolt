@@ -42,6 +42,11 @@ const MAX_ITERATIONS = 25;
 var g_redactor: ?redact.Redactor = null;
 var g_inner_cb: ?sse.TextCallback = null;
 
+// processInputCapture's buffer, for captureText, at module scope for the same
+// reason. Its allocator is the agent's, which every caller's buffer shares.
+var g_capture: ?*ArrayList(u8) = null;
+var g_capture_alloc: ?Allocator = null;
+
 pub const Backend = union(enum) {
     claude: client_mod.Client,
     ollama: ollama_mod.OllamaClient,
@@ -429,7 +434,17 @@ pub const AgentLoop = struct {
     /// Process input capturing output to buffer (for chat bridge).
     pub fn processInputCapture(self: *AgentLoop, user_text: []const u8, buf: *ArrayList(u8)) !void {
         self.capture_buf = buf;
-        defer self.capture_buf = null;
+        // Restored, not cleared: a spawn_agent subagent captures inside its
+        // parent's capture, and the parent keeps writing after it returns.
+        const outer_capture = g_capture;
+        const outer_alloc = g_capture_alloc;
+        g_capture = buf;
+        g_capture_alloc = self.alloc;
+        defer {
+            self.capture_buf = null;
+            g_capture = outer_capture;
+            g_capture_alloc = outer_alloc;
+        }
         try self.processInput(user_text);
     }
 
@@ -912,8 +927,11 @@ pub const AgentLoop = struct {
         return out.toOwnedSlice(alloc) catch null;
     }
 
+    /// The reply text, into processInputCapture's buffer. This was a no-op,
+    /// so --chat, the gateway and subagents all got an empty reply.
     fn captureText(text: []const u8) void {
-        // This is a placeholder — capture_buf is used via stream_callback
-        _ = text;
+        const buf = g_capture orelse return;
+        const alloc = g_capture_alloc orelse return;
+        buf.appendSlice(alloc, text) catch {};
     }
 };

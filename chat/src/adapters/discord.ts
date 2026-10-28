@@ -37,6 +37,11 @@ export function createAdapter(): ChatAdapter {
       guild: msg.guild?.id ?? undefined,
       roles,
       attachments,
+      // A bot cannot join a group DM, so no guild means a DM with one person.
+      chatType: msg.guild ? 'group' : 'direct',
+      // The bot's own account, not @everyone or a role it holds.
+      mentioned: msg.mentions.users.has(client.user!.id) ||
+        msg.mentions.repliedUser?.id === client.user!.id,
     });
   });
 

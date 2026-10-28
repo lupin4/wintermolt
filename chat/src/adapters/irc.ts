@@ -13,27 +13,27 @@ export function createAdapter(): ChatAdapter {
 
   const client = new IrcFramework.Client();
 
-  client.on('message', (event: any) => {
-    if (event.nick === nick) return;
-
-    sendToAgent({
-      type: 'message',
-      platform: 'irc',
-      from: event.nick,
-      channel: event.target,
-      text: event.message,
-    });
-  });
-
+  // 'privmsg' only. irc-framework also emits 'message' for every PRIVMSG (and
+  // for NOTICEs, which a bot must never answer), so listening to both handed
+  // each line to the agent twice -- the second time as a DM from its sender.
   client.on('privmsg', (event: any) => {
-    if (event.nick === nick) return;
+    const me: string = client.user?.nick ?? nick;
+    if (event.nick === me) return;
+    const direct = event.target.toLowerCase() === me.toLowerCase();
+    const text: string = event.message;
+    const lower = text.toLowerCase();
+    const myNick = me.toLowerCase();
 
     sendToAgent({
       type: 'message',
       platform: 'irc',
       from: event.nick,
-      channel: event.nick, // DMs use sender as channel
-      text: event.message,
+      channel: direct ? event.nick : event.target, // a DM is answered to its sender
+      text,
+      chatType: direct ? 'direct' : 'group',
+      // "nick: ..." / "nick, ..." addresses the bot; so does @nick anywhere.
+      mentioned: lower.startsWith(myNick + ':') || lower.startsWith(myNick + ',') ||
+        lower.includes('@' + myNick),
     });
   });
 

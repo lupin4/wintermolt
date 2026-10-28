@@ -64,7 +64,7 @@ Most AI coding tools ship hundreds of megabytes of Electron or Node.js runtime j
 | **Camera + vision** | **Built-in** | No | No | No |
 | **Browser automation** | **Built-in** | No | No | No |
 | **MCP client + server** | **Both** | Client only | Client only | No |
-| **Chat bridges** | **18 platforms** | No | No | No |
+| **Chat bridges** | **16 platforms** | No | No | No |
 | **Cron scheduler** | **Built-in** | No | No | No |
 | **Mesh networking** | **Tailscale** | No | No | No |
 | **Menu bar app** | **macOS native** | No | No | No |
@@ -485,6 +485,12 @@ wintermolt --chat    # Connects to all configured platforms simultaneously
 
 All platforms get the same agentic capabilities — tool use, streaming, file handling.
 
+Nobody reaches the agent until you allow them, as in OpenClaw. An unknown
+sender's direct message gets a pairing code and goes no further until you run
+`wintermolt --pairing approve <platform> <code>`. A group needs to be listed and
+the bot mentioned. The rules and their `WINTERMOLT_CHAT_*` settings are in
+[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#who-can-reach-the-agent).
+
 ### Web UI
 
 ```bash
@@ -637,7 +643,7 @@ full-screen view use `/keys list`, or run `wintermolt --keys`.
 | [docs/TOOLS.md](docs/TOOLS.md) | The 20 built-in tools (9 core + 11 extended), triggers, safety. |
 | [docs/SKILLS.md](docs/SKILLS.md) | Skill manifest format, built-in catalog, custom skills. |
 | [docs/MCP.md](docs/MCP.md) | MCP client + server, `~/.wintermolt/mcp.json`, Claude Desktop / Zed wiring. |
-| [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | Run modes (`--chat`, `--web`, `--menubar`, `--gateway`), 18 chat platforms, scheduler, Tailscale, persistent storage. |
+| [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | Run modes (`--chat`, `--web`, `--menubar`, `--gateway`), 16 chat platforms and who can reach the agent through them, scheduler, Tailscale, persistent storage. |
 
 ---
 

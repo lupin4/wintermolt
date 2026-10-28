@@ -14,13 +14,20 @@ export function createAdapter(): ChatAdapter {
     if (msg.fromMe) return;
 
     const contact = await msg.getContact();
+    // In a group, msg.from is the group and msg.author is the person who
+    // wrote it. Using msg.from as the sender made a whole group one sender.
+    const isGroup = String(msg.from).endsWith('@g.us');
+    const me = client.info?.wid?._serialized;
+    const repliesToMe = msg.hasQuotedMsg && (await msg.getQuotedMessage())?.fromMe === true;
     sendToAgent({
       type: 'message',
       platform: 'whatsapp',
-      from: msg.from,
+      from: isGroup ? msg.author : msg.from,
       fromName: contact.pushname ?? contact.name ?? undefined,
       channel: msg.from,
       text: msg.body,
+      chatType: isGroup ? 'group' : 'direct',
+      mentioned: (!!me && (msg.mentionedIds ?? []).includes(me)) || repliesToMe,
     });
   });
 

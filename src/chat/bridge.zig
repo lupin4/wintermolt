@@ -23,13 +23,16 @@ const compat = @import("../compat.zig");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 const Child = std.process.Child;
-const sse = @import("../api/sse.zig");
+const access = @import("access.zig");
 
-/// A parsed incoming chat message from the sidecar.
+/// A parsed incoming chat message from the sidecar. Its slices live in the
+/// bridge's arena and are valid until the next readMessage.
 pub const ChatMessage = struct {
     platform: []const u8,
     from: []const u8,
     from_name: ?[]const u8,
+    /// Where a reply goes: the group, room or DM conversation the message
+    /// arrived in. Not `from` -- that is the person.
     channel: []const u8,
     text: []const u8,
     // Threading & routing context (for multi-agent routing, threaded replies)
@@ -38,8 +41,15 @@ pub const ChatMessage = struct {
     guild: ?[]const u8 = null,
     roles: ?[]const u8 = null, // Comma-separated role list
     attachments: ?[]const u8 = null, // JSON array of attachment URLs
-    raw_json: []const u8, // Full JSON line (owned, for lifetime management)
+    /// null when the adapter did not say (access.zig drops such a message).
+    chat_type: ?access.ChatType = null,
+    /// The adapter saw the bot mentioned, or the message replies to the bot.
+    mentioned: bool = false,
 };
+
+/// Longest line accepted from the sidecar. Attachments travel as URLs, so a
+/// real message is far below this; a longer line is a broken sidecar.
+const MAX_LINE = 4 * 1024 * 1024;
 
 /// A status event from the sidecar.
 pub const StatusEvent = struct {
@@ -55,7 +65,12 @@ pub const ChatBridge = struct {
     stdout_file: fsio.File,
     stdin_file: fsio.File,
     chat_argv: []const []const u8, // heap-allocated, freed in deinit
-    line_buf: [8192]u8 = undefined,
+    /// One reader for the bridge's life. FileReader buffers 64 KiB, so a
+    /// reader made per call drops every byte read past the first newline --
+    /// the second of two lines that arrive in one read() was lost that way.
+    reader: *stdio.FileReader,
+    /// Backs the current ChatMessage; reset at each readMessage.
+    arena: std.heap.ArenaAllocator,
 
     /// Spawn the chat sidecar process.
     /// Looks for wintermolt-chat binary in order:
@@ -75,9 +90,13 @@ pub const ChatBridge = struct {
 
         try stderr.print("[chat] Starting sidecar: {s}\n", .{chat_binary});
 
+        const reader = try alloc.create(stdio.FileReader);
+        errdefer alloc.destroy(reader);
+
         // Long-lived sidecar with both pipes open, stderr inherited so its logs
         // land on ours -- spawnPiped is exactly this shape.
         const child = try fsio.spawnPiped(alloc, chat_args);
+        reader.* = stdio.readerFor(child.stdout.?);
 
         return .{
             .alloc = alloc,
@@ -85,25 +104,27 @@ pub const ChatBridge = struct {
             .stdout_file = child.stdout.?,
             .stdin_file = child.stdin.?,
             .chat_argv = chat_args,
+            .reader = reader,
+            .arena = std.heap.ArenaAllocator.init(alloc),
         };
     }
 
-    /// Read the next incoming message from the chat sidecar.
-    /// Blocks until a message arrives. Returns null on EOF (process exited).
+    /// Read the next incoming message from the chat sidecar, skipping status
+    /// events and lines that are not messages. Blocks until one arrives.
+    /// Returns null only when the sidecar is gone (or broke the protocol).
     pub fn readMessage(self: *ChatBridge) ?ChatMessage {
-        var reader = stdio.readerFor(self.stdout_file);
-        const line = reader.readUntilDelimiter(&self.line_buf, '\n') catch |e| {
-            if (e == error.EndOfStream) return null;
-            const stderr = stdio.stderr();
-            stderr.print("[chat] Read error: {s}\n", .{@errorName(e)}) catch {};
-            return null;
-        };
-
-        // Trim whitespace
-        const trimmed = std.mem.trim(u8, line, " \t\r");
-        if (trimmed.len == 0) return self.readMessage(); // Skip empty lines
-
-        return parseMessage(trimmed);
+        const stderr = stdio.stderr();
+        while (true) {
+            _ = self.arena.reset(.retain_capacity);
+            const arena = self.arena.allocator();
+            const line = self.reader.readUntilDelimiterAlloc(arena, '\n', MAX_LINE) catch |e| {
+                if (e != error.EndOfStream) stderr.print("[chat] Read error: {s}\n", .{@errorName(e)}) catch {};
+                return null;
+            };
+            const trimmed = std.mem.trim(u8, line, " \t\r");
+            if (trimmed.len == 0) continue;
+            if (parseLine(arena, trimmed)) |msg| return msg;
+        }
     }
 
     /// Send a reply to the chat sidecar.
@@ -147,6 +168,8 @@ pub const ChatBridge = struct {
         _ = fsio.waitChild(&self.child) catch {};
         // Free heap-allocated argv
         self.alloc.free(self.chat_argv);
+        self.alloc.destroy(self.reader);
+        self.arena.deinit();
     }
 };
 
@@ -155,41 +178,112 @@ pub const ChatBridge = struct {
 // ---------------------------------------------------------------------------
 
 /// Parse a JSON line into a ChatMessage. Returns null if not a "message" type.
-fn parseMessage(json: []const u8) ?ChatMessage {
-    const msg_type = sse.findJsonString(json, "type") orelse return null;
+/// The sidecar's JSON line, field for field (chat/src/types.ts). Parsed with
+/// std.json rather than by searching for keys: the key search returned
+/// unescaped strings in one shared buffer, so a later field with an escape in
+/// it (attachments always has some) overwrote an earlier one, `text` included.
+const Wire = struct {
+    type: []const u8,
+    platform: []const u8 = "unknown",
+    // A message without a sender or a conversation is not a message: these
+    // have no default, so such a line fails to parse and is skipped.
+    from: ?[]const u8 = null,
+    fromName: ?[]const u8 = null,
+    channel: ?[]const u8 = null,
+    text: []const u8 = "",
+    threadId: ?[]const u8 = null,
+    replyTo: ?[]const u8 = null,
+    guild: ?[]const u8 = null,
+    roles: ?[]const u8 = null,
+    attachments: ?[]const u8 = null,
+    chatType: ?[]const u8 = null,
+    mentioned: bool = false,
+    // status events
+    status: ?[]const u8 = null,
+    data: ?[]const u8 = null,
+};
 
-    if (std.mem.eql(u8, msg_type, "message")) {
-        return ChatMessage{
-            .platform = sse.findJsonString(json, "platform") orelse "unknown",
-            .from = sse.findJsonString(json, "from") orelse "unknown",
-            .from_name = sse.findJsonString(json, "fromName"),
-            .channel = sse.findJsonString(json, "channel") orelse "dm",
-            .text = sse.findJsonString(json, "text") orelse "",
-            .thread_id = sse.findJsonString(json, "threadId"),
-            .reply_to = sse.findJsonString(json, "replyTo"),
-            .guild = sse.findJsonString(json, "guild"),
-            .roles = sse.findJsonString(json, "roles"),
-            .attachments = sse.findJsonString(json, "attachments"),
-            .raw_json = json,
-        };
-    }
+/// A message, or null for a status event (logged here) or a line that is not
+/// a well-formed message (logged, so a broken adapter is visible).
+fn parseLine(arena: Allocator, json: []const u8) ?ChatMessage {
+    const stderr = stdio.stderr();
+    const w = std.json.parseFromSliceLeaky(Wire, arena, json, .{
+        .ignore_unknown_fields = true,
+        .allocate = .alloc_always,
+    }) catch |e| {
+        stderr.print("[chat] Unreadable line from the sidecar ({s})\n", .{@errorName(e)}) catch {};
+        return null;
+    };
 
-    if (std.mem.eql(u8, msg_type, "status")) {
-        // Print status events to stderr for visibility
-        const platform = sse.findJsonString(json, "platform") orelse "unknown";
-        const status = sse.findJsonString(json, "status") orelse "unknown";
-        const data = sse.findJsonString(json, "data");
-
-        const stderr = stdio.stderr();
-        if (data) |d| {
-            stderr.print("[{s}] {s}: {s}\n", .{ platform, status, d }) catch {};
+    if (std.mem.eql(u8, w.type, "status")) {
+        const status = w.status orelse "unknown";
+        if (w.data) |d| {
+            stderr.print("[{s}] {s}: {s}\n", .{ w.platform, status, d }) catch {};
         } else {
-            stderr.print("[{s}] {s}\n", .{ platform, status }) catch {};
+            stderr.print("[{s}] {s}\n", .{ w.platform, status }) catch {};
         }
-        return null; // Status events don't generate agent responses
+        return null;
     }
+    if (!std.mem.eql(u8, w.type, "message")) return null;
 
-    return null;
+    const from = w.from orelse {
+        stderr.print("[chat] {s} message without a sender, skipped\n", .{w.platform}) catch {};
+        return null;
+    };
+    const channel = w.channel orelse {
+        stderr.print("[chat] {s} message without a channel, skipped\n", .{w.platform}) catch {};
+        return null;
+    };
+    return ChatMessage{
+        .platform = w.platform,
+        .from = from,
+        .from_name = w.fromName,
+        .channel = channel,
+        .text = w.text,
+        .thread_id = w.threadId,
+        .reply_to = w.replyTo,
+        .guild = w.guild,
+        .roles = w.roles,
+        .attachments = w.attachments,
+        .chat_type = if (w.chatType) |t| std.meta.stringToEnum(access.ChatType, t) else null,
+        .mentioned = w.mentioned,
+    };
+}
+
+test "parseLine: status events and other types are not messages" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try std.testing.expect(parseLine(a, "{\"type\":\"status\",\"platform\":\"telegram\",\"status\":\"connected\"}") == null);
+    try std.testing.expect(parseLine(a, "{\"type\":\"typing\",\"platform\":\"telegram\"}") == null);
+    try std.testing.expect(parseLine(a, "not json") == null);
+}
+
+test "parseLine: every field survives, escapes included" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const m = parseLine(arena.allocator(),
+        \\{"type":"message","platform":"discord","from":"U1","fromName":"a\"b","channel":"C1","text":"line1\nline2","guild":"G1","attachments":"[\"https://x/y.png\"]","chatType":"group","mentioned":true}
+    ).?;
+    try std.testing.expectEqualStrings("U1", m.from);
+    try std.testing.expectEqualStrings("a\"b", m.from_name.?);
+    try std.testing.expectEqualStrings("C1", m.channel);
+    try std.testing.expectEqualStrings("line1\nline2", m.text);
+    try std.testing.expectEqualStrings("[\"https://x/y.png\"]", m.attachments.?);
+    try std.testing.expectEqual(access.ChatType.group, m.chat_type.?);
+    try std.testing.expect(m.mentioned);
+}
+
+test "parseLine: an unknown or missing chat type stays null, a missing sender is skipped" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const m = parseLine(a, "{\"type\":\"message\",\"platform\":\"x\",\"from\":\"1\",\"channel\":\"1\",\"chatType\":\"channel\"}").?;
+    try std.testing.expect(m.chat_type == null);
+    try std.testing.expect(!m.mentioned);
+    try std.testing.expect(parseLine(a, "{\"type\":\"message\",\"platform\":\"x\",\"channel\":\"1\"}") == null);
+    // Duplicate keys are an error, not a choice between two senders.
+    try std.testing.expect(parseLine(a, "{\"type\":\"message\",\"platform\":\"x\",\"from\":\"1\",\"from\":\"2\",\"channel\":\"1\"}") == null);
 }
 
 /// Write a JSON-escaped string (no surrounding quotes).
