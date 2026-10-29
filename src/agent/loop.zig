@@ -35,8 +35,6 @@ const redact = @import("redact.zig");
 const scheduler_mod = @import("scheduler.zig");
 const camera_tool = @import("../tools/camera.zig");
 
-const MAX_ITERATIONS = 25;
-
 // Output leak guard (redact.zig): per-reply redactor + inner callback at module
 // scope (TextCallback carries no userdata). Replies are sequential per process.
 var g_redactor: ?redact.Redactor = null;
@@ -300,7 +298,8 @@ pub const AgentLoop = struct {
             &.{};
 
         var iteration: usize = 0;
-        while (iteration < MAX_ITERATIONS) : (iteration += 1) {
+        const max_iterations: usize = @max(1, self.config.max_iterations);
+        while (iteration < max_iterations) : (iteration += 1) {
             // Fire voice start callback on first iteration
             if (iteration == 0) {
                 if (self.voice_start_callback) |cb| cb();
@@ -421,7 +420,7 @@ pub const AgentLoop = struct {
             }
         }
 
-        try stderr.print("[Warning] Hit max iterations ({d})\n", .{MAX_ITERATIONS});
+        try stderr.print("[Warning] Hit max iterations ({d})\n", .{max_iterations});
     }
 
     /// Process input with web UI context (message ID for events).
