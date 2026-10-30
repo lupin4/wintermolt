@@ -21,6 +21,9 @@
   <img src="https://img.shields.io/badge/backends-7_(Ollama%2C_Claude%2C_GPT%2C_DeepSeek%2C_Qwen%2C_Gemini%2C_forAI)-purple?style=flat-square" alt="Backends">
 </p>
 
+> **wintermolt has no token or coin.** The `$WINTERMOLT` token on Base is not
+> affiliated with this project or its author.
+
 ---
 
 ```
