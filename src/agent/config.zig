@@ -8,6 +8,10 @@
 //                              claude, openai, deepseek, qwen, gemini, kernel, forai.
 //                              AgentLoop.init builds it, so every mode follows it
 //   WINTERMOLT_TOKENS        — Optional. Max response tokens (default: 8192)
+//   WINTERMOLT_MAX_ITERATIONS — Optional. Tool-loop iterations per turn before the agent
+//                              gives up (default: 25). Raise it for long multi-step tasks
+//                              (e.g. one fix per file across a repo); each iteration is one
+//                              model request plus its tool calls
 //   WINTERMOLT_NO_HISTORY    — Optional. Set to "1" to disable SQLite history
 //   WINTERMOLT_NO_FALLBACK   — Optional. Set to "1": a failed request fails (no Ollama/OpenAI retry)
 //   WINTERMOLT_NO_TOOLS      — Optional. Set to "1": send no tool definitions (models without
@@ -111,6 +115,17 @@ pub const CONFIG_VERSION: u32 = 1;
 /// still win over this.
 pub const default_local_model = "qwen3:8b";
 
+/// Tool-loop budget for one turn: WINTERMOLT_MAX_ITERATIONS as a positive
+/// integer, or 25 when unset, malformed, or zero. Pulled out of load() so the
+/// decision is unit-testable without the file I/O load() performs.
+pub fn parseMaxIterations(raw: ?[]const u8) u32 {
+    const text = raw orelse return default_max_iterations;
+    const parsed = std.fmt.parseInt(u32, text, 10) catch return default_max_iterations;
+    return if (parsed == 0) default_max_iterations else parsed;
+}
+
+pub const default_max_iterations: u32 = 25;
+
 /// Check config version from .env and print migration notices if needed.
 pub fn migrateConfig() void {
     const version_str = compat.getenv("WINTERMOLT_CONFIG_VERSION") orelse "0";
@@ -201,6 +216,10 @@ pub const Config = struct {
     // variable and default. See backend above.
     model_named: bool,
     max_tokens: u32,
+    // Tool-loop budget for one user turn: after this many model requests the loop
+    // stops with the "max iterations" warning. WINTERMOLT_MAX_ITERATIONS overrides
+    // the 25 default; a value of 0 is treated as the default so a turn always runs.
+    max_iterations: u32,
     system_prompt: []const u8,
     history_enabled: bool,
     // False: a failed request fails, instead of being retried on Ollama/OpenAI.
@@ -286,6 +305,8 @@ pub const Config = struct {
             const tokens_str = compat.getenv("WINTERMOLT_TOKENS") orelse break :blk 8192;
             break :blk std.fmt.parseInt(u32, tokens_str, 10) catch 8192;
         };
+
+        const max_iterations = parseMaxIterations(compat.getenv("WINTERMOLT_MAX_ITERATIONS"));
 
         const history_enabled = blk: {
             const no_hist = compat.getenv("WINTERMOLT_NO_HISTORY") orelse break :blk true;
@@ -380,6 +401,7 @@ pub const Config = struct {
             .backend = backend,
             .model_named = model_named,
             .max_tokens = max_tokens,
+            .max_iterations = max_iterations,
             .system_prompt = constitution_text,
             .history_enabled = history_enabled,
             .fallback_enabled = fallback_enabled,
@@ -561,3 +583,18 @@ pub const default_constitution =
     \\You can see images when the user shares them (camera capture, screenshots).
     \\Describe what you see in detail when asked.
 ;
+
+test "parseMaxIterations: unset, malformed and zero fall back to the default" {
+    try std.testing.expectEqual(default_max_iterations, parseMaxIterations(null));
+    try std.testing.expectEqual(default_max_iterations, parseMaxIterations(""));
+    try std.testing.expectEqual(default_max_iterations, parseMaxIterations("abc"));
+    try std.testing.expectEqual(default_max_iterations, parseMaxIterations("-3"));
+    try std.testing.expectEqual(default_max_iterations, parseMaxIterations("0"));
+    try std.testing.expectEqual(default_max_iterations, parseMaxIterations("1.5"));
+}
+
+test "parseMaxIterations: a positive integer is honoured verbatim" {
+    try std.testing.expectEqual(@as(u32, 1), parseMaxIterations("1"));
+    try std.testing.expectEqual(@as(u32, 80), parseMaxIterations("80"));
+    try std.testing.expectEqual(@as(u32, 4294967295), parseMaxIterations("4294967295"));
+}
