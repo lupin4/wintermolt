@@ -169,9 +169,9 @@ pub const DeepSeekClient = struct {
             }
 
             const stderr = stdio.stderr();
-            const error_body = parser.getAccumulatedText();
-            if (error_body.len > 0) {
-                stderr.print("\n[{s} HTTP {d}] {s}\n", .{ self.label, http_code, error_body[0..@min(error_body.len, 500)] }) catch {};
+            const error_text = parser.httpErrorText();
+            if (error_text.len > 0) {
+                stderr.print("\n[{s} HTTP {d}] {s}\n", .{ self.label, http_code, error_text }) catch {};
             } else {
                 stderr.print("\n[{s} HTTP {d}] Request failed\n", .{ self.label, http_code }) catch {};
             }

@@ -64,7 +64,7 @@ called `qwen3:8b`. The provider refuses it, and the refusal fails the request:
 the usual fallback chain runs, and `-e` exits 1 when nothing answers. What that
 refusal looks like on stderr:
 
-- `404`: `[openai HTTP 404] Request failed`, then `[fallback] Trying Ollama
+- `404`: `[openai HTTP 404] <provider message>`, then `[fallback] Trying Ollama
   ...`, and exit 1 when that fails too. With `WINTERMOLT_NO_FALLBACK=1` it is
   `[fallback] off (WINTERMOLT_NO_FALLBACK=1): OpenAI failed (HttpError)`.
 - `400` is read as context overflow, not as a refused model: wintermolt
@@ -73,13 +73,14 @@ refusal looks like on stderr:
 - A `200` whose stream carries an error frame is `[openai] stream error:
   <provider text>` and does fall back (see below).
 
-An HTTP failure prints the status, not the provider's own error body; the `200`
-error frame is the one shape whose message is relayed. For a local engine that
-body is where the models it does serve are named, and it is dropped too: an
-engine holding only `Ornith-1.5-9B-MLX-4bit` answers a
-`WINTERMOLT_MODEL=qwen3:8b` request with `404` and that list, and wintermolt
-prints `[openai HTTP 404] Request failed` in its place. Ask the engine for the
-names it will answer to — `GET /v1/models` on the OpenAI-compatible route.
+An HTTP failure prints the status and the provider's own message: the body's
+`error.message` when it is JSON, else up to 500 bytes of the body, and
+`Request failed` only when there was no body. For a local engine that message is
+where the models it does serve are named: an engine holding only
+`Ornith-1.5-9B-MLX-4bit` answers a `WINTERMOLT_MODEL=qwen3:8b` request with
+`[openai HTTP 404] Model 'qwen3:8b' not found. Available models:
+Ornith-1.5-9B-MLX-4bit`. `GET /v1/models` on the OpenAI-compatible route lists
+the same names.
 
 Setting the variable is an explicit request, so a backend that cannot be built —
 a mistyped name, a cloud backend without its key, `forai` on a build without the

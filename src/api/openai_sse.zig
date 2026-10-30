@@ -48,6 +48,11 @@ pub const OpenAiStreamParser = struct {
     /// That frame's provider message, owned. Optional — stream_failed stands on
     /// its own.
     stream_error: ?[]u8 = null,
+    /// The first bytes of the body as sent. A non-2xx body is JSON, not SSE, so
+    /// no line of it is parsed; httpErrorText reads it from here.
+    raw_head: ArrayList(u8) = .empty,
+
+    const raw_head_cap = 4096;
 
     const ToolCallAccum = struct {
         id: []u8,
@@ -72,6 +77,7 @@ pub const OpenAiStreamParser = struct {
         }
         self.tool_calls.deinit(self.alloc);
         if (self.stream_error) |msg| self.alloc.free(msg);
+        self.raw_head.deinit(self.alloc);
     }
 
     pub fn reset(self: *OpenAiStreamParser) void {
@@ -88,10 +94,13 @@ pub const OpenAiStreamParser = struct {
         self.stream_failed = false;
         if (self.stream_error) |msg| self.alloc.free(msg);
         self.stream_error = null;
+        self.raw_head.clearRetainingCapacity();
     }
 
     /// Feed raw SSE data from curl callback.
     pub fn feed(self: *OpenAiStreamParser, data: []const u8) !void {
+        const room = raw_head_cap - self.raw_head.items.len;
+        try self.raw_head.appendSlice(self.alloc, data[0..@min(room, data.len)]);
         for (data) |byte| {
             if (byte == '\n') {
                 const line = self.line_buf.items;
@@ -109,9 +118,7 @@ pub const OpenAiStreamParser = struct {
         // Nothing after [DONE] or a provider error frame is ours to read.
         if (self.done) return;
 
-        // SSE data: prefix
-        if (!std.mem.startsWith(u8, line, "data: ")) return;
-        const payload = line["data: ".len..];
+        const payload = sse_utils.fieldValue(line, "data") orelse return;
 
         // Provider error frame, in either shape seen in the wild:
         //   {"type":"error","error":{"message":"..."}}
@@ -226,9 +233,11 @@ pub const OpenAiStreamParser = struct {
         }
     }
 
-    /// Get accumulated text (for error display).
-    pub fn getAccumulatedText(self: *const OpenAiStreamParser) []const u8 {
-        return self.text_buf.items;
+    /// What a non-2xx response said: the body's error message when it is JSON
+    /// that carries one, else up to 500 bytes of the body ("" when it had none).
+    pub fn httpErrorText(self: *const OpenAiStreamParser) []const u8 {
+        const body = std.mem.trim(u8, self.raw_head.items, " \t\r\n");
+        return sse_utils.findJsonString(body, "message") orelse body[0..@min(body.len, 500)];
     }
 
     /// Build a Wintermolt protocol.Response from accumulated state.
@@ -480,4 +489,58 @@ test "stream error: nothing after [DONE] is parsed" {
     try parser.feed("data: [DONE]\n\n");
     try parser.feed("data: {\"choices\":[{\"delta\":{\"content\":\"late\"}}]}\n");
     try std.testing.expectEqual(@as(usize, 0), parser.text_buf.items.len);
+}
+
+// The SSE spec makes the space after "data:" optional, and some gateways omit
+// it (#7). Without it every line was dropped: an empty answer, no error.
+test "data lines: a compact data: line streams text, a tool call and [DONE]" {
+    var parser = OpenAiStreamParser.init(std.testing.allocator, null);
+    defer parser.deinit();
+
+    try parser.feed("data:{\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n");
+    try parser.feed("data:{\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\"," ++
+        "\"function\":{\"name\":\"bash\",\"arguments\":\"{}\"}}]}}]}\n");
+    try parser.feed("data:[DONE]\n");
+
+    try std.testing.expectEqualStrings("hi", parser.text_buf.items);
+    try std.testing.expectEqual(@as(usize, 1), parser.tool_calls.items.len);
+    try std.testing.expectEqualStrings("bash", parser.tool_calls.items[0].name.items);
+    try std.testing.expect(parser.done);
+    try std.testing.expectEqual(protocol.StopReason.tool_use, parser.stop_reason);
+}
+
+test "data lines: a compact error frame is still a frame" {
+    var parser = OpenAiStreamParser.init(std.testing.allocator, null);
+    defer parser.deinit();
+
+    try parser.feed("data:{\"type\":\"error\",\"error\":{\"message\":\"rate limited\"}}\n");
+    try std.testing.expect(parser.stream_failed);
+    try std.testing.expectEqualStrings("rate limited", parser.stream_error orelse "");
+}
+
+// A non-2xx body is JSON, not SSE, so no line of it is parsed. For a local
+// engine it is where the models it does serve are named (#4), and OpenAI
+// itself pretty-prints it over several lines.
+test "http error: the body's message is kept, on one line or pretty-printed" {
+    var parser = OpenAiStreamParser.init(std.testing.allocator, null);
+    defer parser.deinit();
+
+    try parser.feed("{\"error\":{\"message\":\"Model 'qwen3:8b' not found. Available models: " ++
+        "Ornith-1.5-9B-MLX-4bit\",\"type\":\"not_found_error\"}}");
+    try std.testing.expectEqualStrings(
+        "Model 'qwen3:8b' not found. Available models: Ornith-1.5-9B-MLX-4bit",
+        parser.httpErrorText(),
+    );
+
+    parser.reset();
+    try parser.feed("{\n    \"error\": {\n        \"message\": \"The model `gpt-9` does not exist\",\n" ++
+        "        \"type\": \"invalid_request_error\"\n    }\n}\n");
+    try std.testing.expectEqualStrings("The model `gpt-9` does not exist", parser.httpErrorText());
+
+    // A body that is not JSON is shown as sent; no body at all is "".
+    parser.reset();
+    try parser.feed("Bad Gateway\r\n");
+    try std.testing.expectEqualStrings("Bad Gateway", parser.httpErrorText());
+    parser.reset();
+    try std.testing.expectEqualStrings("", parser.httpErrorText());
 }

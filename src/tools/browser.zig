@@ -336,8 +336,34 @@ fn resolveWsUrl(alloc: Allocator, tab_id: ?[]const u8) ![]u8 {
     return error.TabNotFound;
 }
 
-/// Send a CDP command via WebSocket using a subprocess.
-/// Uses websocat if available, falls back to node -e one-liner.
+/// Sends one CDP message ($1) to a WebSocket URL ($2) and prints the reply:
+/// websocat if installed, else node's built-in WebSocket (Node 22+), giving up
+/// after $3 seconds. The message carries page-controlled data (URLs, text to
+/// type, JS), so it and the URL are arguments, never script text: spliced into
+/// the script, a ';' in a URL ran as shell.
+const cdp_script =
+    \\if command -v websocat >/dev/null 2>&1; then
+    \\  printf '%s\n' "$1" | websocat -n1 "$2"
+    \\elif command -v node >/dev/null 2>&1; then
+    \\  node -e '
+    \\    const [msg, url, secs] = process.argv.slice(1);
+    \\    const ws = new WebSocket(url);
+    \\    const timer = setTimeout(() => { process.exit(1); }, secs * 1000);
+    \\    ws.onopen = () => { ws.send(msg); };
+    \\    ws.onmessage = (e) => { console.log(e.data); ws.close(); clearTimeout(timer); };
+    \\    ws.onerror = (e) => { console.error("WebSocket error:", e.message); process.exit(1); };
+    \\  ' "$1" "$2" "$3"
+    \\else
+    \\  echo 'ERROR: Neither websocat nor node found. Install one: brew install websocat OR brew install node'
+    \\  exit 1
+    \\fi
+;
+
+fn cdpArgv(msg: []const u8, ws_url: []const u8, timeout_secs: []const u8) [7][]const u8 {
+    return .{ "/bin/sh", "-c", cdp_script, "sh", msg, ws_url, timeout_secs };
+}
+
+/// Send a CDP command via WebSocket using a subprocess (see cdp_script).
 ///
 /// The CDP protocol is JSON-RPC over WebSocket:
 ///   Send: {"id":1,"method":"Page.navigate","params":{"url":"https://..."}}
@@ -349,74 +375,15 @@ fn cdpCommand(alloc: Allocator, ws_url: []const u8, method: []const u8, params_j
     , .{ method, params_json });
     defer alloc.free(cdp_msg);
 
-    // Strategy 1: Try websocat (lightweight WebSocket CLI tool)
-    // Strategy 2: Fall back to node -e with built-in WebSocket (Node 22+) or ws module
-    //
-    // The bash command:
-    //   echo '<cdp_msg>' | websocat -n1 '<ws_url>'
-    // OR:
-    //   node -e "const ws=new WebSocket('URL');ws.onopen=()=>{ws.send(JSON.stringify(MSG));};
-    //            ws.onmessage=(e)=>{console.log(e.data);ws.close();};"
-    //
-    // We try websocat first because it's simpler and faster.
-
-    // Escape single quotes in the CDP message for shell embedding
-    var escaped_msg: std.Io.Writer.Allocating = .init(alloc);
-    defer escaped_msg.deinit();
-    const ew = &escaped_msg.writer;
-    for (cdp_msg) |ch| {
-        if (ch == '\'') {
-            try ew.writeAll("'\"'\"'");
-        } else {
-            try ew.writeByte(ch);
-        }
-    }
-
-    // Escape single quotes in the WS URL too
-    var escaped_url: std.Io.Writer.Allocating = .init(alloc);
-    defer escaped_url.deinit();
-    const uw = &escaped_url.writer;
-    for (ws_url) |ch| {
-        if (ch == '\'') {
-            try uw.writeAll("'\"'\"'");
-        } else {
-            try uw.writeByte(ch);
-        }
-    }
-
-    // Build the shell command: try websocat, fall back to node
-    const shell_cmd = try std.fmt.allocPrint(alloc,
-        \\if command -v websocat >/dev/null 2>&1; then
-        \\  echo '{s}' | websocat -n1 '{s}'
-        \\elif command -v node >/dev/null 2>&1; then
-        \\  node -e "
-        \\    const ws = new WebSocket('{s}');
-        \\    const timer = setTimeout(() => {{ process.exit(1); }}, {d}000);
-        \\    ws.onopen = () => {{ ws.send('{s}'); }};
-        \\    ws.onmessage = (e) => {{ console.log(e.data); ws.close(); clearTimeout(timer); }};
-        \\    ws.onerror = (e) => {{ console.error('WebSocket error:', e.message); process.exit(1); }};
-        \\  "
-        \\else
-        \\  echo 'ERROR: Neither websocat nor node found. Install one: brew install websocat OR brew install node'
-        \\  exit 1
-        \\fi
-    , .{
-        escaped_msg.written(),
-        escaped_url.written(),
-        escaped_url.written(),
-        CDP_WS_TIMEOUT,
-        escaped_msg.written(),
-    });
-    defer alloc.free(shell_cmd);
-
-    const shell_z = try alloc.dupeZ(u8, shell_cmd);
-    defer alloc.free(shell_z);
+    var secs_buf: [12]u8 = undefined;
+    const secs = try std.fmt.bufPrint(&secs_buf, "{d}", .{CDP_WS_TIMEOUT});
+    const argv = cdpArgv(cdp_msg, ws_url, secs);
 
     // Spawn the subprocess. Child.init + collectOutput + wait collapse into
     // runCapture. The StreamTooLong tolerance becomes a hard error, which for a
     // CDP response over MAX_CDP_RESPONSE is more honest than handing back a
     // truncated JSON document.
-    const run = try fsio.runCapture(alloc, &[_][]const u8{ "/bin/sh", "-c", shell_z }, MAX_CDP_RESPONSE, null);
+    const run = try fsio.runCapture(alloc, &argv, MAX_CDP_RESPONSE, null);
     defer run.deinit(alloc);
 
     const exit_code: i64 = if (run.exited)
@@ -881,4 +848,15 @@ fn decodeBase64(alloc: Allocator, encoded: []const u8) ![]u8 {
     }
 
     return output[0..out_i];
+}
+
+// Page data in the message (a URL, text to type, JS) must reach the subprocess
+// as an argument. Spliced into the script text, a ';' in a URL ran as shell.
+test "cdp: the message and URL are arguments, never script text" {
+    const msg = "{\"id\":1,\"method\":\"Page.navigate\",\"params\":{\"url\":\"https://x/;touch /tmp/p'$(id)`id`\"}}";
+    const url = "ws://127.0.0.1:9222/devtools/page/1";
+    const argv = cdpArgv(msg, url, "15");
+    try std.testing.expectEqualStrings(cdp_script, argv[2]);
+    try std.testing.expectEqualStrings(msg, argv[4]);
+    try std.testing.expectEqualStrings(url, argv[5]);
 }

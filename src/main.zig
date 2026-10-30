@@ -1738,4 +1738,6 @@ fn printHelp(w: anytype) !void {
 test {
     _ = @import("agent/redact.zig");
     _ = @import("api/openai_sse.zig");
+    _ = @import("api/sse.zig");
+    _ = @import("tools/browser.zig");
 }

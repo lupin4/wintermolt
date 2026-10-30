@@ -18,7 +18,6 @@
 //   error                — API error
 
 const std = @import("std");
-const stdio = @import("../stdio.zig");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 const protocol = @import("protocol.zig");
@@ -63,6 +62,11 @@ pub const StreamParser = struct {
     line_buf: ArrayList(u8) = .empty,
     /// Current event type (set by "event:" line)
     pending_event_type: ?EventType = null,
+    /// An `event: error` arrived inside a 200 stream (overloaded_error and the
+    /// like). The client turns it into a failed request, as openai_sse does.
+    stream_failed: bool = false,
+    /// That event's message, owned. Optional — stream_failed stands on its own.
+    stream_error: ?[]u8 = null,
 
     pub fn init(alloc: Allocator, text_cb: ?TextCallback) StreamParser {
         return .{
@@ -81,6 +85,7 @@ pub const StreamParser = struct {
         for (self.tool_inputs.items) |*inp| inp.deinit(self.alloc);
         self.tool_inputs.deinit(self.alloc);
         self.line_buf.deinit(self.alloc);
+        if (self.stream_error) |msg| self.alloc.free(msg);
     }
 
     /// Reset accumulated state for retry (e.g., after HTTP 429).
@@ -99,6 +104,9 @@ pub const StreamParser = struct {
         self.current_block_index = null;
         self.stop_reason = .unknown;
         self.pending_event_type = null;
+        self.stream_failed = false;
+        if (self.stream_error) |msg| self.alloc.free(msg);
+        self.stream_error = null;
     }
 
     /// Feed a chunk of raw SSE data from curl. May contain partial lines.
@@ -127,14 +135,12 @@ pub const StreamParser = struct {
             return;
         }
 
-        if (std.mem.startsWith(u8, trimmed, "event: ")) {
-            const event_name = trimmed[7..];
+        if (fieldValue(trimmed, "event")) |event_name| {
             self.pending_event_type = parseEventType(event_name);
             return;
         }
 
-        if (std.mem.startsWith(u8, trimmed, "data: ")) {
-            const data = trimmed[6..];
+        if (fieldValue(trimmed, "data")) |data| {
             const etype = self.pending_event_type orelse return;
             try self.handleEvent(etype, data);
             return;
@@ -231,10 +237,11 @@ pub const StreamParser = struct {
     }
 
     fn handleError(self: *StreamParser, data: []const u8) void {
-        _ = self;
-        // Print API error to stderr
-        const stderr = stdio.stderr();
-        stderr.print("\n[API Error] {s}\n", .{data}) catch {};
+        // {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}
+        const message = findJsonString(data, "message") orelse data;
+        if (self.stream_error) |old| self.alloc.free(old);
+        self.stream_error = self.alloc.dupe(u8, message) catch null;
+        self.stream_failed = true;
     }
 
     /// Get accumulated raw text from text_blocks (useful for error response bodies).
@@ -298,6 +305,15 @@ fn parseEventType(name: []const u8) EventType {
     if (std.mem.eql(u8, name, "ping")) return .ping;
     if (std.mem.eql(u8, name, "error")) return .@"error";
     return .unknown;
+}
+
+/// The value of SSE field `name` on this line, or null for any other line.
+/// The spec strips one optional space after the colon: "data: x" and "data:x"
+/// both carry "x".
+pub fn fieldValue(line: []const u8, comptime name: []const u8) ?[]const u8 {
+    if (!std.mem.startsWith(u8, line, name ++ ":")) return null;
+    const value = line[name.len + 1 ..];
+    return if (value.len > 0 and value[0] == ' ') value[1..] else value;
 }
 
 /// Extract the value of "index":N from JSON
@@ -459,4 +475,47 @@ pub fn unescapeJson(s: []const u8) []const u8 {
         }
     }
     return unescape_buf[0..out];
+}
+
+// The SSE spec makes the space after a field's colon optional (#7). A stream
+// written without it must read the same as one written with it.
+test "field lines: event: and data: parse the same with or without the space" {
+    const spaced =
+        "event: content_block_start\n" ++
+        "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n" ++
+        "event: content_block_delta\n" ++
+        "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n\n";
+    const compact =
+        "event:content_block_start\n" ++
+        "data:{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n" ++
+        "event:content_block_delta\n" ++
+        "data:{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n\n";
+
+    for ([_][]const u8{ spaced, compact }) |stream| {
+        var parser = StreamParser.init(std.testing.allocator, null);
+        defer parser.deinit();
+        try parser.feed(stream);
+        try std.testing.expectEqual(@as(usize, 1), parser.text_blocks.items.len);
+        try std.testing.expectEqualStrings("hi", parser.text_blocks.items[0]);
+        try std.testing.expect(!parser.stream_failed);
+    }
+}
+
+// Anthropic sends overloaded_error and the like inside a 200 stream. Printed
+// and then dropped, it ended the request as a blank, successful answer, and no
+// fallback ran.
+test "stream error: an error event fails the stream, and reset clears it" {
+    var parser = StreamParser.init(std.testing.allocator, null);
+    defer parser.deinit();
+
+    try parser.feed("event: error\n" ++
+        "data: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}\n\n");
+    try std.testing.expect(parser.stream_failed);
+    try std.testing.expectEqualStrings("Overloaded", parser.stream_error orelse "");
+
+    // A 429 retry reuses the parser; the previous attempt's error must not
+    // outlive it.
+    parser.reset();
+    try std.testing.expect(!parser.stream_failed);
+    try std.testing.expectEqual(@as(?[]u8, null), parser.stream_error);
 }

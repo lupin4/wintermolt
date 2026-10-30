@@ -33,6 +33,26 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **The browser tool no longer runs page data as shell.** Without websocat it
+  spliced the CDP message (URLs, text to type, JS) into a `node -e "..."`
+  script, where every `"` in the JSON toggled the shell's quoting: a `;` in a
+  URL the model was steered to ran as a command. The message and URL are now
+  arguments to a fixed script.
+- **Claude's in-stream errors fail the request.** An `event: error`
+  (`overloaded_error` and the like) inside a `200` was printed and the partial
+  answer returned as a success, so no fallback ran. It is now
+  `[claude] stream error: <message>` and the request fails, as the OpenAI
+  path already did.
+- **`~/.wintermolt/mcp.json` reads `"mcpServers"`**, the key docs/MCP.md and
+  Claude's own configs use. Only `"servers"` was read, so the documented
+  config loaded nothing; both work now.
+- **A provider's HTTP error says why.** A non-2xx answer printed only
+  `[openai HTTP 404] Request failed`; it now prints the body's error message,
+  which for a local engine names the models it does serve. Found by Philipp
+  Baumann (#4).
+- **A stream written `data:{...}` without the space is read.** The SSE spec
+  makes the space optional; both parsers required it, so such a stream came
+  back as an empty answer (#7).
 - **`--chat` processes messages.** It had not since 0.4, for three reasons:
   - the loop stopped at the sidecar's first status event, which every
     adapter sends when it connects;
