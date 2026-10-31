@@ -30,8 +30,75 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **iMessage reads the Messages database as JSON.** It split rows on `|`, and
   the text column came before the sender's, so a message containing `|`
   could name any sender. Replies go to `osascript` without a shell.
+- **Speech never goes through a shell.** Piper and Edge TTS put the text
+  being spoken, which is model output, into a `/bin/sh -c` command line
+  unescaped, so a reply containing `$(…)` ran it. The text is now one
+  argument (or an environment variable, or a file). OpenAI and ElevenLabs
+  requests JSON-escape it, and a `[[speed:…]]` directive is only ever a
+  number. A Deepgram or ElevenLabs voice name, which goes into the URL, is
+  letters, digits, `-` and `_` only. `DEEPGRAM_API_KEY` is redacted like the
+  other keys.
+
+### Added
+
+- **Voice, end to end: `/listen [seconds | audio file]`.** ffmpeg records
+  the microphone (the first DirectShow audio device on Windows, `:0` on
+  macOS, PulseAudio's `default` elsewhere; `WINTERMOLT_MIC` names another),
+  the recording is transcribed and sent as the prompt, and the reply is
+  spoken. Transcription is local whisper.cpp (`whisper-cli`) when a
+  `ggml-*.bin` model is in `~/.wintermolt/models` (or
+  `WINTERMOLT_WHISPER_MODEL` names one), else Deepgram nova-3 with
+  `DEEPGRAM_API_KEY`; `WINTERMOLT_STT_PROVIDER` picks.
+- **Deepgram Aura-2 text-to-speech** (`deepgram`, voice `thalia` by default;
+  any `aura-2-<name>-en`), and **the computer's own voice** (`system`:
+  Windows' built-in speech, macOS `say`, `espeak-ng`), which needs no key.
+  With `WINTERMOLT_TTS_PROVIDER` unset, the first provider whose key is set
+  speaks (Deepgram, OpenAI, ElevenLabs), else the system voice. Before, an
+  unset provider meant OpenAI, and without its key, no speech at all.
+  `--keys` offers `DEEPGRAM_API_KEY`.
+- **`/image <file> [prompt]` attaches an image** (png, jpeg, gif, webp) to
+  the next turn, in the plain prompt and the full-screen view. Drag a file in
+  for its path: the quoted form Windows Terminal pastes and the `\ ` form
+  macOS Terminal pastes both work.
+- **`/screenshot` works on Windows**, through PowerShell. It captures the
+  primary screen at its real resolution.
+- **The agent can look for itself.** `camera_capture` gains `screenshot`
+  (the primary screen) and `view` (any png, jpeg, gif or webp file), so an
+  agent working on its own can check the screen or open an image it found.
+- **The camera works on Windows**, through ffmpeg's DirectShow input. With
+  no device named it uses the first camera that opens. A black frame fails
+  the capture with `CameraFrameIsBlackIsItCovered`, rather than moving on to
+  a virtual camera (NVIDIA Broadcast's shows its own picture).
+  `list_devices` lists them.
 
 ### Fixed
+
+- **Spoken audio plays on Windows and Linux.** `/tts` played only on macOS,
+  through `afplay`; the tool used `aplay`, which cannot play the mp3 the
+  cloud voices return. Both now use `afplay` on macOS and ffmpeg's `ffplay`
+  elsewhere. Audio goes to `%TEMP%` on Windows, not `/tmp`.
+- **A voice service's error is not saved as audio.** A rejected key or a
+  too-long text came back as JSON with a 4xx status, written to an `.mp3`
+  and reported as success; now it is `ApiKeyRejected`, `HttpError` or
+  `TextTooLong`. Edge TTS was asked for OpenAI's voice `alloy`, which it
+  does not have; each provider now has its own default voice.
+- **`/look` and `/screenshot` send the image.** They captured it, discarded
+  it, and sent the model only the words "[Screenshot attached]".
+- **OpenAI-compatible backends receive images.** Their requests replaced
+  every image with the text `[image]`; it now goes as an `image_url` part.
+- **An image a tool returns reaches OpenAI-compatible and Ollama models.**
+  Only Claude saw what `camera_capture` captured; the others got the text
+  "Image captured". The image now follows the tool's reply as a user message,
+  since neither API takes an image inside a tool message.
+- **Captures land in %TEMP% on Windows**, which has no `/tmp`.
+- **`WINTERMOLT_VISION_MODEL` routes images.** It was documented as the model
+  for `/look` and image tools but read by nothing, so a text-only main model
+  (the default qwen3:8b) got images it could not see. A request carrying an
+  image now goes to it, on `WINTERMOLT_VISION_BACKEND` (`ollama` or
+  `openai`); if it fails, the main model answers.
+- **A turn with an attached image does not offer `camera_capture`.** Offered
+  it, gemma4 called `view` on a made-up path (`image.png`) instead of looking
+  at the image it had; without it, it describes the image.
 
 - **The browser tool no longer runs page data as shell.** Without websocat it
   spliced the CDP message (URLs, text to type, JS) into a `node -e "..."`

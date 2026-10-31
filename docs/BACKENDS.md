@@ -119,8 +119,10 @@ WINTERMOLT_QWEN_MODEL=qwen-plus
 GOOGLE_GEMINI_API_KEY=...
 WINTERMOLT_GEMINI_MODEL=gemini-2.0-flash
 
-# Vision routing (used by /look and image tools)
-WINTERMOLT_VISION_BACKEND=ollama   # or "openai"
+# Vision routing: a request carrying an image (/image, /look, /screenshot, or
+# one camera_capture returned) goes to this model; unset, the main model gets
+# it. If the vision model fails, the main model answers.
+WINTERMOLT_VISION_BACKEND=ollama   # or "openai" (OPENAI_API_KEY, WINTERMOLT_OPENAI_URL)
 WINTERMOLT_VISION_MODEL=qwen2.5vl
 ```
 

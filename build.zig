@@ -418,6 +418,31 @@ pub fn build(b: *std.Build) void {
     });
     test_step.dependOn(&b.addRunArtifact(skill_loader_test).step);
 
+    // Images the agent takes or is handed: type sniffing and the camera tool's
+    // `view`. Its own root for the same reason; libc for fsio.
+    const camera_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/camera_tests.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+    });
+    test_step.dependOn(&b.addRunArtifact(camera_test).step);
+
+    // Voice: picking a speech provider, building its request or command line
+    // (the text is model output), and reading a transcript back. Its own root
+    // for the same reason; libc for getenv.
+    const voice_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/voice_tests.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+    });
+    test_step.dependOn(&b.addRunArtifact(voice_test).step);
+
     // --chat: who may reach the agent (the policy decision, and the pairing
     // store on an in-memory database) and how a sidecar line is read. Its own
     // root for the same reason; libc and sqlite3 for the store.

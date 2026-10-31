@@ -334,6 +334,22 @@ pub const OllamaClient = struct {
                         else => {},
                     }
                 }
+                // A tool message carries text only, so an image a tool returned
+                // (camera, screenshot, view) follows as a user message.
+                for (msg.content.items) |block| {
+                    const blocks = switch (block) {
+                        .tool_result => |tr| tr.content_blocks orelse continue,
+                        else => continue,
+                    };
+                    for (blocks) |cb| switch (cb) {
+                        .image => |img| {
+                            try w.writeAll(",{\"role\":\"user\",\"content\":\"\",\"images\":[\"");
+                            try w.writeAll(img.data); // base64, JSON-safe
+                            try w.writeAll("\"]}");
+                        },
+                        else => {},
+                    };
+                }
                 continue;
             }
 
@@ -525,4 +541,19 @@ fn writeJsonStr(w: anytype, s: []const u8) !void {
             },
         }
     }
+}
+
+test "ollama request: an image a tool returned follows its tool message as a user message" {
+    const alloc = std.testing.allocator;
+    const blocks = [_]protocol.ContentBlock{.{ .image = .{ .media_type = "image/jpeg", .data = "/9j/" } }};
+    var msg = protocol.Message{ .role = .user };
+    defer msg.deinit(alloc);
+    try msg.content.append(alloc, .{ .tool_result = .{ .tool_use_id = "t1", .content = "Image attached.", .content_blocks = &blocks } });
+
+    const client = OllamaClient.init(alloc, "http://127.0.0.1:9", "m");
+    const body = try client.serializeRequest("", &.{msg}, &.{});
+    defer alloc.free(body);
+    try std.testing.expect(std.mem.indexOf(u8, body,
+        \\{"role":"tool","content":"Image attached."},{"role":"user","content":"","images":["/9j/"]}
+    ) != null);
 }

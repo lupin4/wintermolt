@@ -247,12 +247,13 @@ fn serializeOpenAiRequest(
         var has_tool_use = false;
         var has_tool_result = false;
         var has_text = false;
+        var has_image = false;
         for (msg.content.items) |block| {
             switch (block) {
                 .tool_use => has_tool_use = true,
                 .tool_result => has_tool_result = true,
                 .text => has_text = true,
-                .image => {},
+                .image => has_image = true,
             }
         }
 
@@ -329,6 +330,22 @@ fn serializeOpenAiRequest(
                     else => {},
                 }
             }
+            // A tool message carries text only, so an image a tool returned
+            // (camera, screenshot, view) follows as a user message.
+            for (msg.content.items) |block| {
+                const blocks = switch (block) {
+                    .tool_result => |tr| tr.content_blocks orelse continue,
+                    else => continue,
+                };
+                for (blocks) |cb| switch (cb) {
+                    .image => |img| {
+                        try w.writeAll(",{\"role\":\"user\",\"content\":[");
+                        try writeImageUrlPart(w, img);
+                        try w.writeAll("]}");
+                    },
+                    else => {},
+                };
+            }
             continue;
         }
 
@@ -337,6 +354,30 @@ fn serializeOpenAiRequest(
         need_comma = true;
         try w.writeAll("{\"role\":\"");
         try w.writeAll(msg.role.toString());
+        if (has_image) {
+            // Vision takes content parts: each image as a data: URL, the text beside it.
+            try w.writeAll("\",\"content\":[");
+            var part_first = true;
+            for (msg.content.items) |block| {
+                switch (block) {
+                    .image => |img| {
+                        if (!part_first) try w.writeByte(',');
+                        part_first = false;
+                        try writeImageUrlPart(w, img);
+                    },
+                    .text => |text| {
+                        if (!part_first) try w.writeByte(',');
+                        part_first = false;
+                        try w.writeAll("{\"type\":\"text\",\"text\":\"");
+                        try writeJsonStr(w, text);
+                        try w.writeAll("\"}");
+                    },
+                    else => {},
+                }
+            }
+            try w.writeAll("]}");
+            continue;
+        }
         try w.writeAll("\",\"content\":\"");
         for (msg.content.items, 0..) |block, bi| {
             if (bi > 0) try w.writeAll("\\n");
@@ -370,6 +411,15 @@ fn serializeOpenAiRequest(
     return buf.toOwnedSlice();
 }
 
+/// An image as an OpenAI content part: a data: URL.
+fn writeImageUrlPart(w: anytype, img: protocol.ImageSource) !void {
+    try w.writeAll("{\"type\":\"image_url\",\"image_url\":{\"url\":\"data:");
+    try writeJsonStr(w, img.media_type);
+    try w.writeAll(";base64,");
+    try w.writeAll(img.data); // base64 is JSON-safe
+    try w.writeAll("\"}}");
+}
+
 /// Write a JSON-escaped string (without surrounding quotes).
 fn writeJsonStr(w: anytype, s: []const u8) !void {
     for (s) |c| {
@@ -388,4 +438,44 @@ fn writeJsonStr(w: anytype, s: []const u8) !void {
             },
         }
     }
+}
+
+test "openai request: a user image goes as an image_url part beside the text" {
+    const alloc = std.testing.allocator;
+    var msg = protocol.Message{ .role = .user };
+    defer msg.deinit(alloc);
+    try msg.content.append(alloc, .{ .image = .{ .media_type = "image/png", .data = "iVBORw0KGgo=" } });
+    try msg.content.append(alloc, .{ .text = "what is this?" });
+
+    const body = try serializeOpenAiRequest(alloc, "m", "", &.{msg}, &.{}, 64);
+    defer alloc.free(body);
+    try std.testing.expect(std.mem.indexOf(u8, body,
+        \\{"role":"user","content":[{"type":"image_url","image_url":{"url":"data:image/png;base64,iVBORw0KGgo="}},{"type":"text","text":"what is this?"}]}
+    ) != null);
+}
+
+test "openai request: a text-only message stays a plain string" {
+    const alloc = std.testing.allocator;
+    var msg = try protocol.Message.initUser(alloc, "hi");
+    defer msg.deinit(alloc);
+
+    const body = try serializeOpenAiRequest(alloc, "m", "", &.{msg}, &.{}, 64);
+    defer alloc.free(body);
+    try std.testing.expect(std.mem.indexOf(u8, body,
+        \\{"role":"user","content":"hi"}
+    ) != null);
+}
+
+test "openai request: an image a tool returned follows its tool message as a user message" {
+    const alloc = std.testing.allocator;
+    const blocks = [_]protocol.ContentBlock{.{ .image = .{ .media_type = "image/jpeg", .data = "/9j/" } }};
+    var msg = protocol.Message{ .role = .user };
+    defer msg.deinit(alloc);
+    try msg.content.append(alloc, .{ .tool_result = .{ .tool_use_id = "t1", .content = "Image attached.", .content_blocks = &blocks } });
+
+    const body = try serializeOpenAiRequest(alloc, "m", "", &.{msg}, &.{}, 64);
+    defer alloc.free(body);
+    try std.testing.expect(std.mem.indexOf(u8, body,
+        \\{"role":"tool","tool_call_id":"t1","content":"Image attached."},{"role":"user","content":[{"type":"image_url","image_url":{"url":"data:image/jpeg;base64,/9j/"}}]}
+    ) != null);
 }

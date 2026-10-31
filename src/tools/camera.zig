@@ -4,12 +4,14 @@
 //
 // Captures images from the system camera using platform-appropriate tools:
 //   - macOS: imagesnap (brew install imagesnap)
+//   - Windows: ffmpeg -f dshow
 //   - Linux: ffmpeg -f v4l2
 //   - Luxonis OAK-D: via depthai Python script (oakd, oakd-depth, oakd-rgbd)
 //
 // Returns base64-encoded JPEG data for inclusion as Claude Vision content blocks.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const fsio = @import("../fsio.zig");
 const stdio = @import("../stdio.zig");
 const compat = @import("../compat.zig");
@@ -30,7 +32,8 @@ pub const IMAGE_RESULT_PREFIX = "__IMAGE_BASE64:";
 /// Capture a frame from the default camera and return base64-encoded JPEG.
 /// Supports Luxonis OAK-D via device names: "oakd", "oakd-depth", "oakd-rgbd"
 pub fn capture(alloc: Allocator, device: ?[]const u8) !CaptureResult {
-    const tmp_path = "/tmp/wintermolt_capture.jpg";
+    var path_buf: [512]u8 = undefined;
+    const tmp_path = try tempPath(&path_buf, "wintermolt_capture.jpg");
 
     // Check for OAK-D / Luxonis DepthAI device specifier
     if (device) |d| {
@@ -41,11 +44,18 @@ pub fn capture(alloc: Allocator, device: ?[]const u8) !CaptureResult {
     }
 
     // Determine platform capture command
-    const is_macos = @import("builtin").os.tag == .macos;
+    const is_macos = builtin.os.tag == .macos;
 
     if (is_macos) {
         captureImagesnap(alloc, tmp_path, device) catch {
             // imagesnap failed — try OAK-D as fallback (non-UVC cameras)
+            captureOakd(alloc, tmp_path, "oakd") catch {
+                return error.CaptureCommandFailed;
+            };
+        };
+    } else if (builtin.os.tag == .windows) {
+        captureDshow(alloc, tmp_path, device) catch |e| {
+            if (e == error.CameraFrameIsBlackIsItCovered) return e;
             captureOakd(alloc, tmp_path, "oakd") catch {
                 return error.CaptureCommandFailed;
             };
@@ -62,14 +72,85 @@ pub fn capture(alloc: Allocator, device: ?[]const u8) !CaptureResult {
     return readAndEncode(alloc, tmp_path);
 }
 
-/// Read a captured image file and return base64-encoded result.
-fn readAndEncode(alloc: Allocator, tmp_path: []const u8) !CaptureResult {
+/// Where a capture lands: /tmp, or %TEMP% on Windows, which has no /tmp.
+pub fn tempPath(buf: []u8, name: []const u8) ![]const u8 {
+    if (builtin.os.tag != .windows) return std.fmt.bufPrint(buf, "/tmp/{s}", .{name});
+    return std.fmt.bufPrint(buf, "{s}\\{s}", .{ compat.getenv("TEMP") orelse return error.NoTempDir, name });
+}
+
+/// `[in#0 @ …] "MX Brio" (video)` -> MX Brio for kind "video"; null for any
+/// other line of ffmpeg's DirectShow device listing.
+pub fn dshowDeviceName(raw: []const u8, comptime kind: []const u8) ?[]const u8 {
+    const suffix = "\" (" ++ kind ++ ")";
+    const line = std.mem.trimEnd(u8, raw, "\r ");
+    if (!std.mem.endsWith(u8, line, suffix)) return null;
+    const open = std.mem.indexOfScalar(u8, line, '"') orelse return null;
+    if (open + 1 > line.len - suffix.len) return null;
+    return line[open + 1 .. line.len - suffix.len];
+}
+
+/// ffmpeg's DirectShow device listing; it exits non-zero by design, as
+/// "dummy" is not a device. Caller owns the result.
+pub fn listDshow(alloc: Allocator) !fsio.RunResult {
+    return fsio.runCapture(alloc, &[_][]const u8{
+        "ffmpeg", "-hide_banner", "-list_devices", "true", "-f", "dshow", "-i", "dummy",
+    }, 64 * 1024, null);
+}
+
+/// Capture using ffmpeg's DirectShow input on Windows. With no device named,
+/// the first video device that opens. A black frame is reported, not passed
+/// over: the next device is often a virtual camera showing its own picture.
+fn captureDshow(alloc: Allocator, output_path: []const u8, device: ?[]const u8) !void {
+    if (device) |d| return dshowFrame(alloc, output_path, d);
+
+    const listing = try listDshow(alloc);
+    defer listing.deinit(alloc);
+    var saw_camera = false;
+    var lines = std.mem.splitScalar(u8, listing.stderr, '\n');
+    while (lines.next()) |line| {
+        const name = dshowDeviceName(line, "video") orelse continue;
+        saw_camera = true;
+        dshowFrame(alloc, output_path, name) catch continue;
+        if (isBlackFrame(alloc, output_path)) return error.CameraFrameIsBlackIsItCovered;
+        return;
+    }
+    return if (saw_camera) error.CaptureCommandFailed else error.NoCamera;
+}
+
+fn dshowFrame(alloc: Allocator, output_path: []const u8, name: []const u8) !void {
+    var input_buf: [512]u8 = undefined;
+    const input = try std.fmt.bufPrint(&input_buf, "video={s}", .{name});
+    // -ss 1: the first frames are dark while the sensor settles its exposure.
+    const run = try fsio.runCapture(alloc, &[_][]const u8{ "ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "dshow", "-i", input, "-ss", "1", "-frames:v", "1", "-q:v", "2", output_path }, 64 * 1024, null);
+    defer run.deinit(alloc);
+    if (!run.exited or run.exit_code != 0) return error.CaptureCommandFailed;
+}
+
+/// The frame averaged to one gray pixel is (near) zero. Unknown counts as not
+/// black, so a frame is never thrown away on a failed check.
+fn isBlackFrame(alloc: Allocator, path: []const u8) bool {
+    const run = fsio.runCapture(alloc, &[_][]const u8{ "ffmpeg", "-hide_banner", "-loglevel", "error", "-i", path, "-vf", "scale=1:1,format=gray", "-f", "rawvideo", "-" }, 4096, null) catch return false;
+    defer run.deinit(alloc);
+    return run.exited and run.exit_code == 0 and run.stdout.len == 1 and run.stdout[0] < 4;
+}
+
+/// Media type from an image's first bytes; null when it is not one the APIs take.
+pub fn sniffMediaType(bytes: []const u8) ?[]const u8 {
+    if (std.mem.startsWith(u8, bytes, "\x89PNG\r\n\x1a\n")) return "image/png";
+    if (std.mem.startsWith(u8, bytes, "\xff\xd8\xff")) return "image/jpeg";
+    if (std.mem.startsWith(u8, bytes, "GIF8")) return "image/gif";
+    if (bytes.len >= 12 and std.mem.eql(u8, bytes[0..4], "RIFF") and std.mem.eql(u8, bytes[8..12], "WEBP")) return "image/webp";
+    return null;
+}
+
+/// Read an image file (a capture, or one the user attached) and base64 it.
+pub fn readAndEncode(alloc: Allocator, tmp_path: []const u8) !CaptureResult {
     const file = try fsio.openFile(tmp_path, .{});
     defer fsio.close(file);
 
     const stat = try fsio.stat(file);
     const file_size = stat.size;
-    if (file_size == 0 or file_size > 10 * 1024 * 1024) {
+    if (file_size == 0 or file_size > 20 * 1024 * 1024) {
         return error.InvalidCaptureSize;
     }
 
@@ -78,6 +159,7 @@ fn readAndEncode(alloc: Allocator, tmp_path: []const u8) !CaptureResult {
 
     const bytes_read = try fsio.readAllAt(file, image_bytes, 0);
     if (bytes_read == 0) return error.EmptyCapture;
+    const media_type = sniffMediaType(image_bytes[0..bytes_read]) orelse return error.UnsupportedImageType;
 
     // Base64 encode
     const encoded_size = base64.Encoder.calcSize(bytes_read);
@@ -86,7 +168,7 @@ fn readAndEncode(alloc: Allocator, tmp_path: []const u8) !CaptureResult {
 
     return .{
         .data = encoded,
-        .media_type = "image/jpeg",
+        .media_type = media_type,
     };
 }
 
@@ -209,6 +291,20 @@ pub fn listDevices(alloc: Allocator) ![]u8 {
             return alloc.dupe(u8, run.stderr);
         }
         return alloc.dupe(u8, run.stdout);
+    } else if (builtin.os.tag == .windows) {
+        const run = try listDshow(alloc);
+        defer run.deinit(alloc);
+        var out: std.Io.Writer.Allocating = .init(alloc);
+        errdefer out.deinit();
+        var lines = std.mem.splitScalar(u8, run.stderr, '\n');
+        while (lines.next()) |line| {
+            if (dshowDeviceName(line, "video")) |name| try out.writer.print("{s}\n", .{name});
+        }
+        if (out.written().len == 0) {
+            out.deinit();
+            return std.fmt.allocPrint(alloc, "No cameras found (ffmpeg's DirectShow list was empty; is ffmpeg on PATH?)", .{});
+        }
+        return out.toOwnedSlice();
     } else {
         // Linux: list v4l2 devices
         // Exit status was deliberately ignored here: v4l2-ctl returns non-zero
@@ -223,50 +319,34 @@ pub fn listDevices(alloc: Allocator) ![]u8 {
     }
 }
 
+/// Primary screen to %TEMP%\wintermolt_screenshot.png. DPI-aware first, or a
+/// scaled display captures only its top-left corner.
+const windows_screenshot_ps =
+    \\Add-Type -Name D -Namespace W -MemberDefinition '[DllImport("user32.dll")] public static extern bool SetProcessDPIAware();'
+    \\[void][W.D]::SetProcessDPIAware()
+    \\Add-Type -AssemblyName System.Windows.Forms,System.Drawing
+    \\$b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+    \\$bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
+    \\[System.Drawing.Graphics]::FromImage($bmp).CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
+    \\$bmp.Save((Join-Path $env:TEMP 'wintermolt_screenshot.png'), [System.Drawing.Imaging.ImageFormat]::Png)
+;
+
 /// Capture a screenshot and return base64-encoded PNG.
-/// macOS: screencapture (built-in), Linux: scrot or gnome-screenshot.
+/// macOS: screencapture (built-in), Windows: PowerShell, Linux: scrot.
 pub fn captureScreenshot(alloc: Allocator) !CaptureResult {
-    const tmp_path = "/tmp/wintermolt_screenshot.png";
-    const is_macos = @import("builtin").os.tag == .macos;
+    var path_buf: [512]u8 = undefined;
+    const tmp_path = try tempPath(&path_buf, "wintermolt_screenshot.png");
 
-    if (is_macos) {
-        const run = try fsio.runCapture(alloc, &[_][]const u8{ "screencapture", "-x", tmp_path }, 4096, null);
-        defer run.deinit(alloc);
-        if (!run.exited or run.exit_code != 0) return error.ScreenshotFailed;
-    } else {
-        // Linux: try scrot first, then gnome-screenshot
-        const run = try fsio.runCapture(alloc, &[_][]const u8{ "scrot", tmp_path }, 4096, null);
-        defer run.deinit(alloc);
-        if (!run.exited or run.exit_code != 0) return error.ScreenshotFailed;
-    }
-
-    // Read the screenshot file
-    const file = try fsio.openFile(tmp_path, .{});
-    defer fsio.close(file);
-
-    const stat = try fsio.stat(file);
-    const file_size = stat.size;
-    if (file_size == 0 or file_size > 20 * 1024 * 1024) {
-        return error.InvalidCaptureSize;
-    }
-
-    const image_bytes = try alloc.alloc(u8, @intCast(file_size));
-    defer alloc.free(image_bytes);
-
-    const bytes_read = try fsio.readAllAt(file, image_bytes, 0);
-    if (bytes_read == 0) return error.EmptyCapture;
-
-    // Base64 encode
-    const encoded_size = base64.Encoder.calcSize(bytes_read);
-    const encoded = try alloc.alloc(u8, encoded_size);
-    _ = base64.Encoder.encode(encoded, image_bytes[0..bytes_read]);
-
-    // Temp file persists at /tmp/wintermolt_screenshot.png for chaining to image_process
-
-    return .{
-        .data = encoded,
-        .media_type = "image/png",
+    const run = switch (builtin.os.tag) {
+        .macos => try fsio.runCapture(alloc, &[_][]const u8{ "screencapture", "-x", tmp_path }, 4096, null),
+        .windows => try fsio.runCapture(alloc, &[_][]const u8{ "powershell", "-NoProfile", "-NonInteractive", "-Command", windows_screenshot_ps }, 4096, null),
+        else => try fsio.runCapture(alloc, &[_][]const u8{ "scrot", tmp_path }, 4096, null),
     };
+    defer run.deinit(alloc);
+    if (!run.exited or run.exit_code != 0) return error.ScreenshotFailed;
+
+    // The file stays at tmp_path for chaining to image_process
+    return readAndEncode(alloc, tmp_path);
 }
 
 /// Execute camera tool from JSON input. Returns tool result string.
@@ -291,11 +371,29 @@ pub fn executeTool(alloc: Allocator, input_json: []const u8) ![]u8 {
         return std.fmt.allocPrint(alloc, "{s}{s}:{s}", .{ IMAGE_RESULT_PREFIX, result.media_type, result.data });
     }
 
+    if (std.mem.eql(u8, operation, "screenshot")) {
+        const result = captureScreenshot(alloc) catch |e| {
+            return std.fmt.allocPrint(alloc, "Screenshot failed: {s}.", .{@errorName(e)});
+        };
+        defer alloc.free(result.data);
+        return std.fmt.allocPrint(alloc, "{s}{s}:{s}", .{ IMAGE_RESULT_PREFIX, result.media_type, result.data });
+    }
+
+    if (std.mem.eql(u8, operation, "view")) {
+        const path = sse.findJsonString(input_json, "path") orelse
+            return std.fmt.allocPrint(alloc, "view needs 'path': the image file to look at.", .{});
+        const result = readAndEncode(alloc, path) catch |e| {
+            return std.fmt.allocPrint(alloc, "Cannot view {s}: {s}. png, jpeg, gif and webp only.", .{ path, @errorName(e) });
+        };
+        defer alloc.free(result.data);
+        return std.fmt.allocPrint(alloc, "{s}{s}:{s}", .{ IMAGE_RESULT_PREFIX, result.media_type, result.data });
+    }
+
     if (std.mem.eql(u8, operation, "object_detect")) {
         return objectDetect(alloc, input_json, device);
     }
 
-    return std.fmt.allocPrint(alloc, "Unknown camera operation: '{s}'. Use 'capture', 'object_detect', or 'list_devices'.", .{operation});
+    return std.fmt.allocPrint(alloc, "Unknown camera operation: '{s}'. Use 'capture', 'screenshot', 'view', 'object_detect', or 'list_devices'.", .{operation});
 }
 
 /// Object detection via camera + Ollama LLaVA.
@@ -374,4 +472,62 @@ fn objectDetect(alloc: Allocator, input_json: []const u8, device: ?[]const u8) !
 
     return std.fmt.allocPrint(alloc,
         "Object Detection (via {s}):\n\n{s}", .{ vision_model, response_text });
+}
+
+test "sniffMediaType: the file's own bytes name its type" {
+    try std.testing.expectEqualStrings("image/png", sniffMediaType("\x89PNG\r\n\x1a\n....").?);
+    try std.testing.expectEqualStrings("image/jpeg", sniffMediaType("\xff\xd8\xff\xe0....").?);
+    try std.testing.expectEqualStrings("image/gif", sniffMediaType("GIF89a").?);
+    try std.testing.expectEqualStrings("image/webp", sniffMediaType("RIFF\x00\x00\x00\x00WEBPVP8 ").?);
+    try std.testing.expect(sniffMediaType("BM6\x00\x00\x00") == null); // BMP: no API takes it
+    try std.testing.expect(sniffMediaType("") == null);
+}
+
+test "dshowDeviceName: each video device in ffmpeg's DirectShow list, in order" {
+    const listing =
+        "[in#0 @ 0000020b5a2f2080] \"Microphone (Yeti)\" (audio)\r\n" ++
+        "[in#0 @ 0000020b5a2f2080] \"OBS Virtual Camera\" (none)\r\n" ++
+        "[in#0 @ 0000020b5a2f2080] \"MX Brio\" (video)\r\n" ++
+        "[in#0 @ 0000020b5a2f2080]   Alternative name \"@device_pnp_\\\\?\\usb#vid_046d\"\r\n" ++
+        "I2026-10-30 13:24:59.399511 (80316) [INFO] [VCAMDS] ffmpeg.exe\r\n" ++
+        "[in#0 @ 0000020b5a2f2080] \"Camera (NVIDIA Broadcast)\" (video)\r\n";
+    var names: [4][]const u8 = undefined;
+    var n: usize = 0;
+    var lines = std.mem.splitScalar(u8, listing, '\n');
+    while (lines.next()) |line| {
+        if (dshowDeviceName(line, "video")) |name| {
+            names[n] = name;
+            n += 1;
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 2), n);
+    try std.testing.expectEqualStrings("MX Brio", names[0]);
+    try std.testing.expectEqualStrings("Camera (NVIDIA Broadcast)", names[1]);
+}
+
+test "dshowDeviceName: a microphone is an audio device, not a video one" {
+    const line = "[in#0 @ 0000020b5a2f2080] \"Microphone (Yeti)\" (audio)\r";
+    try std.testing.expectEqualStrings("Microphone (Yeti)", dshowDeviceName(line, "audio").?);
+    try std.testing.expect(dshowDeviceName(line, "video") == null);
+}
+
+test "camera tool view: an image file comes back as an image the agent sees" {
+    const alloc = std.testing.allocator;
+    const path = "camera_view_test.png";
+    {
+        const f = try fsio.createFile(path, .{});
+        defer fsio.close(f);
+        try fsio.writeAll(f, "\x89PNG\r\n\x1a\nrest");
+    }
+    defer fsio.deleteFile(path) catch {};
+
+    const got = try executeTool(alloc, "{\"operation\":\"view\",\"path\":\"camera_view_test.png\"}");
+    defer alloc.free(got);
+    try std.testing.expect(std.mem.startsWith(u8, got, IMAGE_RESULT_PREFIX ++ "image/png:"));
+
+    // A miss is text the agent can read, never an image.
+    const missing = try executeTool(alloc, "{\"operation\":\"view\",\"path\":\"no_such_image.png\"}");
+    defer alloc.free(missing);
+    try std.testing.expect(!std.mem.startsWith(u8, missing, IMAGE_RESULT_PREFIX));
+    try std.testing.expect(std.mem.indexOf(u8, missing, "FileNotFound") != null);
 }

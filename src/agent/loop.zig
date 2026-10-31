@@ -253,14 +253,25 @@ pub const AgentLoop = struct {
 
     /// Process a user input message through the agentic loop.
     pub fn processInput(self: *AgentLoop, user_text: []const u8) !void {
+        return self.processInputImage(user_text, null);
+    }
+
+    /// processInput with an image attached to the user turn (/image, /look, /screenshot).
+    pub fn processInputImage(self: *AgentLoop, user_text: []const u8, image: ?protocol.ImageSource) !void {
         const stdout = stdio.stdout();
         const stderr = stdio.stderr();
 
         // Re-bind tools-module globals to THIS agent (pool/subagents share them)
         self.bindTools();
 
-        // Add user message to history
-        try self.history.addUserMessage(user_text);
+        // Add user message to history; addMessage copies the blocks it is given
+        if (image) |img| {
+            var msg = protocol.Message{ .role = .user };
+            defer msg.deinit(self.alloc);
+            try msg.content.append(self.alloc, .{ .image = img });
+            try msg.content.append(self.alloc, .{ .text = user_text });
+            try self.history.addMessage(msg);
+        } else try self.history.addUserMessage(user_text);
 
         // Persist user message
         if (self.storage) |*s| {
@@ -295,7 +306,7 @@ pub const AgentLoop = struct {
         // request that declares tools, and every client omits the field when
         // the list is empty.
         const relevant_tools: []const protocol.ToolDefinition = if (self.config.tools_enabled)
-            tools.getRelevantDefinitions(user_text)
+            tools.getRelevantDefinitions(user_text, image != null)
         else
             &.{};
 
@@ -448,6 +459,25 @@ pub const AgentLoop = struct {
         try self.processInput(user_text);
     }
 
+    /// The vision model on WINTERMOLT_VISION_BACKEND: "openai" (any
+    /// OpenAI-compatible server), else Ollama.
+    fn sendVision(
+        self: *AgentLoop,
+        model: []const u8,
+        system_prompt: []const u8,
+        messages: []const protocol.Message,
+        tool_defs: []const protocol.ToolDefinition,
+        cb: ?sse.TextCallback,
+    ) !protocol.Response {
+        if (std.mem.eql(u8, self.config.vision_backend, "openai")) {
+            var client = deepseek_mod.DeepSeekClient.init(self.alloc, self.config.openai_api_key orelse return error.NoOpenAIKey, model);
+            client.api_url = self.config.openai_url;
+            return client.sendMessage(system_prompt, messages, tool_defs, cb);
+        }
+        var client = ollama_mod.OllamaClient.initWithOptions(self.alloc, self.config.ollama_url, model, self.config.ollama_num_ctx, self.config.ollama_keep_alive);
+        return client.sendMessage(system_prompt, messages, tool_defs, cb);
+    }
+
     /// Send a message via the active backend (Claude, Ollama, or OpenAI-compatible).
     pub fn sendToBackend(
         self: *AgentLoop,
@@ -464,7 +494,7 @@ pub const AgentLoop = struct {
         // overlap) is passed null: wintermolt is local-first by design (no
         // cloud/exposed mode concept in Config), so only Layer 1 (exact secret
         // values + key-shape patterns) is armed. (port of Wintermute leak-guard)
-        var secret_buf: [8]redact.NamedSecret = undefined;
+        var secret_buf: [9]redact.NamedSecret = undefined;
         const secrets = buildSecretSet(self.config, &secret_buf);
 
         const effective_cb: ?sse.TextCallback = blk: {
@@ -490,6 +520,15 @@ pub const AgentLoop = struct {
                 g_inner_cb = null;
             }
         }
+
+        // WINTERMOLT_VISION_MODEL: a request carrying an image goes to the model
+        // that can see it; if that fails, the main model gets it as before.
+        if (self.config.vision_model) |vm| if (protocol.hasImage(messages)) {
+            if (self.sendVision(vm, system_prompt, messages, tool_defs, effective_cb)) |resp| {
+                succeeded = true;
+                return resp;
+            } else |e| stderr.print("\n[vision] {s} failed ({s}), the main model answers\n", .{ vm, @errorName(e) }) catch {};
+        };
 
         // Try primary backend first
         const primary_result = switch (self.backend) {
@@ -796,7 +835,7 @@ pub const AgentLoop = struct {
                             const b64_data = payload[sep + 1 ..];
 
                             var img_blocks = try self.alloc.alloc(protocol.ContentBlock, 2);
-                            img_blocks[0] = .{ .text = try self.alloc.dupe(u8, "Camera capture (saved to /tmp/wintermolt_capture.jpg):") };
+                            img_blocks[0] = .{ .text = try self.alloc.dupe(u8, "The image:") };
                             img_blocks[1] = .{ .image = .{
                                 .media_type = try self.alloc.dupe(u8, media_type),
                                 .data = try self.alloc.dupe(u8, b64_data),
@@ -804,7 +843,7 @@ pub const AgentLoop = struct {
 
                             try results.append(self.alloc, .{
                                 .tool_use_id = tu.id,
-                                .content = "Image captured and saved to /tmp/wintermolt_capture.jpg.",
+                                .content = "Image attached.",
                                 .is_error = false,
                                 .content_blocks = img_blocks,
                             });
@@ -872,7 +911,7 @@ pub const AgentLoop = struct {
     /// slice. Shared by the streaming choke (sendToBackend) and the one-shot
     /// helper below so the key fields stay in one place. Layer 2 (prompt
     /// overlap) is never armed: wintermolt is local-first (no cloud mode).
-    fn buildSecretSet(cfg: *const config_mod.Config, buf: *[8]redact.NamedSecret) []const redact.NamedSecret {
+    fn buildSecretSet(cfg: *const config_mod.Config, buf: *[9]redact.NamedSecret) []const redact.NamedSecret {
         var n: usize = 0;
         if (cfg.api_key.len >= redact.MIN_SECRET_LEN) {
             buf[n] = .{ .name = "ANTHROPIC_API_KEY", .value = cfg.api_key };
@@ -906,6 +945,10 @@ pub const AgentLoop = struct {
             buf[n] = .{ .name = "ELEVENLABS_API_KEY", .value = v };
             n += 1;
         };
+        if (cfg.deepgram_api_key) |v| if (v.len >= redact.MIN_SECRET_LEN) {
+            buf[n] = .{ .name = "DEEPGRAM_API_KEY", .value = v };
+            n += 1;
+        };
         return buf[0..n];
     }
 
@@ -914,7 +957,7 @@ pub const AgentLoop = struct {
     /// frees), or null on OOM — callers must treat null as "drop/skip", never
     /// as "emit raw". Same Layer-1 discipline as the streaming choke.
     fn redactOneShot(alloc: Allocator, cfg: *const config_mod.Config, text: []const u8) ?[]u8 {
-        var secret_buf: [8]redact.NamedSecret = undefined;
+        var secret_buf: [9]redact.NamedSecret = undefined;
         const secrets = buildSecretSet(cfg, &secret_buf);
         var r = redact.Redactor.init(alloc, secrets, null) catch return null;
         defer r.deinit();

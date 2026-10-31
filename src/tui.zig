@@ -597,7 +597,8 @@ pub const Session = struct {
     }
 
     fn start(self: *Session, line: []u8) !void {
-        const media = std.mem.startsWith(u8, line, "/look") or std.mem.startsWith(u8, line, "/screenshot");
+        const media = std.mem.startsWith(u8, line, "/look") or std.mem.startsWith(u8, line, "/screenshot") or
+            std.mem.startsWith(u8, line, "/image");
         self.job_kind = if (line[0] == '/' and !media) .command else .agent;
         self.finished.store(false, .release);
         self.job_line = line;
