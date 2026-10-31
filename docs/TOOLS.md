@@ -29,16 +29,34 @@ prompt. This keeps the per-turn tool list small.
 | Tool                | Triggered by keywords                                  | What it does                                          |
 | :------------------ | :----------------------------------------------------- | :---------------------------------------------------- |
 | `image_process`     | image, photo, picture, histogram, sobel, edge, resize, blur | Format conversion + filters via `sips` / `ffmpeg`. |
-| `camera_capture`    | camera, capture, webcam, see, look at, photo           | Camera / screenshot capture, optionally with OAK-D depth. |
+| `camera_capture`    | camera, capture, webcam, look at, screen, image, photo, picture, .png/.jpg/.gif/.webp | Camera frame (`capture`), the screen (`screenshot`), or an image file (`view`), returned as vision input; optionally OAK-D depth. Not offered on a turn whose message already carries an image. |
 | `browser_control`   | browser, chrome, tab, webpage, screenshot, click, navigate, scrape, DOM | Chrome automation via DevTools Protocol.        |
 | `memory_search`     | remember, recall, before, history, forgot, memory      | Semantic search over conversation + episode history. |
 | `schedule`          | schedule, cron, timer, periodic, remind me, recurring  | Add/remove cron jobs (see [DEPLOYMENT.md](DEPLOYMENT.md#scheduler)). |
 | `tailscale`         | tailscale, mesh, vpn, devices, peers, tailnet          | Query the Tailscale REST API for the user's tailnet. |
 | `canvas_update`     | canvas, ui, dashboard, chart, form, render, widget     | Push A2UI surfaces to the canvas sidecar.            |
-| `text_to_speech`    | speak, say, read aloud, voice, tts, audio              | Synthesize via OpenAI / ElevenLabs / Edge TTS.       |
+| `text_to_speech`    | speak, say, read aloud, voice, tts, audio              | Synthesize via Deepgram / OpenAI / ElevenLabs / Piper / Edge TTS, or the computer's own voice (see [Voice](#voice)). |
 | `image_generate`    | generate image, dall-e, draw, illustration, render image | DALL-E 3 image generation.                         |
 | `google_workspace`  | gmail, email, calendar, meeting, google drive, inbox   | Read + send via Google APIs (OAuth flow on first use). |
 | `spawn_agent`       | subagent, spawn, delegate, parallel, subtask           | Fork a child agent with isolated context to run a subtask. |
+
+## Voice
+
+`/listen [seconds | audio file]` records the microphone (5 s by default),
+sends what was said as the prompt, and speaks the reply. `/tts <text>`
+speaks text. Keys are your own (`wintermolt --keys`); none is built in.
+
+| Step | Default | Choose with |
+| :--- | :------ | :---------- |
+| Microphone | ffmpeg: the first DirectShow audio device (Windows), `:0` (macOS), PulseAudio `default` (Linux) | `WINTERMOLT_MIC` |
+| Speech to text | whisper.cpp's `whisper-cli`, local, when a `ggml-*.bin` model is in `~/.wintermolt/models`; else Deepgram nova-3 with `DEEPGRAM_API_KEY` | `WINTERMOLT_STT_PROVIDER` (`whisper`, `deepgram`), `WINTERMOLT_WHISPER_MODEL` |
+| Text to speech | the first with a key: Deepgram Aura-2, OpenAI, ElevenLabs; else the computer's own voice (Windows speech, macOS `say`, `espeak-ng`) | `WINTERMOLT_TTS_PROVIDER` (`deepgram`, `openai`, `elevenlabs`, `piper`, `edge`, `system`), `WINTERMOLT_TTS_VOICE` |
+| Playback | `afplay` (macOS), ffmpeg's `ffplay` elsewhere | — |
+
+A whisper.cpp model: `whisper-download-ggml-model.sh large-v3-turbo-q5_0`
+(or any from huggingface.co/ggerganov/whisper.cpp), moved into
+`~/.wintermolt/models`. Deepgram voices are `aura-2-<name>-en`; give the
+name alone (`thalia`, `apollo`, `helena`, …).
 
 ## Triggering manually
 

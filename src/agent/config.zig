@@ -23,7 +23,7 @@
 //   WINTERMOLT_OLLAMA_MODEL  — Optional. Ollama model (default: qwen3:8b)
 //   WINTERMOLT_OLLAMA_CTX    — Optional. Context window cap (default: 4096). Prevents OOM.
 //   WINTERMOLT_OLLAMA_KEEP_ALIVE — Optional. Model unload timer (default: "5m"). "0" unloads immediately.
-//   WINTERMOLT_VISION_MODEL  — Optional. Vision model for /look (default: llava)
+//   WINTERMOLT_VISION_MODEL  — Optional. A request carrying an image goes to this model (default: the main model)
 //   WINTERMOLT_VISION_BACKEND — Optional. Vision routing: "ollama" (default) or "openai"
 //   OPENAI_API_KEY           — Optional. Enables OpenAI backend (/model openai)
 //   WINTERMOLT_OPENAI_MODEL  — Optional. OpenAI model (default: "gpt-4o-mini")
@@ -87,9 +87,15 @@
 //   GOOGLE_CLIENT_SECRET     — OAuth2 client secret
 //   GOOGLE_REFRESH_TOKEN     — OAuth2 refresh token (offline access)
 //
-// TTS / Voice synthesis:
-//   WINTERMOLT_TTS_PROVIDER  — Optional. TTS provider: "openai", "elevenlabs", "edge" (default: off)
-//   WINTERMOLT_TTS_VOICE     — Optional. Voice name (default: "alloy" for OpenAI)
+// Voice (/tts, /listen, the text_to_speech tool):
+//   WINTERMOLT_TTS_PROVIDER  — Optional. "deepgram", "openai", "elevenlabs", "piper", "edge" or "system"
+//                              (default: the first whose key is set, else "system", the computer's own voice)
+//   WINTERMOLT_TTS_VOICE     — Optional. Voice name (default: each provider's own, e.g. Deepgram's thalia)
+//   DEEPGRAM_API_KEY         — Optional. Deepgram: Aura-2 speech, and nova-3 transcription
+//   WINTERMOLT_STT_PROVIDER  — Optional. "whisper" or "deepgram" (default: whisper.cpp when a model is found)
+//   WINTERMOLT_WHISPER_MODEL — Optional. ggml model path (default: the first ggml-*.bin in ~/.wintermolt/models)
+//   WINTERMOLT_MIC           — Optional. Microphone for /listen (default: the first DirectShow audio device,
+//                              ":0" on macOS, PulseAudio's "default" elsewhere)
 //   ELEVENLABS_API_KEY       — Optional. ElevenLabs API key
 //   ELEVENLABS_VOICE_ID      — Optional. ElevenLabs voice ID
 
@@ -98,6 +104,7 @@ const fsio = @import("../fsio.zig");
 const stdio = @import("../stdio.zig");
 const compat = @import("../compat.zig");
 const wm_config = @import("wm_config.zig");
+const tts = @import("tts.zig");
 
 /// Current config version.
 pub const CONFIG_VERSION: u32 = 1;
@@ -230,7 +237,7 @@ pub const Config = struct {
     ollama_model: []const u8,
     ollama_num_ctx: u32,
     ollama_keep_alive: []const u8,
-    vision_model: []const u8,
+    vision_model: ?[]const u8,
     vision_backend: []const u8,
     // Multi-backend support
     openai_api_key: ?[]const u8,
@@ -256,9 +263,8 @@ pub const Config = struct {
     sandbox_timeout: u32,
     sandbox_memory: []const u8,
     sandbox_network: []const u8,
-    // TTS / Voice synthesis
-    tts_provider: ?[]const u8,
-    tts_voice: []const u8,
+    // TTS / Voice synthesis (tts.zig reads its own settings; these are for redaction)
+    deepgram_api_key: ?[]const u8,
     elevenlabs_api_key: ?[]const u8,
     elevenlabs_voice_id: ?[]const u8,
     constitution_alloc: ?[]u8 = null,
@@ -339,8 +345,7 @@ pub const Config = struct {
         const ollama_keep_alive = compat.getenv("WINTERMOLT_OLLAMA_KEEP_ALIVE") orelse
             "5m";
         const vision_model = profile.vision_model orelse
-            compat.getenv("WINTERMOLT_VISION_MODEL") orelse
-            "llava";
+            compat.getenv("WINTERMOLT_VISION_MODEL");
         const vision_backend = compat.getenv("WINTERMOLT_VISION_BACKEND") orelse
             "ollama";
 
@@ -384,8 +389,7 @@ pub const Config = struct {
         const sandbox_network = compat.getenv("WINTERMOLT_SANDBOX_NETWORK") orelse "none";
 
         // TTS / Voice
-        const tts_provider = compat.getenv("WINTERMOLT_TTS_PROVIDER");
-        const tts_voice = compat.getenv("WINTERMOLT_TTS_VOICE") orelse "alloy";
+        const deepgram_api_key = compat.getenv("DEEPGRAM_API_KEY");
         const elevenlabs_api_key = compat.getenv("ELEVENLABS_API_KEY");
         const elevenlabs_voice_id = compat.getenv("ELEVENLABS_VOICE_ID");
 
@@ -431,8 +435,7 @@ pub const Config = struct {
             .sandbox_timeout = sandbox_timeout,
             .sandbox_memory = sandbox_memory,
             .sandbox_network = sandbox_network,
-            .tts_provider = tts_provider,
-            .tts_voice = tts_voice,
+            .deepgram_api_key = deepgram_api_key,
             .elevenlabs_api_key = elevenlabs_api_key,
             .elevenlabs_voice_id = elevenlabs_voice_id,
             .constitution_alloc = constitution_heap,
@@ -557,10 +560,7 @@ pub fn buildCapabilities(config: *const Config, alloc: std.mem.Allocator, tool_c
     else
         try w.writeAll("\n  - Pinecone RAG: OFF (no PINECONE_API_KEY)\n");
 
-    if (config.tts_provider) |tts|
-        try w.print("\n  - TTS: {s} (voice: {s})\n", .{ tts, config.tts_voice })
-    else
-        try w.writeAll("\n  - TTS: OFF\n");
+    try w.print("\n  - TTS: {s}\n", .{@tagName(tts.providerFromEnv())});
 
     if (config.history_enabled)
         try w.writeAll("\nChat history: ON (SQLite persistent)\n")

@@ -9,7 +9,6 @@
 // Wire format reference: https://docs.anthropic.com/en/api/messages
 
 const std = @import("std");
-const stdio = @import("../stdio.zig");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 
@@ -72,6 +71,18 @@ pub const Message = struct {
         self.content.deinit(alloc);
     }
 };
+
+/// An image anywhere in the request: attached by the user, or returned by a tool.
+pub fn hasImage(messages: []const Message) bool {
+    for (messages) |msg| for (msg.content.items) |block| switch (block) {
+        .image => return true,
+        .tool_result => |tr| for (tr.content_blocks orelse continue) |cb| {
+            if (cb == .image) return true;
+        },
+        else => {},
+    };
+    return false;
+}
 
 pub const ToolDefinition = struct {
     name: []const u8,
@@ -238,15 +249,6 @@ fn serializeMessage(w: anytype, msg: Message) !void {
                 try w.writeByte('}');
             },
             .image => |img| {
-                // Debug: log image serialization details to stderr
-                {
-                    const dbg = stdio.stderr();
-                    dbg.print("[api] Serializing image block: media_type={s}, data_len={d}, data_prefix={s}\n", .{
-                        img.media_type,
-                        img.data.len,
-                        if (img.data.len > 20) img.data[0..20] else img.data,
-                    }) catch {};
-                }
                 try w.writeAll("{\"type\":\"image\",\"source\":{\"type\":\"base64\",\"media_type\":\"");
                 try writeJsonString(w, img.media_type);
                 try w.writeAll("\",\"data\":\"");
@@ -279,4 +281,35 @@ fn writeJsonString(w: anytype, s: []const u8) !void {
             },
         }
     }
+}
+
+test "claude request: a user image goes as a base64 image block before the text" {
+    const alloc = std.testing.allocator;
+    var msg = Message{ .role = .user };
+    defer msg.deinit(alloc);
+    try msg.content.append(alloc, .{ .image = .{ .media_type = "image/png", .data = "iVBORw0KGgo=" } });
+    try msg.content.append(alloc, .{ .text = "what is this?" });
+
+    const body = try serializeRequest(alloc, "m", "", &.{msg}, &.{}, 64);
+    defer alloc.free(body);
+    const want = "[{\"type\":\"image\",\"source\":{\"type\":\"base64\",\"media_type\":\"image/png\",\"data\":\"iVBORw0KGgo=\"}},{\"type\":\"text\",\"text\":\"what is this?\"}]";
+    try std.testing.expect(std.mem.indexOf(u8, body, want) != null);
+}
+
+test "hasImage: an image the user attached or a tool returned, not text alone" {
+    const alloc = std.testing.allocator;
+    var text = try Message.initUser(alloc, "hi");
+    defer text.deinit(alloc);
+    try std.testing.expect(!hasImage(&.{text}));
+
+    var user_img = Message{ .role = .user };
+    defer user_img.deinit(alloc);
+    try user_img.content.append(alloc, .{ .image = .{ .media_type = "image/png", .data = "iVBO" } });
+    try std.testing.expect(hasImage(&.{ text, user_img }));
+
+    const blocks = [_]ContentBlock{.{ .image = .{ .media_type = "image/jpeg", .data = "/9j/" } }};
+    var tool_img = Message{ .role = .user };
+    defer tool_img.deinit(alloc);
+    try tool_img.content.append(alloc, .{ .tool_result = .{ .tool_use_id = "t1", .content = "Image attached.", .content_blocks = &blocks } });
+    try std.testing.expect(hasImage(&.{ text, tool_img }));
 }

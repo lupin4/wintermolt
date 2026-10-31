@@ -204,7 +204,7 @@ const ToolTrigger = struct {
 
 const extended_triggers = [_]ToolTrigger{
     .{ .tool_name = "image_process", .keywords = &.{ "image", "photo", "picture", "histogram", "sobel", "edge detect", "resize", "blur" } },
-    .{ .tool_name = "camera_capture", .keywords = &.{ "camera", "capture", "webcam", "see me", "look at", "take a photo", "what can you see", "what do you see" } },
+    .{ .tool_name = "camera_capture", .keywords = &.{ "camera", "capture", "webcam", "see me", "look at", "take a photo", "what can you see", "what do you see", "screen", "image", "photo", "picture", ".png", ".jpg", ".jpeg", ".gif", ".webp" } },
     .{ .tool_name = "browser_control", .keywords = &.{ "browser", "chrome", "tab", "webpage", "screenshot", "click", "navigate", "type text", "javascript", "cdp", "devtools", "web page", "open url", "scrape", "page content", "dom", "element" } },
     .{ .tool_name = "memory_search", .keywords = &.{ "remember", "recall", "past conversation", "last time", "earlier", "before", "did we", "we talked", "you said", "i told you", "history", "previous", "forgot", "forget", "memory", "do you know me", "what did", "discussed" } },
     .{ .tool_name = "schedule", .keywords = &.{ "schedule", "cron", "timer", "periodic", "every hour", "every day", "every minute", "remind me", "recurring", "automation", "job" } },
@@ -266,7 +266,10 @@ pub fn getCoreDefinitions() []const protocol.ToolDefinition {
 
 /// Get tool definitions relevant to the user's message.
 /// Always includes core tools. Extended tools load by keyword match.
-pub fn getRelevantDefinitions(user_text: []const u8) []const protocol.ToolDefinition {
+/// `has_image`: the user attached an image this turn. camera_capture is then
+/// left out: offered it, gemma4 calls `view` on a made-up path instead of
+/// looking at the image it was given.
+pub fn getRelevantDefinitions(user_text: []const u8, has_image: bool) []const protocol.ToolDefinition {
     // Empty or very short text = core tools only (NOT the full catalog).
     // The only callers of this function are the small-model tiers
     // (haiku/local), so returning the full catalog here overflows their
@@ -292,6 +295,7 @@ pub fn getRelevantDefinitions(user_text: []const u8) []const protocol.ToolDefini
 
     // Check extended tools by keyword matching against user text
     for (&extended_triggers) |*trigger| {
+        if (has_image and std.mem.eql(u8, trigger.tool_name, "camera_capture")) continue;
         var matched = false;
         for (trigger.keywords) |keyword| {
             if (containsKeyword(user_text, keyword)) {
@@ -688,9 +692,9 @@ pub const tool_definitions = [_]protocol.ToolDefinition{
     },
     .{
         .name = "camera_capture",
-        .description = "Capture an image from the system camera. Returns the image as a vision content block that you can see and describe. The captured image is also saved to /tmp/wintermolt_capture.jpg.",
+        .description = "See for yourself: capture a camera frame, take a screenshot of the screen, or view an image file (png, jpeg, gif, webp). The image comes back to you as vision input you can see and describe.",
         .input_schema_json =
-        \\{"type":"object","properties":{"operation":{"type":"string","enum":["capture","list_devices"],"description":"Camera operation"},"device":{"type":"string","description":"Camera device name (optional)"}},"required":[]}
+        \\{"type":"object","properties":{"operation":{"type":"string","enum":["capture","screenshot","view","list_devices"],"description":"capture: camera frame (default). screenshot: the primary screen. view: the image file at path. list_devices: camera names."},"device":{"type":"string","description":"Camera device name (optional, capture only)"},"path":{"type":"string","description":"Image file to look at (view only)"}},"required":[]}
         ,
     },
     .{
@@ -758,9 +762,9 @@ pub const tool_definitions = [_]protocol.ToolDefinition{
     },
     .{
         .name = "text_to_speech",
-        .description = "Synthesize text to speech audio. Supports multiple providers: OpenAI TTS (cloud), ElevenLabs (cloud), Piper (local/offline), Edge TTS (Microsoft). Returns the path to the generated audio file. Use inline directives [[voice:alloy]] [[speed:1.2]] for per-utterance overrides.",
+        .description = "Synthesize text to speech audio. Supports multiple providers: Deepgram Aura-2 (cloud), OpenAI TTS (cloud), ElevenLabs (cloud), Piper (local/offline), Edge TTS (Microsoft), and the computer's own voice (system, no key). Returns the path to the generated audio file. Use inline directives [[voice:thalia]] [[speed:1.2]] for per-utterance overrides.",
         .input_schema_json =
-        \\{"type":"object","properties":{"text":{"type":"string","description":"The text to synthesize (max 4096 chars)"},"voice":{"type":"string","description":"Voice name (e.g. alloy, echo, nova for OpenAI; voice ID for ElevenLabs)"},"provider":{"type":"string","description":"TTS provider: openai, elevenlabs, piper, edge"},"play":{"type":"string","description":"Set to 'true' to play audio immediately via system speaker"}},"required":["text"]}
+        \\{"type":"object","properties":{"text":{"type":"string","description":"The text to synthesize (max 4096 chars; Deepgram takes 2000)"},"voice":{"type":"string","description":"Voice name (e.g. thalia, apollo for Deepgram; alloy, nova for OpenAI; voice ID for ElevenLabs)"},"provider":{"type":"string","description":"TTS provider: deepgram, openai, elevenlabs, piper, edge, system"},"play":{"type":"string","description":"Set to 'true' to play audio immediately via system speaker"}},"required":["text"]}
         ,
     },
     .{

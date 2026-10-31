@@ -31,6 +31,7 @@ const router_mod = @import("agent/router.zig");
 const pool_mod = @import("agent/agent_pool.zig");
 const subagent_mod = @import("agent/subagent.zig");
 const tts_mod = @import("agent/tts.zig");
+const stt_mod = @import("agent/stt.zig");
 const session_mod = @import("agent/session.zig");
 const gateway_bridge = @import("gateway/bridge.zig");
 const i18n = @import("agent/i18n.zig");
@@ -708,6 +709,10 @@ fn dispatchCommand(
         try handleLook(agent, alloc, stdout, stderr, if (prompt.len > 0) prompt else null);
         return .handled;
     }
+    if (std.mem.eql(u8, trimmed, "/image") or std.mem.startsWith(u8, trimmed, "/image ")) {
+        try handleImage(agent, alloc, stdout, std.mem.trim(u8, trimmed[6..], " \t"));
+        return .handled;
+    }
     if (std.mem.startsWith(u8, trimmed, "/screenshot")) {
         const prompt = blk: {
             if (trimmed.len > 11) {
@@ -771,6 +776,10 @@ fn dispatchCommand(
     }
     if (std.mem.eql(u8, trimmed, "/tts")) {
         try handleTtsCmd(alloc, stdout, stderr, "");
+        return .handled;
+    }
+    if (std.mem.eql(u8, trimmed, "/listen") or std.mem.startsWith(u8, trimmed, "/listen ")) {
+        try handleListen(agent, alloc, stdout, std.mem.trim(u8, trimmed[7..], " \t"));
         return .handled;
     }
     // The full-screen view handles /theme itself (tui.zig); this is the plain
@@ -1024,6 +1033,7 @@ fn handleKeysCmd(alloc: std.mem.Allocator, w: anytype, r: anytype, arg: ?[]const
         .{ .key = "PINECONE_API_KEY", .label = "Pinecone (RAG)", .hint = null },
         .{ .key = "PINECONE_HOST", .label = "Pinecone Host URL", .hint = "https://" },
         .{ .key = "ELEVENLABS_API_KEY", .label = "ElevenLabs (voice)", .hint = null },
+        .{ .key = "DEEPGRAM_API_KEY", .label = "Deepgram (voice in and out)", .hint = null },
         .{ .key = "DISCORD_BOT_TOKEN", .label = "Discord Bot", .hint = null },
         .{ .key = "TELEGRAM_BOT_TOKEN", .label = "Telegram Bot", .hint = null },
         .{ .key = "SLACK_BOT_TOKEN", .label = "Slack Bot", .hint = "xoxb-" },
@@ -1210,11 +1220,46 @@ fn handleLook(agent: *loop_mod.AgentLoop, alloc: std.mem.Allocator, w: anytype, 
     };
     defer alloc.free(capture_result.data);
 
-    // Feed image + prompt through the agent
-    const full_prompt = try std.fmt.allocPrint(alloc, "[Camera capture attached: {s}] {s}", .{ capture_result.media_type, prompt });
-    defer alloc.free(full_prompt);
+    try agent.processInputImage(prompt, .{ .media_type = capture_result.media_type, .data = capture_result.data });
+}
 
-    try agent.processInput(full_prompt);
+/// `/image <path> [prompt]`. The path may be quoted (Windows Terminal drops a
+/// dragged file that way) or use `\ ` for a space (macOS Terminal does).
+fn parseImageArg(arg: []const u8, buf: []u8) ?struct { path: []const u8, prompt: []const u8 } {
+    if (arg.len == 0) return null;
+    var path: []const u8 = undefined;
+    var i: usize = 0;
+    if (arg[0] == '"' or arg[0] == '\'') {
+        const end = std.mem.indexOfScalarPos(u8, arg, 1, arg[0]) orelse return null;
+        path = arg[1..end];
+        i = end + 1;
+    } else {
+        var n: usize = 0;
+        while (i < arg.len and arg[i] != ' ' and arg[i] != '\t') : (i += 1) {
+            if (arg[i] == '\\' and i + 1 < arg.len and arg[i + 1] == ' ') i += 1;
+            if (n == buf.len) return null;
+            buf[n] = arg[i];
+            n += 1;
+        }
+        path = buf[0..n];
+    }
+    return .{ .path = path, .prompt = std.mem.trim(u8, arg[i..], " \t") };
+}
+
+fn handleImage(agent: *loop_mod.AgentLoop, alloc: std.mem.Allocator, w: anytype, arg: []const u8) !void {
+    var path_buf: [1024]u8 = undefined;
+    const parsed = parseImageArg(arg, &path_buf) orelse {
+        try w.writeAll("Usage: /image <file> [prompt]   (png, jpeg, gif or webp; drag the file in for its path)\n");
+        return;
+    };
+    const img = camera.readAndEncode(alloc, parsed.path) catch |e| {
+        try w.print("[image] Cannot attach {s}: {s}\n", .{ parsed.path, @errorName(e) });
+        return;
+    };
+    defer alloc.free(img.data);
+
+    const prompt = if (parsed.prompt.len > 0) parsed.prompt else "What's in this image?";
+    try agent.processInputImage(prompt, .{ .media_type = img.media_type, .data = img.data });
 }
 
 fn handleScreenshot(agent: *loop_mod.AgentLoop, alloc: std.mem.Allocator, w: anytype, _stderr: anytype, custom_prompt: ?[]const u8) !void {
@@ -1228,10 +1273,7 @@ fn handleScreenshot(agent: *loop_mod.AgentLoop, alloc: std.mem.Allocator, w: any
     };
     defer alloc.free(capture_result.data);
 
-    const full_prompt = try std.fmt.allocPrint(alloc, "[Screenshot attached] {s}", .{prompt});
-    defer alloc.free(full_prompt);
-
-    try agent.processInput(full_prompt);
+    try agent.processInputImage(prompt, .{ .media_type = capture_result.media_type, .data = capture_result.data });
 }
 
 fn handleStats(agent: *const loop_mod.AgentLoop, w: anytype) !void {
@@ -1473,14 +1515,15 @@ fn handleTtsCmd(alloc: std.mem.Allocator, w: anytype, _stderr: anytype, arg: []c
     const text = std.mem.trim(u8, arg, " \t");
 
     if (text.len == 0) {
-        const provider = compat.getenv("WINTERMOLT_TTS_PROVIDER") orelse "not configured";
-        const voice = compat.getenv("WINTERMOLT_TTS_VOICE") orelse "alloy";
+        const voice = compat.getenv("WINTERMOLT_TTS_VOICE") orelse "the provider's default";
         try w.print("TTS Status\n", .{});
-        try w.print("  Provider: {s}\n", .{provider});
+        try w.print("  Provider: {s}\n", .{@tagName(tts_mod.providerFromEnv())});
         try w.print("  Voice: {s}\n", .{voice});
         try w.writeAll("\nUsage: /tts <text to speak>\n");
         try w.writeAll("Inline directives: [[voice:nova]] [[speed:1.2]] [[provider:openai]]\n");
-        try w.writeAll("\nProviders: openai, elevenlabs, piper, edge\n");
+        try w.writeAll("\nProviders: deepgram, openai, elevenlabs, piper, edge, system (the computer's own voice)\n");
+        try w.writeAll("Unset, the first with a key: DEEPGRAM_API_KEY, OPENAI_API_KEY, ELEVENLABS_API_KEY; else system.\n");
+        try w.writeAll("Deepgram voices: thalia, andromeda, helena, apollo, arcas, aries (aura-2-<name>-en)\n");
         try w.writeAll("OpenAI voices: alloy, echo, fable, onyx, nova, shimmer\n");
         return;
     }
@@ -1493,17 +1536,62 @@ fn handleTtsCmd(alloc: std.mem.Allocator, w: anytype, _stderr: anytype, arg: []c
     };
     defer alloc.free(path);
     try w.print("[tts] Audio saved: {s}\n", .{path});
+    tts_mod.playDetached(alloc, path) catch |e| try w.print("[tts] Could not play it: {s}\n", .{@errorName(e)});
+}
 
-    // Auto-play on macOS
-    const play_cmd = std.fmt.allocPrint(alloc, "afplay \"{s}\" &", .{path}) catch return;
-    defer alloc.free(play_cmd);
-    const play_z = alloc.dupeZ(u8, play_cmd) catch return;
-    defer alloc.free(play_z);
+/// /listen [seconds | audio file]: record the microphone (or take a recording
+/// already made), send what was said as the prompt, and say the reply aloud.
+fn handleListen(agent: *loop_mod.AgentLoop, alloc: std.mem.Allocator, w: anytype, arg: []const u8) !void {
+    const seconds: ?u32 = if (arg.len == 0) 5 else std.fmt.parseInt(u32, arg, 10) catch null;
+    var path_buf: [512]u8 = undefined;
+    const path = if (seconds) |s| blk: {
+        if (s == 0 or s > 120) {
+            try w.writeAll("Usage: /listen [seconds | audio file]  (1-120 seconds, default 5)\n");
+            return;
+        }
+        const mic_path = try camera.tempPath(&path_buf, "wintermolt_mic.wav");
+        try w.print("[listen] Recording {d}s, speak now...\n", .{s});
+        stt_mod.record(alloc, mic_path, s) catch |e| {
+            try w.print("[listen] Could not record the microphone: {s} (needs ffmpeg; WINTERMOLT_MIC picks the device)\n", .{@errorName(e)});
+            return;
+        };
+        break :blk mic_path;
+    } else arg;
+    const said = stt_mod.transcribe(alloc, path);
+    if (seconds != null) fsio.deleteFile(path) catch {}; // ours; never the user's file
+    const text = said catch |e| {
+        try w.print("[listen] Could not transcribe it: {s} (needs a whisper.cpp model in ~/.wintermolt/models, or DEEPGRAM_API_KEY)\n", .{@errorName(e)});
+        return;
+    };
+    defer alloc.free(text);
+    if (text.len == 0) {
+        try w.writeAll("[listen] Heard nothing.\n");
+        return;
+    }
+    try w.print("[listen] You said: {s}\n", .{text});
 
-    const play_argv = [_][]const u8{ "/bin/sh", "-c", play_z };
-    // Fire and forget: audio plays in the background, so the child is
-    // deliberately not reaped -- waiting would block until playback finished.
-    fsio.spawnDetached(alloc, &play_argv) catch return;
+    spoken_len = 0;
+    agent.voice_callback = &collectSpoken;
+    defer agent.voice_callback = null;
+    try agent.processInput(text);
+    try w.writeByte('\n');
+    tts_mod.speak(alloc, spoken_buf[0..spoken_len]) catch |e|
+        try w.print("[listen] Could not say the reply: {s}\n", .{@errorName(e)});
+}
+
+// The reply /listen says aloud. voice_callback carries no context, so it lands
+// here; one command runs at a time. tts.speak cuts it to what it will say.
+var spoken_buf: [8192]u8 = undefined;
+var spoken_len: usize = 0;
+
+fn collectSpoken(text: []const u8) void {
+    if (spoken_len > 0 and spoken_len < spoken_buf.len) {
+        spoken_buf[spoken_len] = '\n';
+        spoken_len += 1;
+    }
+    const n = @min(text.len, spoken_buf.len - spoken_len);
+    @memcpy(spoken_buf[spoken_len..][0..n], text[0..n]);
+    spoken_len += n;
 }
 
 fn handleRouteCmd(alloc: std.mem.Allocator, w: anytype, _stderr: anytype, arg: []const u8) !void {
@@ -1632,6 +1720,7 @@ fn printHelp(w: anytype) !void {
         \\  /keys          — Add/update API keys (interactive menu)
         \\  /keys list     — Show all configured keys
         \\  /look [prompt] — Capture camera image and describe it
+        \\  /image <file> [prompt] — Attach an image file (drag it in for the path)
         \\  /screenshot    — Capture screen and describe it
         \\  /stats         — Show session statistics
         \\  /compact       — Compact conversation history
@@ -1640,6 +1729,7 @@ fn printHelp(w: anytype) !void {
         \\  /download URL  — Download a file
         \\  /schedule      — Manage scheduled jobs (list, add, remove)
         \\  /tts <text>    — Synthesize text to speech (plays audio)
+        \\  /listen [secs|file] — Say a prompt into the microphone (default 5s), or give a recording; the reply is spoken
         \\  /session       — Manage chat sessions (list, end, cleanup)
         \\  /route         — Manage multi-agent routing bindings
         \\  /agents        — Show agent pool status
@@ -1739,6 +1829,31 @@ fn printHelp(w: anytype) !void {
 // ---------------------------------------------------------------------------
 test {
     _ = @import("agent/redact.zig");
-    _ = @import("api/openai_sse.zig");
     _ = @import("agent/config.zig");
+    _ = @import("api/deepseek.zig");
+    _ = @import("api/ollama.zig");
+    _ = @import("api/openai_sse.zig");
+    _ = @import("api/protocol.zig");
+    _ = @import("api/sse.zig");
+    _ = @import("tools/browser.zig");
+}
+
+test "/image: a path is split from its prompt, as each terminal drops a file in" {
+    var buf: [256]u8 = undefined;
+    const plain = parseImageArg("shot.png what is this?", &buf).?;
+    try std.testing.expectEqualStrings("shot.png", plain.path);
+    try std.testing.expectEqualStrings("what is this?", plain.prompt);
+
+    // Windows Terminal quotes a dragged path that has a space.
+    const quoted = parseImageArg("\"C:\\Users\\me\\My Pics\\a.png\"  describe", &buf).?;
+    try std.testing.expectEqualStrings("C:\\Users\\me\\My Pics\\a.png", quoted.path);
+    try std.testing.expectEqualStrings("describe", quoted.prompt);
+
+    // macOS Terminal escapes the space instead.
+    const escaped = parseImageArg("/Users/me/My\\ Pics/a.png", &buf).?;
+    try std.testing.expectEqualStrings("/Users/me/My Pics/a.png", escaped.path);
+    try std.testing.expectEqualStrings("", escaped.prompt);
+
+    try std.testing.expect(parseImageArg("", &buf) == null);
+    try std.testing.expect(parseImageArg("\"never closed.png", &buf) == null);
 }

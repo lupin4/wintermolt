@@ -202,6 +202,16 @@ pub const Client = struct {
             return error.HttpError;
         }
 
+        // An error event inside a 200 means the request failed even though the
+        // status said otherwise; the partial response would read as an answer.
+        if (parser.stream_failed) {
+            const stderr = stdio.stderr();
+            stderr.print("\n[claude] stream error: {s}\n", .{
+                parser.stream_error orelse "provider reported an error event",
+            }) catch {};
+            return error.HttpError;
+        }
+
         // Build response from accumulated parser state
         return parser.toResponse();
     }

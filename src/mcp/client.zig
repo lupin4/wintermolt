@@ -260,10 +260,11 @@ pub const McpClientManager = struct {
 
         try stderr.print("[mcp-client] Loaded config: {s} ({d} bytes)\n", .{ config_path, n });
 
-        // Parse servers from config JSON
-        // Find "servers":{...} object
-        const servers_obj = json_rpc.findJsonObject(json, "servers") orelse {
-            try stderr.writeAll("[mcp-client] No 'servers' object in config\n");
+        // Find the servers object: "mcpServers" is the Claude Desktop / Claude
+        // Code key that docs/MCP.md shows, "servers" the original one.
+        const servers_obj = json_rpc.findJsonObject(json, "mcpServers") orelse
+            json_rpc.findJsonObject(json, "servers") orelse {
+            try stderr.writeAll("[mcp-client] No 'mcpServers' or 'servers' object in config\n");
             return;
         };
 

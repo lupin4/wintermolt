@@ -4,10 +4,9 @@
 //
 // Synthesizes text to audio using the configured TTS provider.
 // Saves the audio to a temp file and returns the path.
-// Can also play audio directly via system audio (afplay on macOS, aplay on Linux).
+// Can also play it straight away (afplay on macOS, ffplay elsewhere).
 
 const std = @import("std");
-const fsio = @import("../fsio.zig");
 const compat = @import("../compat.zig");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
@@ -15,7 +14,7 @@ const sse = @import("../api/sse.zig");
 const tts = @import("../agent/tts.zig");
 
 /// Execute the text_to_speech tool call.
-/// Input JSON: {"text": "Hello", "voice": "alloy", "provider": "openai", "play": true}
+/// Input JSON: {"text": "Hello", "voice": "thalia", "provider": "deepgram", "play": true}
 pub fn executeTool(alloc: Allocator, input_json: []const u8) ![]u8 {
     const text = sse.findJsonString(input_json, "text") orelse
         return alloc.dupe(u8, "Error: 'text' field is required.");
@@ -25,15 +24,6 @@ pub fn executeTool(alloc: Allocator, input_json: []const u8) ![]u8 {
 
     if (text.len > 4096)
         return alloc.dupe(u8, "Error: Text too long. Maximum 4096 characters per synthesis.");
-
-    // Check if TTS is configured
-    const provider_str = compat.getenv("WINTERMOLT_TTS_PROVIDER");
-    if (provider_str == null) {
-        const has_openai = compat.getenv("OPENAI_API_KEY") != null;
-        if (!has_openai) {
-            return alloc.dupe(u8, "Error: TTS not configured. Set WINTERMOLT_TTS_PROVIDER (openai, elevenlabs, piper, edge) and the relevant API key.");
-        }
-    }
 
     // Build text with optional inline directives
     var full_text: ArrayList(u8) = .empty;
@@ -67,30 +57,12 @@ pub fn executeTool(alloc: Allocator, input_json: []const u8) ![]u8 {
     const should_play = if (play_str) |p| std.mem.eql(u8, p, "true") else false;
 
     if (should_play) {
-        playAudio(alloc, file_path) catch {};
+        tts.playDetached(alloc, file_path) catch {};
     }
 
-    return std.fmt.allocPrint(alloc, "Audio saved to: {s}\nFormat: mp3\nProvider: {s}\nVoice: {s}", .{
+    return std.fmt.allocPrint(alloc, "Audio saved to: {s}\nProvider: {s}\nVoice: {s}", .{
         file_path,
-        provider_override orelse (compat.getenv("WINTERMOLT_TTS_PROVIDER") orelse "openai"),
-        voice_override orelse (compat.getenv("WINTERMOLT_TTS_VOICE") orelse "alloy"),
+        provider_override orelse @tagName(tts.providerFromEnv()),
+        voice_override orelse (compat.getenv("WINTERMOLT_TTS_VOICE") orelse "the provider's default"),
     });
-}
-
-/// Play an audio file using the system audio player.
-fn playAudio(alloc: Allocator, path: []const u8) !void {
-    const cmd = switch (comptime @import("builtin").os.tag) {
-        .macos => try std.fmt.allocPrint(alloc, "afplay \"{s}\" &", .{path}),
-        .linux => try std.fmt.allocPrint(alloc, "aplay \"{s}\" &", .{path}),
-        else => return,
-    };
-    defer alloc.free(cmd);
-
-    const cmd_z = try alloc.dupeZ(u8, cmd);
-    defer alloc.free(cmd_z);
-
-    const argv = [_][]const u8{ "/bin/sh", "-c", cmd_z };
-    // spawnDetached deliberately does not reap the child, matching what this site
-    // already did: waiting would block until playback finished.
-    try fsio.spawnDetached(alloc, &argv);
 }

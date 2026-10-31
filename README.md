@@ -21,6 +21,9 @@
   <img src="https://img.shields.io/badge/backends-7_(Ollama%2C_Claude%2C_GPT%2C_DeepSeek%2C_Qwen%2C_Gemini%2C_forAI)-purple?style=flat-square" alt="Backends">
 </p>
 
+> **wintermolt has no token or coin.** The `$WINTERMOLT` token on Base is not
+> affiliated with this project or its author.
+
 ---
 
 ```
@@ -318,7 +321,7 @@ The AI invokes these autonomously. No plugins needed.
 | `grep` | Content search with regex |
 | `http_request` | HTTP GET/POST/PUT/DELETE to any URL |
 | `web_search` | DuckDuckGo search (no API key needed) |
-| `camera_capture` | Camera snapshots + screenshots + OAK-D depth |
+| `camera_capture` | Camera snapshots, screenshots and image files the agent looks at itself, + OAK-D depth |
 | `image_process` | Format conversion (BMP, PNG via sips/ffmpeg) |
 | `browser_control` | Full Chrome automation via DevTools Protocol |
 | `memory_search` | Semantic search over conversation history |
@@ -326,7 +329,7 @@ The AI invokes these autonomously. No plugins needed.
 | `tailscale` | Mesh VPN — query peers, devices, connectivity |
 | `canvas_update` | A2UI — render rich UI surfaces in terminal or web |
 | `skills` | List skills and the built-in tool catalog |
-| `text_to_speech` | Speech via OpenAI, ElevenLabs or Edge TTS |
+| `text_to_speech` | Speech via Deepgram, OpenAI, ElevenLabs, Piper, Edge TTS or the computer's own voice |
 | `image_generate` | DALL-E 3 image generation |
 | `google_workspace` | Gmail, Calendar and Drive via Google APIs |
 | `spawn_agent` | Run a subtask in a child agent with its own context |
@@ -614,7 +617,10 @@ full-screen view use `/keys list`, or run `wintermolt --keys`.
 | `/model [name]` | Show or switch AI backend |
 | `/theme [name]` | List themes, or switch the full-screen view and canvas and save it |
 | `/look [prompt]` | Camera capture + AI vision |
+| `/image <file> [prompt]` | Attach an image file + AI vision (drag the file in for its path) |
 | `/screenshot [prompt]` | Screen capture + AI vision |
+| `/listen [seconds \| file]` | Speak a prompt (or give a recording); the reply is spoken ([voice](docs/TOOLS.md#voice)) |
+| `/tts <text>` | Speak text aloud |
 | `/schedule` | Manage cron jobs (list, add, remove, enable, disable) |
 | `/tailscale` | Show Tailscale network peers and status |
 | `/mcp` | Show MCP client/server status |

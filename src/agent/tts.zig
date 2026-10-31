@@ -3,18 +3,26 @@
 // tts.zig — Text-to-speech provider abstraction
 //
 // Supports multiple TTS backends:
+//   - Deepgram Aura-2 (api.deepgram.com/v1/speak)
 //   - OpenAI TTS (api.openai.com/v1/audio/speech)
 //   - ElevenLabs (api.elevenlabs.io/v1/text-to-speech)
-//   - Piper TTS (local, via piper CLI — zero-latency, offline)
+//   - Piper TTS (local, via piper CLI — offline)
 //   - Edge TTS (Microsoft, via edge-tts Python CLI)
+//   - The computer's own voice (Windows SAPI, macOS say, espeak-ng): no key
 //
-// All providers return raw audio bytes (mp3/wav/opus).
+// All providers return raw audio bytes (mp3/wav/aiff).
 // Inline directives allow per-utterance overrides: [[voice:alloy]] [[speed:1.2]]
+//
+// The text is model output. It reaches a CLI provider as one argument (or an
+// environment variable, or a file), never through a shell, and a request body
+// as JSON-escaped text.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const curl_tls = @import("../curl_tls.zig");
 const fsio = @import("../fsio.zig");
 const compat = @import("../compat.zig");
+const camera = @import("../tools/camera.zig");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 
@@ -43,6 +51,7 @@ const CURLOPT_WRITEFUNCTION: c_int = 20011;
 const CURLOPT_WRITEDATA: c_int = 10001;
 const CURLOPT_POST: c_int = 47;
 const CURLOPT_TIMEOUT: c_int = 13;
+const CURLINFO_RESPONSE_CODE: c_int = 0x200002;
 
 const ResponseBuffer = struct {
     data: ArrayList(u8),
@@ -65,11 +74,40 @@ fn writeCallback(
 // ---------------------------------------------------------------------------
 
 pub const TtsProvider = enum {
+    deepgram,
     openai,
     elevenlabs,
     piper,
     edge_tts,
+    system,
 };
+
+/// A provider as WINTERMOLT_TTS_PROVIDER and [[provider:…]] spell it.
+pub fn parseProvider(name: []const u8) ?TtsProvider {
+    if (std.mem.eql(u8, name, "edge")) return .edge_tts;
+    return std.meta.stringToEnum(TtsProvider, name);
+}
+
+pub const Keys = struct { deepgram: bool = false, openai: bool = false, elevenlabs: bool = false };
+
+/// The provider named, or with none (or a name it does not know) the first
+/// whose key is set, and with no key the computer's own voice.
+pub fn pickProvider(name: ?[]const u8, keys: Keys) TtsProvider {
+    if (name) |n| if (parseProvider(n)) |p| return p;
+    if (keys.deepgram) return .deepgram;
+    if (keys.openai) return .openai;
+    if (keys.elevenlabs) return .elevenlabs;
+    return .system;
+}
+
+/// pickProvider over WINTERMOLT_TTS_PROVIDER and the keys in the environment.
+pub fn providerFromEnv() TtsProvider {
+    return pickProvider(compat.getenv("WINTERMOLT_TTS_PROVIDER"), .{
+        .deepgram = compat.getenv("DEEPGRAM_API_KEY") != null,
+        .openai = compat.getenv("OPENAI_API_KEY") != null,
+        .elevenlabs = compat.getenv("ELEVENLABS_API_KEY") != null,
+    });
+}
 
 /// Parsed inline directives from text: [[voice:alloy]] [[speed:1.2]] [[provider:openai]]
 pub const TtsDirectives = struct {
@@ -80,8 +118,8 @@ pub const TtsDirectives = struct {
 };
 
 pub const TtsResult = struct {
-    audio_data: []u8, // Owned raw audio bytes (mp3/wav/opus)
-    format: []const u8, // "mp3", "wav", "opus"
+    audio_data: []u8, // Owned raw audio bytes (mp3/wav/aiff)
+    format: []const u8, // "mp3", "wav", "aiff"
     alloc: Allocator,
 
     pub fn deinit(self: *TtsResult) void {
@@ -96,28 +134,21 @@ pub const TtsResult = struct {
 pub const TtsClient = struct {
     alloc: Allocator,
     provider: TtsProvider,
-    default_voice: []const u8,
+    /// WINTERMOLT_TTS_VOICE; null leaves each provider its own default.
+    voice: ?[]const u8,
     // API keys (from config)
+    deepgram_api_key: ?[]const u8,
     openai_api_key: ?[]const u8,
     elevenlabs_api_key: ?[]const u8,
     elevenlabs_voice_id: ?[]const u8,
     piper_model: ?[]const u8,
 
     pub fn init(alloc: Allocator) TtsClient {
-        const provider_str = compat.getenv("WINTERMOLT_TTS_PROVIDER") orelse "openai";
-        const provider: TtsProvider = if (std.mem.eql(u8, provider_str, "elevenlabs"))
-            .elevenlabs
-        else if (std.mem.eql(u8, provider_str, "piper"))
-            .piper
-        else if (std.mem.eql(u8, provider_str, "edge") or std.mem.eql(u8, provider_str, "edge_tts"))
-            .edge_tts
-        else
-            .openai;
-
         return .{
             .alloc = alloc,
-            .provider = provider,
-            .default_voice = compat.getenv("WINTERMOLT_TTS_VOICE") orelse "alloy",
+            .provider = providerFromEnv(),
+            .voice = compat.getenv("WINTERMOLT_TTS_VOICE"),
+            .deepgram_api_key = compat.getenv("DEEPGRAM_API_KEY"),
             .openai_api_key = compat.getenv("OPENAI_API_KEY"),
             .elevenlabs_api_key = compat.getenv("ELEVENLABS_API_KEY"),
             .elevenlabs_voice_id = compat.getenv("ELEVENLABS_VOICE_ID"),
@@ -132,24 +163,28 @@ pub const TtsClient = struct {
         const directives = parseDirectives(self.alloc, text) catch TtsDirectives{
             .clean_text = text,
         };
-
-        const voice = directives.voice orelse self.default_voice;
+        defer if (directives.clean_text.ptr != text.ptr) self.alloc.free(directives.clean_text);
         const clean = directives.clean_text;
 
         // Select provider (directives can override)
-        var provider = self.provider;
-        if (directives.provider) |p| {
-            if (std.mem.eql(u8, p, "openai")) provider = .openai
-            else if (std.mem.eql(u8, p, "elevenlabs")) provider = .elevenlabs
-            else if (std.mem.eql(u8, p, "piper")) provider = .piper
-            else if (std.mem.eql(u8, p, "edge")) provider = .edge_tts;
-        }
+        const provider = if (directives.provider) |p| parseProvider(p) orelse self.provider else self.provider;
+        // ElevenLabs and Piper keep their own setting ahead of WINTERMOLT_TTS_VOICE.
+        const voice = directives.voice orelse switch (provider) {
+            .deepgram => self.voice orelse "aura-2-thalia-en",
+            .openai => self.voice orelse "alloy",
+            .elevenlabs => self.elevenlabs_voice_id orelse self.voice orelse "21m00Tcm4TlvDq8ikWAM", // Rachel
+            .piper => self.piper_model orelse self.voice orelse return error.NoPiperModel,
+            .edge_tts => self.voice orelse "en-US-AriaNeural",
+            .system => self.voice orelse "",
+        };
 
         return switch (provider) {
+            .deepgram => self.synthesizeDeepgram(clean, voice),
             .openai => self.synthesizeOpenAI(clean, voice, directives.speed),
             .elevenlabs => self.synthesizeElevenLabs(clean, voice),
             .piper => self.synthesizePiper(clean, voice),
             .edge_tts => self.synthesizeEdgeTts(clean, voice),
+            .system => self.synthesizeSystem(clean, voice),
         };
     }
 
@@ -158,21 +193,36 @@ pub const TtsClient = struct {
         var result = try self.synthesize(text);
         defer result.deinit();
 
-        // Write to temp file
-        const path = try std.fmt.allocPrint(self.alloc, "/tmp/wintermolt_tts_{d}.{s}", .{
-            fsio.milliTimestamp(),
-            result.format,
-        });
+        var path_buf: [512]u8 = undefined;
+        const path = try self.alloc.dupe(u8, try tempAudioPath(&path_buf, "tts", result.format));
         errdefer self.alloc.free(path);
 
-        const path_z = try self.alloc.dupeZ(u8, path);
-        defer self.alloc.free(path_z);
-
-        const file = try fsio.createFile(path_z, .{});
+        const file = try fsio.createFile(path, .{});
         defer fsio.close(file);
         try fsio.writeAll(file, result.audio_data);
 
         return path;
+    }
+
+    // -----------------------------------------------------------------------
+    // Deepgram Aura-2
+    // -----------------------------------------------------------------------
+
+    fn synthesizeDeepgram(self: *const TtsClient, text: []const u8, voice: []const u8) !TtsResult {
+        const api_key = self.deepgram_api_key orelse return error.NoApiKey;
+        if (text.len > 2000) return error.TextTooLong; // Aura's limit; past it, a 413
+
+        var model_buf: [64]u8 = undefined;
+        const url = try std.fmt.allocPrint(self.alloc, "https://api.deepgram.com/v1/speak?model={s}&encoding=mp3", .{try deepgramModel(&model_buf, voice)});
+        defer self.alloc.free(url);
+
+        const body = try std.json.Stringify.valueAlloc(self.alloc, .{ .text = text }, .{});
+        defer self.alloc.free(body);
+
+        const auth_z = try std.fmt.allocPrintSentinel(self.alloc, "Authorization: Token {s}", .{api_key}, 0);
+        defer self.alloc.free(auth_z);
+
+        return self.curlPost(url, body, auth_z, "mp3");
     }
 
     // -----------------------------------------------------------------------
@@ -182,17 +232,10 @@ pub const TtsClient = struct {
     fn synthesizeOpenAI(self: *const TtsClient, text: []const u8, voice: []const u8, speed: ?[]const u8) !TtsResult {
         const api_key = self.openai_api_key orelse return error.NoApiKey;
 
-        const speed_str = speed orelse "1.0";
-
-        // Build JSON body
-        const body = try std.fmt.allocPrint(self.alloc,
-            \\{{"model":"tts-1","input":"{s}","voice":"{s}","speed":{s},"response_format":"mp3"}}
-        , .{ escapeJsonStr(text), voice, speed_str });
+        const body = try openaiBody(self.alloc, text, voice, speed);
         defer self.alloc.free(body);
 
-        const auth_header = try std.fmt.allocPrint(self.alloc, "Authorization: Bearer {s}", .{api_key});
-        defer self.alloc.free(auth_header);
-        const auth_z = try self.alloc.dupeZ(u8, auth_header);
+        const auth_z = try std.fmt.allocPrintSentinel(self.alloc, "Authorization: Bearer {s}", .{api_key}, 0);
         defer self.alloc.free(auth_z);
 
         return self.curlPost(
@@ -207,25 +250,17 @@ pub const TtsClient = struct {
     // ElevenLabs TTS
     // -----------------------------------------------------------------------
 
-    fn synthesizeElevenLabs(self: *const TtsClient, text: []const u8, voice: []const u8) !TtsResult {
+    fn synthesizeElevenLabs(self: *const TtsClient, text: []const u8, voice_id: []const u8) !TtsResult {
         const api_key = self.elevenlabs_api_key orelse return error.NoApiKey;
-        const voice_id = if (std.mem.eql(u8, voice, self.default_voice))
-            (self.elevenlabs_voice_id orelse "21m00Tcm4TlvDq8ikWAM") // Rachel default
-        else
-            voice;
+        try checkName(voice_id); // it is a path segment of the URL
 
-        const url = try std.fmt.allocPrint(self.alloc,
-            "https://api.elevenlabs.io/v1/text-to-speech/{s}", .{voice_id});
+        const url = try std.fmt.allocPrint(self.alloc, "https://api.elevenlabs.io/v1/text-to-speech/{s}", .{voice_id});
         defer self.alloc.free(url);
 
-        const body = try std.fmt.allocPrint(self.alloc,
-            \\{{"text":"{s}","model_id":"eleven_monolingual_v1"}}
-        , .{escapeJsonStr(text)});
+        const body = try std.json.Stringify.valueAlloc(self.alloc, .{ .text = text, .model_id = "eleven_monolingual_v1" }, .{});
         defer self.alloc.free(body);
 
-        const auth_header = try std.fmt.allocPrint(self.alloc, "xi-api-key: {s}", .{api_key});
-        defer self.alloc.free(auth_header);
-        const auth_z = try self.alloc.dupeZ(u8, auth_header);
+        const auth_z = try std.fmt.allocPrintSentinel(self.alloc, "xi-api-key: {s}", .{api_key}, 0);
         defer self.alloc.free(auth_z);
 
         return self.curlPost(url, body, auth_z, "mp3");
@@ -235,34 +270,12 @@ pub const TtsClient = struct {
     // Piper TTS (local, offline)
     // -----------------------------------------------------------------------
 
-    fn synthesizePiper(self: *const TtsClient, text: []const u8, voice: []const u8) !TtsResult {
-        const model = self.piper_model orelse voice;
-
-        // Pipe text into piper, capture wav output
-        const cmd = try std.fmt.allocPrint(self.alloc,
-            "echo {s} | piper --model {s} --output_raw", .{
-            shellEscape(text),
-            model,
-        });
-        defer self.alloc.free(cmd);
-
-        const cmd_z = try self.alloc.dupeZ(u8, cmd);
-        defer self.alloc.free(cmd_z);
-
-        const argv = [_][]const u8{ "/bin/sh", "-c", cmd_z };
-        // Child.init, the read loop and wait() all collapse into runCapture.
-        // The 64 MiB cap is new -- the old loop read until EOF with no limit --
-        // and is far above any plausible TTS clip.
-        const run = try fsio.runCapture(self.alloc, &argv, 64 * 1024 * 1024, null);
-        // stdout was allocated with self.alloc, which is what TtsResult frees
-        // with, so ownership transfers instead of being copied.
-        self.alloc.free(run.stderr);
-
-        return TtsResult{
-            .audio_data = run.stdout,
-            .format = "wav",
-            .alloc = self.alloc,
-        };
+    fn synthesizePiper(self: *const TtsClient, text: []const u8, model: []const u8) !TtsResult {
+        if (model.len == 0 or model[0] == '-') return error.BadVoiceName;
+        var out_buf: [512]u8 = undefined;
+        const out = try tempAudioPath(&out_buf, "voice", "wav");
+        var argv_buf: [7][]const u8 = undefined;
+        return self.runForAudio(piperArgv(&argv_buf, model, out, text), null, out, "wav");
     }
 
     // -----------------------------------------------------------------------
@@ -270,47 +283,71 @@ pub const TtsClient = struct {
     // -----------------------------------------------------------------------
 
     fn synthesizeEdgeTts(self: *const TtsClient, text: []const u8, voice: []const u8) !TtsResult {
-        const tmp_path = try std.fmt.allocPrint(self.alloc, "/tmp/wintermolt_edge_{d}.mp3", .{
-            fsio.milliTimestamp(),
-        });
-        defer self.alloc.free(tmp_path);
+        var out_buf: [512]u8 = undefined;
+        const out = try tempAudioPath(&out_buf, "voice", "mp3");
 
-        const cmd = try std.fmt.allocPrint(self.alloc,
-            "edge-tts --voice {s} --text {s} --write-media {s}", .{
-            voice,
-            shellEscape(text),
-            tmp_path,
-        });
-        defer self.alloc.free(cmd);
+        // --opt=value: a reply that starts with '-' (a list) is still the text.
+        const voice_arg = try std.fmt.allocPrint(self.alloc, "--voice={s}", .{voice});
+        defer self.alloc.free(voice_arg);
+        const text_arg = try std.fmt.allocPrint(self.alloc, "--text={s}", .{text});
+        defer self.alloc.free(text_arg);
+        const media_arg = try std.fmt.allocPrint(self.alloc, "--write-media={s}", .{out});
+        defer self.alloc.free(media_arg);
 
-        const cmd_z = try self.alloc.dupeZ(u8, cmd);
-        defer self.alloc.free(cmd_z);
+        return self.runForAudio(&.{ "edge-tts", voice_arg, text_arg, media_arg }, null, out, "mp3");
+    }
 
-        const argv = [_][]const u8{ "/bin/sh", "-c", cmd_z };
-        // Output and exit status were both discarded here; the file written to
-        // disk is the real result, and the open below is what reports failure.
-        if (fsio.runCapture(self.alloc, &argv, 4096, null)) |run| {
-            run.deinit(self.alloc);
-        } else |_| {}
+    // -----------------------------------------------------------------------
+    // The computer's own voice
+    // -----------------------------------------------------------------------
 
-        // Read the generated file
-        const tmp_path_z = try self.alloc.dupeZ(u8, tmp_path);
-        defer self.alloc.free(tmp_path_z);
+    fn synthesizeSystem(self: *const TtsClient, text: []const u8, voice: []const u8) !TtsResult {
+        var out_buf: [512]u8 = undefined;
+        if (builtin.os.tag == .windows) {
+            // The script is fixed; the text, file and voice arrive as data.
+            const script = "Add-Type -AssemblyName System.Speech; " ++
+                "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; " ++
+                "if ($env:WM_TTS_VOICE) { $s.SelectVoice($env:WM_TTS_VOICE) }; " ++
+                "$s.SetOutputToWaveFile($env:WM_TTS_OUT); $s.Speak($env:WM_TTS_TEXT); $s.Dispose()";
+            const out = try tempAudioPath(&out_buf, "voice", "wav");
+            var env = try fsio.currentEnvMap(self.alloc);
+            defer env.deinit();
+            try env.put("WM_TTS_TEXT", text);
+            try env.put("WM_TTS_OUT", out);
+            if (voice.len > 0) try env.put("WM_TTS_VOICE", voice);
+            return self.runForAudio(&.{ "powershell", "-NoProfile", "-NonInteractive", "-Command", script }, &env, out, "wav");
+        }
 
-        const file = fsio.openFile(tmp_path_z, .{}) catch
-            return error.TtsFailed;
+        // say and espeak-ng read the text from a file: as an argument, a reply
+        // that starts with '-' would be taken for an option.
+        const mac = builtin.os.tag == .macos;
+        const format = if (mac) "aiff" else "wav";
+        const out = try tempAudioPath(&out_buf, "voice", format);
+        var txt_buf: [512]u8 = undefined;
+        const txt = try tempAudioPath(&txt_buf, "voice", "txt");
+        {
+            const file = try fsio.createFile(txt, .{});
+            defer fsio.close(file);
+            try fsio.writeAll(file, text);
+        }
+        defer fsio.deleteFile(txt) catch {};
+
+        const argv = [_][]const u8{ if (mac) "say" else "espeak-ng", "-f", txt, if (mac) "-o" else "-w", out, "-v", voice };
+        return self.runForAudio(argv[0..if (voice.len > 0) 7 else 5], null, out, format);
+    }
+
+    /// Run a voice CLI that writes `out`, and read the audio back.
+    fn runForAudio(self: *const TtsClient, argv: []const []const u8, env: ?*const fsio.EnvMap, out: []const u8, format: []const u8) !TtsResult {
+        defer fsio.deleteFile(out) catch {};
+        const run = try fsio.runCapture(self.alloc, argv, 64 * 1024, env);
+        defer run.deinit(self.alloc);
+        if (!run.exited or run.exit_code != 0) return error.TtsFailed;
+
+        const file = fsio.openFile(out, .{}) catch return error.TtsFailed;
         defer fsio.close(file);
-
-        const stat = try fsio.stat(file);
-        const audio_data = try self.alloc.alloc(u8, stat.size);
-        _ = try fsio.readAllAt(file, audio_data, 0);
-
-        // Clean up temp file
-        fsio.deleteFile(tmp_path_z) catch {};
-
-        return TtsResult{
-            .audio_data = audio_data,
-            .format = "mp3",
+        return .{
+            .audio_data = try fsio.readToEndAlloc(file, self.alloc, 64 * 1024 * 1024),
+            .format = format,
             .alloc = self.alloc,
         };
     }
@@ -320,54 +357,154 @@ pub const TtsClient = struct {
     // -----------------------------------------------------------------------
 
     fn curlPost(self: *const TtsClient, url: []const u8, body: []const u8, auth_header_z: [*:0]const u8, format: []const u8) !TtsResult {
-        const handle = curl_easy_init() orelse return error.CurlInitFailed;
-        curl_tls.configure(handle);
-        defer curl_easy_cleanup(handle);
-
-        const url_z = try self.alloc.dupeZ(u8, url);
-        defer self.alloc.free(url_z);
-
-        var response = ResponseBuffer{
-            .data = .empty,
-            .alloc = self.alloc,
-        };
-
-        _ = curl_easy_setopt(handle, CURLOPT_URL, url_z.ptr);
-        _ = curl_easy_setopt(handle, CURLOPT_POST, @as(c_long, 1));
-        _ = curl_easy_setopt(handle, CURLOPT_POSTFIELDS, body.ptr);
-        _ = curl_easy_setopt(handle, CURLOPT_POSTFIELDSIZE, @as(c_long, @intCast(body.len)));
-        _ = curl_easy_setopt(handle, CURLOPT_WRITEFUNCTION, &writeCallback);
-        _ = curl_easy_setopt(handle, CURLOPT_WRITEDATA, &response);
-        _ = curl_easy_setopt(handle, CURLOPT_TIMEOUT, @as(c_long, 30));
-
-        // Headers
-        var headers: ?*CurlSlist = null;
-        headers = curl_slist_append(headers, "Content-Type: application/json");
-        headers = curl_slist_append(headers, auth_header_z);
-        // Freed after curl_easy_perform: libcurl reads the list during the transfer.
-        defer if (headers) |h| curl_slist_free_all(h);
-        if (headers) |h| {
-            _ = curl_easy_setopt(handle, CURLOPT_HTTPHEADER, h);
-        }
-
-        const result = curl_easy_perform(handle);
-        if (result != .ok) {
-            response.data.deinit(self.alloc);
-            return error.CurlFailed;
-        }
-
-        if (response.data.items.len == 0) {
-            response.data.deinit(self.alloc);
-            return error.EmptyResponse;
-        }
-
-        return TtsResult{
-            .audio_data = try response.data.toOwnedSlice(self.alloc),
+        return .{
+            .audio_data = try httpPost(self.alloc, url, "Content-Type: application/json", auth_header_z, body),
             .format = format,
             .alloc = self.alloc,
         };
     }
 };
+
+/// POST `body` and return the response body, which must come with a 200: an
+/// error's JSON is not audio, or a transcript. Caller owns the result.
+pub fn httpPost(alloc: Allocator, url: []const u8, content_type_z: [*:0]const u8, auth_header_z: [*:0]const u8, body: []const u8) ![]u8 {
+    const handle = curl_easy_init() orelse return error.CurlInitFailed;
+    curl_tls.configure(handle);
+    defer curl_easy_cleanup(handle);
+
+    const url_z = try alloc.dupeZ(u8, url);
+    defer alloc.free(url_z);
+
+    var response = ResponseBuffer{
+        .data = .empty,
+        .alloc = alloc,
+    };
+    errdefer response.data.deinit(alloc);
+
+    _ = curl_easy_setopt(handle, CURLOPT_URL, url_z.ptr);
+    _ = curl_easy_setopt(handle, CURLOPT_POST, @as(c_long, 1));
+    _ = curl_easy_setopt(handle, CURLOPT_POSTFIELDS, body.ptr);
+    _ = curl_easy_setopt(handle, CURLOPT_POSTFIELDSIZE, @as(c_long, @intCast(body.len)));
+    _ = curl_easy_setopt(handle, CURLOPT_WRITEFUNCTION, &writeCallback);
+    _ = curl_easy_setopt(handle, CURLOPT_WRITEDATA, &response);
+    _ = curl_easy_setopt(handle, CURLOPT_TIMEOUT, @as(c_long, 30));
+
+    // Headers
+    var headers: ?*CurlSlist = null;
+    headers = curl_slist_append(headers, content_type_z);
+    headers = curl_slist_append(headers, auth_header_z);
+    // Freed after curl_easy_perform: libcurl reads the list during the transfer.
+    defer if (headers) |h| curl_slist_free_all(h);
+    if (headers) |h| {
+        _ = curl_easy_setopt(handle, CURLOPT_HTTPHEADER, h);
+    }
+
+    if (curl_easy_perform(handle) != .ok) return error.CurlFailed;
+
+    var status: c_long = 0;
+    _ = curl_easy_getinfo(handle, CURLINFO_RESPONSE_CODE, &status);
+    if (status == 401 or status == 403) return error.ApiKeyRejected;
+    if (status != 200) return error.HttpError;
+    if (response.data.items.len == 0) return error.EmptyResponse;
+
+    return response.data.toOwnedSlice(alloc);
+}
+
+/// A Deepgram voice: "thalia" is aura-2-thalia-en, and a full model name is
+/// taken as it is. It goes into the request URL.
+pub fn deepgramModel(buf: []u8, voice: []const u8) ![]const u8 {
+    try checkName(voice);
+    if (std.mem.startsWith(u8, voice, "aura")) return voice;
+    return std.fmt.bufPrint(buf, "aura-2-{s}-en", .{voice});
+}
+
+/// A voice that goes into a URL: letters, digits, '-' and '_'. The
+/// [[voice:…]] directive and the tool's `voice` are model output.
+fn checkName(name: []const u8) !void {
+    if (name.len == 0) return error.BadVoiceName;
+    for (name) |c| if (!std.ascii.isAlphanumeric(c) and c != '-' and c != '_') return error.BadVoiceName;
+}
+
+/// The /v1/audio/speech request. Speed comes from a [[speed:…]] directive, so
+/// it is parsed as a number, and anything that is not one is 1.0.
+pub fn openaiBody(alloc: Allocator, text: []const u8, voice: []const u8, speed: ?[]const u8) ![]u8 {
+    const parsed = if (speed) |s| std.fmt.parseFloat(f64, s) catch 1.0 else 1.0;
+    const s = if (std.math.isFinite(parsed)) std.math.clamp(parsed, 0.25, 4.0) else 1.0;
+    return std.json.Stringify.valueAlloc(alloc, .{ .model = "tts-1", .input = text, .voice = voice, .speed = s, .response_format = "mp3" }, .{});
+}
+
+/// piper (OHF-Voice/piper1-gpl) takes the text after `--`.
+pub fn piperArgv(buf: *[7][]const u8, model: []const u8, out: []const u8, text: []const u8) []const []const u8 {
+    buf.* = .{ "piper", "-m", model, "-f", out, "--", text };
+    return buf;
+}
+
+/// A fresh temp file for audio: wintermolt_<kind>_<ms>.<ext>.
+fn tempAudioPath(buf: []u8, kind: []const u8, ext: []const u8) ![]const u8 {
+    var name_buf: [64]u8 = undefined;
+    const name = try std.fmt.bufPrint(&name_buf, "wintermolt_{s}_{d}.{s}", .{ kind, fsio.milliTimestamp(), ext });
+    return camera.tempPath(buf, name);
+}
+
+// ---------------------------------------------------------------------------
+// Playback
+// ---------------------------------------------------------------------------
+
+/// The command that plays an audio file: afplay on macOS, else ffplay, which
+/// comes with ffmpeg and plays mp3 and wav alike.
+pub fn playerArgv(buf: *[6][]const u8, os: std.Target.Os.Tag, path: []const u8) []const []const u8 {
+    if (os == .macos) {
+        buf[0] = "afplay";
+        buf[1] = path;
+        return buf[0..2];
+    }
+    buf.* = .{ "ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", path };
+    return buf;
+}
+
+/// Play an audio file and return when it has finished.
+pub fn play(alloc: Allocator, path: []const u8) !void {
+    var buf: [6][]const u8 = undefined;
+    const run = try fsio.runCapture(alloc, playerArgv(&buf, builtin.os.tag, path), 64 * 1024, null);
+    defer run.deinit(alloc);
+    if (!run.exited or run.exit_code != 0) return error.PlaybackFailed;
+}
+
+/// Start playing an audio file and return at once.
+pub fn playDetached(alloc: Allocator, path: []const u8) !void {
+    var buf: [6][]const u8 = undefined;
+    try fsio.spawnDetached(alloc, playerArgv(&buf, builtin.os.tag, path));
+}
+
+/// What to say of a reply: markdown's marks dropped and, past `buf.len`, cut
+/// where a sentence (or else a word) ends.
+pub fn spokenText(buf: []u8, text: []const u8) []const u8 {
+    var cut = text;
+    if (cut.len > buf.len) {
+        cut = text[0..buf.len];
+        if (std.mem.lastIndexOfAny(u8, cut, ".!?\n")) |i| {
+            cut = cut[0 .. i + 1];
+        } else if (std.mem.lastIndexOfScalar(u8, cut, ' ')) |i| cut = cut[0..i];
+    }
+    var n: usize = 0;
+    for (cut) |c| if (c != '*' and c != '#' and c != '`') {
+        buf[n] = c;
+        n += 1;
+    };
+    return buf[0..n];
+}
+
+/// Say a reply aloud and return when it has been said: /listen's answer.
+pub fn speak(alloc: Allocator, text: []const u8) !void {
+    var buf: [2000]u8 = undefined; // Deepgram's limit, and plenty to listen to
+    const words = spokenText(&buf, text);
+    if (words.len == 0) return;
+    var client = TtsClient.init(alloc);
+    const path = try client.synthesizeToFile(words);
+    defer alloc.free(path);
+    defer fsio.deleteFile(path) catch {};
+    try play(alloc, path);
+}
 
 // ---------------------------------------------------------------------------
 // Directive parsing
@@ -426,18 +563,59 @@ pub fn parseDirectives(alloc: Allocator, text: []const u8) !TtsDirectives {
     return result;
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-fn escapeJsonStr(s: []const u8) []const u8 {
-    // Simple passthrough — full escaping happens at the JSON level
-    // For embedded quotes we rely on the text not containing unescaped "
-    return s;
+test "pickProvider: the one named, else the first whose key is set, else the computer's own voice" {
+    try std.testing.expectEqual(TtsProvider.piper, pickProvider("piper", .{ .deepgram = true }));
+    try std.testing.expectEqual(TtsProvider.edge_tts, pickProvider("edge", .{}));
+    try std.testing.expectEqual(TtsProvider.deepgram, pickProvider(null, .{ .deepgram = true, .openai = true }));
+    try std.testing.expectEqual(TtsProvider.openai, pickProvider(null, .{ .openai = true, .elevenlabs = true }));
+    try std.testing.expectEqual(TtsProvider.elevenlabs, pickProvider(null, .{ .elevenlabs = true }));
+    try std.testing.expectEqual(TtsProvider.system, pickProvider(null, .{}));
+    try std.testing.expectEqual(TtsProvider.deepgram, pickProvider("deepgramm", .{ .deepgram = true }));
 }
 
-fn shellEscape(s: []const u8) []const u8 {
-    // For shell commands, we rely on the caller quoting properly
-    // In production, use proper shell escaping
-    return s;
+test "deepgramModel: a short voice name becomes an Aura-2 model, and nothing else reaches the URL" {
+    var buf: [64]u8 = undefined;
+    try std.testing.expectEqualStrings("aura-2-thalia-en", try deepgramModel(&buf, "thalia"));
+    try std.testing.expectEqualStrings("aura-2-draco-en", try deepgramModel(&buf, "aura-2-draco-en"));
+    try std.testing.expectError(error.BadVoiceName, deepgramModel(&buf, "thalia&encoding=wav"));
+    try std.testing.expectError(error.BadVoiceName, deepgramModel(&buf, ""));
+}
+
+test "openaiBody: quotes and newlines in the text stay text, and speed is only ever a number" {
+    const alloc = std.testing.allocator;
+    const body = try openaiBody(alloc, "She said \"hi\"\nthen left.", "nova", "1.0,\"model\":\"x\"");
+    defer alloc.free(body);
+    const Body = struct { model: []const u8, input: []const u8, voice: []const u8, speed: f64 };
+    const parsed = try std.json.parseFromSlice(Body, alloc, body, .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    try std.testing.expectEqualStrings("tts-1", parsed.value.model);
+    try std.testing.expectEqualStrings("She said \"hi\"\nthen left.", parsed.value.input);
+    try std.testing.expectEqual(@as(f64, 1.0), parsed.value.speed);
+}
+
+test "piperArgv: the text is one argument after --, never a shell command" {
+    var buf: [7][]const u8 = undefined;
+    const text = "- hi; rm -rf ~ $(id) `id`";
+    const argv = piperArgv(&buf, "en_US-lessac-medium", "out.wav", text);
+    try std.testing.expectEqualStrings("piper", argv[0]);
+    try std.testing.expectEqualStrings("--", argv[argv.len - 2]);
+    try std.testing.expectEqualStrings(text, argv[argv.len - 1]);
+}
+
+test "spokenText: markdown marks dropped, and a long reply cut where a sentence ends" {
+    var buf: [40]u8 = undefined;
+    try std.testing.expectEqualStrings("Done. The file is ready.", spokenText(&buf, "**Done.** The `file` is ready."));
+    try std.testing.expectEqualStrings("First sentence here.", spokenText(&buf, "First sentence here. Second one is long enough to overflow."));
+}
+
+test "playerArgv: afplay on macOS, elsewhere ffplay with no window that exits when done" {
+    var buf: [6][]const u8 = undefined;
+    const mac = playerArgv(&buf, .macos, "a.mp3");
+    try std.testing.expectEqual(@as(usize, 2), mac.len);
+    try std.testing.expectEqualStrings("afplay", mac[0]);
+    const win = playerArgv(&buf, .windows, "a.mp3");
+    try std.testing.expectEqualStrings("ffplay", win[0]);
+    try std.testing.expectEqualStrings("-nodisp", win[1]);
+    try std.testing.expectEqualStrings("-autoexit", win[2]);
+    try std.testing.expectEqualStrings("a.mp3", win[win.len - 1]);
 }
