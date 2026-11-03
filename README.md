@@ -748,6 +748,7 @@ wintermolt (one native binary, 1.6–14 MB)
 | `WINTERMOLT_NO_HISTORY` | — | Set `1` to disable SQLite persistence |
 | `WINTERMOLT_NO_FALLBACK` | — | Set `1` so a failed request fails, instead of being answered by Ollama or OpenAI; `-e` then exits 1 |
 | `WINTERMOLT_NO_TOOLS` | — | Set `1` to send no tool definitions, for models without function calling |
+| `WINTERMOLT_MAX_ITERATIONS` | `25` | Model requests one turn may make before the agent stops; raise it for long multi-step tasks |
 | `WINTERMOLT_STALL_TIMEOUT` | `180` | Seconds a model request may receive nothing before it is dropped; a stream that keeps arriving is never cut off (`0` = never) |
 | `TAILSCALE_API_KEY` | — | Tailscale REST API key (optional) |
 | `PINECONE_API_KEY` | — | Pinecone API key (enables RAG memory) |

@@ -70,6 +70,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the capture with `CameraFrameIsBlackIsItCovered`, rather than moving on to
   a virtual camera (NVIDIA Broadcast's shows its own picture).
   `list_devices` lists them.
+- **`WINTERMOLT_MAX_ITERATIONS` sets how many model requests one turn may
+  make** before it stops with "Hit max iterations" (default 25; 0, or a
+  value that is not a positive whole number, keeps 25). A long multi-step
+  task stopped at 25 with no way to raise it. By Philipp Baumann (#8).
 
 ### Fixed
 
