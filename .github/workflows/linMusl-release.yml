@@ -1,0 +1,183 @@
+name: Wintermolt linMusl release binaries
+
+# Builds the musl builds published as prebuilt/wintermolt-linux-<arch>-musl,
+# natively inside an alpine:3.23 container.
+#
+# Why a container, and why Alpine:
+#   - The build links the system libcurl and libsqlite3, so it has to run where
+#     those are the musl builds. Alpine is that place.
+#   - -Dtarget= is deliberately NOT passed. Naming a target makes Zig treat the
+#     build as a cross-compile and stop finding libcurl and libsqlite3
+#     (build.zig:48). Natively on Alpine the target is already *-linux-musl.
+#   - -Doptimize=ReleaseSmall, not the ReleaseFast of the glibc release: the musl
+#     targets are the small boards (Pi Zero 2 W), and both the README's musl
+#     section and the #2 reporter's binary are ReleaseSmall. Size is the point.
+#   - The result links /lib/ld-musl-<arch>.so.1, carries no GLIBC_* imports at
+#     all, and runs on Alpine with neither gcompat nor LD_PRELOAD. That is the
+#     #2 fix, and the check step fails the lane if a GLIBC_ import ever returns.
+#
+#   - The Zig tarball is sha256-pinned per matrix arch. The linX86 lane gets
+#     its signature check from mlugg/setup-zig; this lane downloads from
+#     ziglang.org itself, so the pin is what makes the download verified.
+#
+#   - The release checks the linX86 lane records (41b974a) are carried here:
+#     arm64 must have zero SVE instructions (the baseline promise for the Pi
+#     boards), x86_64 zero zmm (above the x86_64_v3 floor), and neither arch a
+#     RUNPATH/RPATH. -Dcpu= is what guarantees them; the checks catch a
+#     regression.
+#
+# Why `docker run` instead of a job-level `container:`:
+#   A job-level container runs the runner's glibc Node runtime inside it for
+#   JavaScript actions (actions/checkout, upload-artifact), which on Alpine
+#   needs libc6-compat, i.e. gcompat. Keeping the job on the host runner and the
+#   musl work inside a long-lived `docker run` container means the Alpine
+#   container only ever runs shell, and no gcompat enters the picture anywhere.
+#
+# Alpine 3.23 is the release the #2 reporter ran (Alpine 3.23.6) and the one the
+# README's musl section was verified against.
+#
+# The binary is uploaded as an artifact only. Committing it to prebuilt/ and
+# attaching it to a release stays a manual step, after review.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # aarch64: the Pi / Alpine case in #2. ubuntu-24.04-arm is the GitHub
+          # hosted arm64 runner, available to public repositories.
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+            cpu: baseline
+            # sha256 of zig-aarch64-linux-0.16.0.tar.xz, from the 0.16.0 entry
+            # of https://ziglang.org/download/index.json.
+            zig-sha256: ea4b09bfb22ec6f6c6ceac57ab63efb6b46e17ab08d21f69f3a48b38e1534f17
+          # x86_64: the same routine on the amd64 Alpine lane.
+          - runner: ubuntu-latest
+            arch: x86_64
+            cpu: x86_64_v3
+            # sha256 of zig-x86_64-linux-0.16.0.tar.xz, same source.
+            zig-sha256: 70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Start the alpine:3.23 build container
+        run: docker run -d --name build -v "$PWD":/w -w /w alpine:3.23 sleep infinity
+
+      - name: Install build and check tools
+        run: |
+          docker exec build apk add --no-cache \
+            build-base curl curl-dev sqlite-dev pkgconf \
+            binutils file xz tar
+
+      - name: Install Zig 0.16.0 (sha256-verified)
+        run: |
+          docker exec -e ZIG_SHA256="${{ matrix.zig-sha256 }}" -i build sh -s <<'EOS'
+          set -eu
+          arch=$(uname -m)
+          zigdir="/opt/zig-${arch}-linux-0.16.0"
+          # The official Linux Zig build is a static binary: it runs on musl.
+          curl -fsSL -o /tmp/zig.tar.xz \
+            "https://ziglang.org/download/0.16.0/zig-${arch}-linux-0.16.0.tar.xz"
+          # Verify before anything extracts or runs the tarball: this lane
+          # downloads over HTTPS, and the pinned sha256 is the check that turns
+          # "whatever ziglang.org serves" into a verified artifact.
+          echo "${ZIG_SHA256}  /tmp/zig.tar.xz" | sha256sum -c -
+          tar -C /opt -xf /tmp/zig.tar.xz
+          ln -sf "$zigdir/zig" /usr/local/bin/zig
+          zig version
+          EOS
+
+      - name: Build
+        run: docker exec build zig build -Doptimize=ReleaseSmall -Dcpu=${{ matrix.cpu }} -Dstrip=true --summary all
+
+      - name: Test
+        run: docker exec build zig build test --summary all
+
+      - name: Check the binary
+        run: |
+          docker exec -i build sh -s <<'EOS'
+          set -eu
+          B=zig-out/bin/wintermolt
+          arch=$(uname -m)
+          file "$B"
+          ls -l "$B"
+          sha256sum "$B"
+
+          if ! readelf -l "$B" | grep -q 'ld-musl-.*\.so\.1'; then
+            echo "FAIL: interpreter is not the musl loader"
+            exit 1
+          fi
+          if readelf -V "$B" | grep -q 'GLIBC_'; then
+            echo "FAIL: the binary still carries GLIBC_ version needs"
+            exit 1
+          fi
+          if readelf --dyn-syms "$B" | grep -q 'GLIBC_'; then
+            echo "FAIL: the binary still imports GLIBC_ symbols"
+            exit 1
+          fi
+          if strings "$B" | grep -q 'GLIBC_'; then
+            echo "FAIL: GLIBC_ strings remain in the binary"
+            exit 1
+          fi
+          echo "OK: musl loader, zero GLIBC_ imports"
+
+          # The release checks the linX86 lane records (41b974a), carried to
+          # the musl lane. -Dcpu= is what guarantees them; these checks are what
+          # catch a regression. Counts are printed so the log carries evidence.
+          if [ "$arch" = aarch64 ]; then
+            # SVE: generic aarch64 (the Pi boards' baseline) has none, so a
+            # single SVE instruction makes the binary SIGILL there.
+            sve=$(objdump -d "$B" | grep -cE '\b(ptrue|movprfx|whilelo|ld1d|st1d|cntd)\b' || true)
+            echo "sve (SVE) instructions: $sve"
+            [ "$sve" -eq 0 ]
+            echo "OK: arm64 carries zero SVE instructions"
+          fi
+          if [ "$arch" = x86_64 ]; then
+            # zmm: AVX-512 sits above this lane's x86_64_v3 floor.
+            zmm=$(objdump -d "$B" | grep -c zmm || true)
+            echo "zmm (AVX-512) instructions: $zmm"
+            [ "$zmm" -eq 0 ]
+            echo "ymm (AVX2) instructions: $(objdump -d "$B" | grep -c ymm || true)"
+            echo "OK: x86_64 carries zero zmm instructions"
+          fi
+          # No embedded library search path: the musl deps must resolve from
+          # the system, not from a builder-local rpath.
+          if readelf -d "$B" | grep -E 'RUNPATH|RPATH'; then
+            echo "FAIL: the binary carries a RUNPATH/RPATH"
+            exit 1
+          fi
+          echo "OK: no RUNPATH/RPATH"
+
+          echo "DT_NEEDED:"
+          readelf -d "$B" | grep NEEDED
+          EOS
+
+      - name: Smoke test on musl (no gcompat)
+        run: |
+          docker exec -i build sh -s <<'EOS'
+          set -eu
+          B=zig-out/bin/wintermolt
+          "$B" --version
+          printf '/stats\n/quit\n' | "$B"
+          EOS
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wintermolt-linux-${{ matrix.arch }}-musl
+          path: zig-out/bin/wintermolt
+          retention-days: 14
+
+      - name: Stop the build container
+        if: always()
+        run: docker rm -f build
