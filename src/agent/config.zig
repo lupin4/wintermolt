@@ -22,7 +22,8 @@
 //   WINTERMOLT_OLLAMA_URL    — Optional. Ollama base URL (default: http://localhost:11434)
 //   WINTERMOLT_OLLAMA_MODEL  — Optional. Ollama model (default: qwen3:8b)
 //   WINTERMOLT_OLLAMA_CTX    — Optional. Context window cap (default: 4096). Prevents OOM.
-//   WINTERMOLT_OLLAMA_KEEP_ALIVE — Optional. Model unload timer (default: "5m"). "0" unloads immediately.
+//   WINTERMOLT_OLLAMA_KEEP_ALIVE — Optional. Model unload timer (default: "5m", "30m" once
+//                              /listen is used). "0" unloads immediately.
 //   WINTERMOLT_VISION_MODEL  — Optional. A request carrying an image goes to this model (default: the main model)
 //   WINTERMOLT_VISION_BACKEND — Optional. Vision routing: "ollama" (default) or "openai"
 //   OPENAI_API_KEY           — Optional. Enables OpenAI backend (/model openai)

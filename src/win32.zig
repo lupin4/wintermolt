@@ -176,6 +176,60 @@ pub fn restoreConsole() void {
     if (saved_in_cp != 0 and saved_in_cp != CP_UTF8) _ = SetConsoleCP(saved_in_cp);
 }
 
+// ── children that die with us ───────────────────────────────────────────────
+//
+// A job with KILL_ON_JOB_CLOSE terminates every process in it when its last
+// handle closes, and the OS closes ours when this process ends, however it
+// ends: a crash, Task Manager, `taskkill /F`. The handle is never closed by
+// hand, since closing it is the kill.
+
+const JOBOBJECT_BASIC_LIMIT_INFORMATION = extern struct {
+    PerProcessUserTimeLimit: i64 = 0,
+    PerJobUserTimeLimit: i64 = 0,
+    LimitFlags: u32 = 0,
+    MinimumWorkingSetSize: usize = 0,
+    MaximumWorkingSetSize: usize = 0,
+    ActiveProcessLimit: u32 = 0,
+    Affinity: usize = 0,
+    PriorityClass: u32 = 0,
+    SchedulingClass: u32 = 0,
+};
+const JOBOBJECT_EXTENDED_LIMIT_INFORMATION = extern struct {
+    BasicLimitInformation: JOBOBJECT_BASIC_LIMIT_INFORMATION = .{},
+    IoInfo: [6]u64 = @splat(0), // IO_COUNTERS
+    ProcessMemoryLimit: usize = 0,
+    JobMemoryLimit: usize = 0,
+    PeakProcessMemoryUsed: usize = 0,
+    PeakJobMemoryUsed: usize = 0,
+};
+comptime {
+    if (@sizeOf(usize) == 8) std.debug.assert(@sizeOf(JOBOBJECT_EXTENDED_LIMIT_INFORMATION) == 144);
+}
+const JobObjectExtendedLimitInformation: c_int = 9;
+const JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE: u32 = 0x2000;
+
+extern "kernel32" fn CreateJobObjectW(lpJobAttributes: ?*anyopaque, lpName: ?[*:0]const u16) callconv(.winapi) ?HANDLE;
+extern "kernel32" fn SetInformationJobObject(hJob: HANDLE, JobObjectInformationClass: c_int, lpJobObjectInformation: *anyopaque, cbJobObjectInformationLength: u32) callconv(.winapi) c_int;
+extern "kernel32" fn AssignProcessToJobObject(hJob: HANDLE, hProcess: HANDLE) callconv(.winapi) c_int;
+extern "kernel32" fn ResumeThread(hThread: HANDLE) callconv(.winapi) u32;
+
+var kill_job: ?HANDLE = null;
+
+/// Put a process started suspended into the kill-on-close job, then let it
+/// run: suspended, it cannot outrun the assignment. If the job cannot be made
+/// it still runs, only without the guarantee.
+pub fn runTiedToUs(process: HANDLE, thread: HANDLE) void {
+    if (kill_job == null) kill_job = blk: {
+        const job = CreateJobObjectW(null, null) orelse break :blk null;
+        var info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = .{};
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        if (SetInformationJobObject(job, JobObjectExtendedLimitInformation, &info, @sizeOf(JOBOBJECT_EXTENDED_LIMIT_INFORMATION)) == 0) break :blk null;
+        break :blk job;
+    };
+    if (kill_job) |job| _ = AssignProcessToJobObject(job, process);
+    _ = ResumeThread(thread);
+}
+
 // ── randomness ──────────────────────────────────────────────────────────────
 //
 // fsio's version goes to libc getentropy, which does not exist on Windows.

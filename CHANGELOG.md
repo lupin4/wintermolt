@@ -49,6 +49,27 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `ggml-*.bin` model is in `~/.wintermolt/models` (or
   `WINTERMOLT_WHISPER_MODEL` names one), else Deepgram nova-3 with
   `DEEPGRAM_API_KEY`; `WINTERMOLT_STT_PROVIDER` picks.
+- **`/listen` keeps whisper.cpp loaded.** The first `/listen` starts
+  `whisper-server` on 127.0.0.1:8178 while you speak; every later one
+  reuses it (0.2 s to transcribe instead of 2–10 s for `whisper-cli`, which
+  loads the model each time), and it ends with wintermolt, even when
+  wintermolt crashes or is killed: on Windows a kill-on-close job holds it,
+  on macOS and Linux a `sh` watcher kills it when wintermolt's pipe closes.
+  Without `whisper-server`, or if it fails, `whisper-cli` transcribes as
+  before.
+- **`/listen` says what it is waiting on.** "Opening the microphone...",
+  then "speak now" only once ffmpeg is capturing (opening a DirectShow
+  device took 3–6 s here, and words said before it were lost), and
+  "Loading the speech model" on the first `/listen`. The full-screen view's
+  spinner shows the same (`recording`, `loading speech`). The microphone a
+  session finds is kept, skipping the device listing after the first time.
+- **`/listen` loads the Ollama model while you speak, and keeps it.** A
+  reply waited for the model to load (50 s cold here) before reading the
+  prompt; now `/listen` asks Ollama to load it as recording starts, with the
+  context size the reply will use, so it is loaded once. From the first
+  `/listen` on, the model stays loaded 30 minutes after each reply instead
+  of Ollama's 5, so pauses between questions don't unload it.
+  `WINTERMOLT_OLLAMA_KEEP_ALIVE`, when set, still decides.
 - **Deepgram Aura-2 text-to-speech** (`deepgram`, voice `thalia` by default;
   any `aura-2-<name>-en`), and **the computer's own voice** (`system`:
   Windows' built-in speech, macOS `say`, `espeak-ng`), which needs no key.

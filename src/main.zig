@@ -359,6 +359,7 @@ pub fn main(init: std.process.Init) !void {
         std.process.exit(1);
     };
     defer agent.deinit();
+    defer stt_mod.stopServer(); // the whisper-server /listen started, if any
 
     // api-override (wintermolt.json models.chat.prefer + a cloud key present):
     // switch the primary off ollama onto the API for reliable native tool-calling.
@@ -1543,21 +1544,42 @@ fn handleTtsCmd(alloc: std.mem.Allocator, w: anytype, _stderr: anytype, arg: []c
 /// already made), send what was said as the prompt, and say the reply aloud.
 fn handleListen(agent: *loop_mod.AgentLoop, alloc: std.mem.Allocator, w: anytype, arg: []const u8) !void {
     const seconds: ?u32 = if (arg.len == 0) 5 else std.fmt.parseInt(u32, arg, 10) catch null;
+    if (seconds) |s| if (s == 0 or s > 120) {
+        try w.writeAll("Usage: /listen [seconds | audio file]  (1-120 seconds, default 5)\n");
+        return;
+    };
+    // First, so both models load while you speak.
+    agent.warmForVoice();
+    stt_mod.startServer(alloc);
+    // The TUI's spinner says what we wait on; the plain REPL has the lines.
+    defer tui.setActivity(null);
+
     var path_buf: [512]u8 = undefined;
     const path = if (seconds) |s| blk: {
-        if (s == 0 or s > 120) {
-            try w.writeAll("Usage: /listen [seconds | audio file]  (1-120 seconds, default 5)\n");
-            return;
-        }
         const mic_path = try camera.tempPath(&path_buf, "wintermolt_mic.wav");
+        tui.setActivity("opening mic");
+        try w.writeAll("[listen] Opening the microphone...\n");
+        var rec = stt_mod.startRecording(alloc, mic_path, s) catch |e| {
+            try w.print("[listen] Could not record the microphone: {s} (needs ffmpeg; WINTERMOLT_MIC picks the device)\n", .{@errorName(e)});
+            return;
+        };
+        tui.setActivity("recording");
         try w.print("[listen] Recording {d}s, speak now...\n", .{s});
-        stt_mod.record(alloc, mic_path, s) catch |e| {
+        rec.finish() catch |e| {
             try w.print("[listen] Could not record the microphone: {s} (needs ffmpeg; WINTERMOLT_MIC picks the device)\n", .{@errorName(e)});
             return;
         };
         break :blk mic_path;
     } else arg;
+    if (stt_mod.serverLoading()) {
+        tui.setActivity("loading speech");
+        try w.writeAll("[listen] Loading the speech model, first /listen only (a few seconds)...\n");
+    } else {
+        tui.setActivity("transcribing");
+        try w.writeAll("[listen] Transcribing...\n");
+    }
     const said = stt_mod.transcribe(alloc, path);
+    tui.setActivity(null);
     if (seconds != null) fsio.deleteFile(path) catch {}; // ours; never the user's file
     const text = said catch |e| {
         try w.print("[listen] Could not transcribe it: {s} (needs a whisper.cpp model in ~/.wintermolt/models, or DEEPGRAM_API_KEY)\n", .{@errorName(e)});

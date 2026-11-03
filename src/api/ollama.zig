@@ -82,6 +82,20 @@ pub const OllamaClient = struct {
         };
     }
 
+    /// Start loading the model on a thread of its own and return at once, so
+    /// the next request does not wait for the load (/listen calls this while
+    /// you speak). It sends the keep_alive and num_ctx a chat request sends:
+    /// with another num_ctx, Ollama would load the model a second time.
+    /// Failures are ignored; the real request reports them.
+    pub fn preloadInBackground(self: *const OllamaClient) void {
+        var job: LoadJob = .{};
+        _ = std.fmt.bufPrintZ(&job.url, "{s}/api/generate", .{self.base_url}) catch return;
+        job.body_len = (loadBody(&job.body, self.model, self.keep_alive, self.num_ctx) catch return).len;
+        // The job is copied to the thread, which shares nothing with us.
+        const t = std.Thread.spawn(.{}, LoadJob.run, .{job}) catch return;
+        t.detach();
+    }
+
     /// Lightweight one-shot completion via /api/generate (stream:false).
     /// Used for quick safety checks — returns the response text or error.
     /// Short timeout (default 5s) — if Ollama is slow or down, caller should fail open.
@@ -521,6 +535,44 @@ fn quickCheckWriteCb(
     return total;
 }
 
+/// /api/generate with no prompt: Ollama loads the model and answers once it
+/// is in memory.
+pub fn loadBody(buf: []u8, model: []const u8, keep_alive: []const u8, num_ctx: u32) ![]const u8 {
+    var w: std.Io.Writer = .fixed(buf);
+    try w.writeAll("{\"model\":\"");
+    try writeJsonStr(&w, model);
+    try w.print("\",\"keep_alive\":\"{s}\",\"options\":{{\"num_ctx\":{d}}}}}", .{ keep_alive, num_ctx });
+    return w.buffered();
+}
+
+const LoadJob = struct {
+    url: [512:0]u8 = @splat(0),
+    body: [512]u8 = undefined,
+    body_len: usize = 0,
+
+    fn run(job: LoadJob) void {
+        const handle = curl_easy_init() orelse return;
+        defer curl_easy_cleanup(handle);
+        curl_tls.configure(handle);
+        const headers = curl_slist_append(null, "Content-Type: application/json");
+        defer if (headers) |h| curl_slist_free_all(h);
+        _ = curl_easy_setopt(handle, CURLOPT_URL, @as([*:0]const u8, &job.url));
+        _ = curl_easy_setopt(handle, CURLOPT_HTTPHEADER, headers);
+        _ = curl_easy_setopt(handle, CURLOPT_POST, @as(c_long, 1));
+        _ = curl_easy_setopt(handle, CURLOPT_POSTFIELDS, @as([*]const u8, &job.body));
+        _ = curl_easy_setopt(handle, CURLOPT_POSTFIELDSIZE, @as(c_long, @intCast(job.body_len)));
+        // Without a write function libcurl prints the reply on stdout.
+        _ = curl_easy_setopt(handle, CURLOPT_WRITEFUNCTION, &discardWriteCb);
+        _ = curl_easy_setopt(handle, CURLOPT_CONNECTTIMEOUT, @as(c_long, 2));
+        _ = curl_easy_setopt(handle, CURLOPT_TIMEOUT, @as(c_long, 300)); // Ollama's own load timeout is 5 min
+        _ = curl_easy_perform(handle);
+    }
+};
+
+fn discardWriteCb(_: [*]const u8, size: usize, nmemb: usize, _: ?*anyopaque) callconv(.c) usize {
+    return size * nmemb;
+}
+
 /// Write a JSON-escaped string (without surrounding quotes).
 fn writeJsonStr(w: anytype, s: []const u8) !void {
     for (s) |c| {
@@ -556,4 +608,18 @@ test "ollama request: an image a tool returned follows its tool message as a use
     try std.testing.expect(std.mem.indexOf(u8, body,
         \\{"role":"tool","content":"Image attached."},{"role":"user","content":"","images":["/9j/"]}
     ) != null);
+}
+
+test "loadBody: the model, keep_alive and num_ctx a chat request sends, and no prompt" {
+    var buf: [256]u8 = undefined;
+    try std.testing.expectEqualStrings(
+        "{\"model\":\"qwen3:8b\",\"keep_alive\":\"30m\",\"options\":{\"num_ctx\":8192}}",
+        try loadBody(&buf, "qwen3:8b", "30m", 8192),
+    );
+    try std.testing.expectEqualStrings(
+        "{\"model\":\"a\\\"b\",\"keep_alive\":\"5m\",\"options\":{\"num_ctx\":4096}}",
+        try loadBody(&buf, "a\"b", "5m", 4096),
+    );
+    var tiny: [8]u8 = undefined;
+    try std.testing.expectError(error.WriteFailed, loadBody(&tiny, "qwen3:8b", "30m", 8192));
 }

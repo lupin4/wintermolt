@@ -49,7 +49,7 @@ speaks text. Keys are your own (`wintermolt --keys`); none is built in.
 | Step | Default | Choose with |
 | :--- | :------ | :---------- |
 | Microphone | ffmpeg: the first DirectShow audio device (Windows), `:0` (macOS), PulseAudio `default` (Linux) | `WINTERMOLT_MIC` |
-| Speech to text | whisper.cpp's `whisper-cli`, local, when a `ggml-*.bin` model is in `~/.wintermolt/models`; else Deepgram nova-3 with `DEEPGRAM_API_KEY` | `WINTERMOLT_STT_PROVIDER` (`whisper`, `deepgram`), `WINTERMOLT_WHISPER_MODEL` |
+| Speech to text | whisper.cpp, local, when a `ggml-*.bin` model is in `~/.wintermolt/models`: `whisper-server` on 127.0.0.1:8178, started by the first `/listen` and ended with wintermolt (crash included), else `whisper-cli`; else Deepgram nova-3 with `DEEPGRAM_API_KEY` | `WINTERMOLT_STT_PROVIDER` (`whisper`, `deepgram`), `WINTERMOLT_WHISPER_MODEL` |
 | Text to speech | the first with a key: Deepgram Aura-2, OpenAI, ElevenLabs; else the computer's own voice (Windows speech, macOS `say`, `espeak-ng`) | `WINTERMOLT_TTS_PROVIDER` (`deepgram`, `openai`, `elevenlabs`, `piper`, `edge`, `system`), `WINTERMOLT_TTS_VOICE` |
 | Playback | `afplay` (macOS), ffmpeg's `ffplay` elsewhere | — |
 

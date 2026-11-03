@@ -715,8 +715,9 @@ pub const Session = struct {
         const theme = ui.theme();
         const right = try alloc.alloc(zortui.widgets.StatusItem, 2);
         right[0] = .{ .label = try ui.fmt("{s} · {s}", .{ self.backend, self.model }) };
+        const doing: []const u8 = if (activity.load(.acquire)) |a| std.mem.span(a) else "working";
         right[1] = if (self.busy)
-            .{ .label = try ui.fmt("{s} working", .{spinner[@intCast(self.frame / 3 % spinner.len)]}), .color = theme.warning, .active = true }
+            .{ .label = try ui.fmt("{s} {s}", .{ spinner[@intCast(self.frame / 3 % spinner.len)], doing }), .color = theme.warning, .active = true }
         else
             .{ .label = "● ready", .color = theme.success };
         try ui.statusBar(.{ .items = items, .right = right });
@@ -874,6 +875,16 @@ pub const Session = struct {
 
 const spinner = [_][]const u8{ "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" };
 
+/// What the running command is waiting on ("recording", "loading speech"),
+/// shown by the spinner in place of "working"; about 14 characters fit at 80
+/// columns. Set from the worker thread, read by the UI thread; null puts
+/// "working" back.
+var activity = std.atomic.Value(?[*:0]const u8).init(null);
+
+pub fn setActivity(label: ?[*:0]const u8) void {
+    activity.store(label, .release);
+}
+
 /// The theme slot a banner role is painted in.
 fn roleColor(theme: *const zortui.theme.Theme, role: banner.Role) zortui.Color {
     return switch (role) {
@@ -1029,6 +1040,22 @@ test "status bar shows backend and model, and the busy state" {
     var screen = try render(&session);
     defer screen.deinit();
     try testing.expect(std.mem.indexOf(u8, try screen.line(23), "working") != null);
+}
+
+test "while busy, the status bar says what the command is waiting on, when it says" {
+    var fake: FakeAgent = .{ .alloc = testing.allocator };
+    defer fake.received.deinit(testing.allocator);
+    var session = Session.init(testing.allocator, fake.runner(), "0.5.0");
+    defer session.deinit();
+    session.busy = true;
+    defer session.busy = false;
+    setActivity("loading speech"); // what /listen says; it must fit 80 columns
+    defer setActivity(null);
+    var screen = try render(&session);
+    defer screen.deinit();
+    const bar = try screen.line(23);
+    try testing.expect(std.mem.indexOf(u8, bar, "loading speech") != null);
+    try testing.expect(std.mem.indexOf(u8, bar, "working") == null);
 }
 
 test "submitting input reaches the agent on the worker and its output lands in the transcript" {

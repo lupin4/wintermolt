@@ -951,6 +951,51 @@ pub fn spawnPiped(gpa: std.mem.Allocator, argv: []const []const u8) !std.process
     }
 }
 
+/// A child whose stdout we read, with stdin and stderr discarded: a tool
+/// reporting progress, whose own messages must not land on the screen.
+pub fn spawnStdout(gpa: std.mem.Allocator, argv: []const []const u8) !std.process.Child {
+    if (comptime !zig16) @compileError("spawnStdout needs Zig 0.16");
+    var env_map: ?EnvMap = if (comptime @import("builtin").os.tag == .windows) null else try currentEnvMap(gpa);
+    defer if (env_map) |*m| m.deinit();
+    return std.process.spawn(io(), .{ .argv = argv, .stdin = .ignore, .stdout = .pipe, .stderr = .ignore, .environ_map = if (env_map) |*m| m else null });
+}
+
+/// Start a background server that dies with this process, even when this
+/// process crashes or is killed. Windows: a kill-on-close job holds it
+/// (win32.runTiedToUs). POSIX: `sh` starts it and waits on a pipe from us;
+/// the OS closes the pipe when we end, however we end, and `sh` then kills
+/// it. Its streams are discarded, so it neither prints over the prompt nor
+/// blocks on a pipe nobody reads. Stop it with stopTied, not killChild.
+pub fn spawnTied(gpa: std.mem.Allocator, argv: []const []const u8) !std.process.Child {
+    if (comptime !zig16) @compileError("spawnTied needs Zig 0.16");
+    if (comptime @import("builtin").os.tag == .windows) {
+        const child = try std.process.spawn(io(), .{ .argv = argv, .stdin = .ignore, .stdout = .ignore, .stderr = .ignore, .start_suspended = true });
+        @import("win32.zig").runTiedToUs(child.id.?, child.thread_handle);
+        return child;
+    }
+    // The command is sh's "$@", never part of the script. sh ignores Ctrl+C
+    // and hangup so that only the pipe closing ends it, and it always kills.
+    const watcher = [_][]const u8{ "/bin/sh", "-c", "trap '' INT HUP; \"$@\" </dev/null >/dev/null 2>&1 & read x; kill $!", "sh" };
+    const full = try std.mem.concat(gpa, []const u8, &.{ &watcher, argv });
+    defer gpa.free(full);
+    var env_map = try currentEnvMap(gpa);
+    defer env_map.deinit();
+    return std.process.spawn(io(), .{ .argv = full, .stdin = .pipe, .stdout = .ignore, .stderr = .ignore, .environ_map = &env_map });
+}
+
+/// Stop a spawnTied server and reap it. On POSIX killing `sh` would leave
+/// the server running; closing its pipe is what makes it kill the server.
+pub fn stopTied(child: *std.process.Child) void {
+    if (comptime @import("builtin").os.tag != .windows) if (child.stdin) |pipe| {
+        pipe.close(io());
+        child.stdin = null;
+        _ = waitChild(child) catch {};
+        return;
+    };
+    killChild(child);
+    _ = waitChild(child) catch {};
+}
+
 /// Kill a child. 0.16 threads the Io through kill.
 pub fn killChild(child: *std.process.Child) void {
     if (comptime zig16) child.kill(io()) else _ = child.kill() catch {};

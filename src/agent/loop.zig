@@ -88,6 +88,21 @@ pub const AgentLoop = struct {
     perspective_callback: ?*const fn ([]const u8) void,
     web_message_id: ?[]const u8,
 
+    /// A voice conversation pauses between turns, so keep a local model loaded
+    /// 30 minutes rather than Ollama's 5 (unless WINTERMOLT_OLLAMA_KEEP_ALIVE
+    /// says otherwise), and start loading it now so the reply never waits for
+    /// the load. /listen calls this before recording.
+    pub fn warmForVoice(self: *AgentLoop) void {
+        if (compat.getenv("WINTERMOLT_OLLAMA_KEEP_ALIVE") == null) self.config.ollama_keep_alive = "30m";
+        switch (self.backend) {
+            .ollama => |*o| {
+                o.keep_alive = self.config.ollama_keep_alive;
+                o.preloadInBackground();
+            },
+            else => {},
+        }
+    }
+
     pub fn init(alloc: Allocator, config: *config_mod.Config) !AgentLoop {
         const stderr = stdio.stderr();
 

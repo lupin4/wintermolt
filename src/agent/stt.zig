@@ -4,7 +4,8 @@
 //
 // ffmpeg records the microphone to a 16 kHz mono WAV, the format whisper.cpp
 // reads, and one of these transcribes it:
-//   - whisper.cpp (whisper-cli, local; a ggml model in ~/.wintermolt/models)
+//   - whisper.cpp (whisper-server kept running, else whisper-cli; local; a
+//     ggml model in ~/.wintermolt/models)
 //   - Deepgram (api.deepgram.com/v1/listen, nova-3; DEEPGRAM_API_KEY)
 //
 // WINTERMOLT_STT_PROVIDER picks one. Unset, a local model wins: nothing said
@@ -13,6 +14,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const fsio = @import("../fsio.zig");
+const stdio = @import("../stdio.zig");
 const compat = @import("../compat.zig");
 const camera = @import("../tools/camera.zig");
 const tts = @import("tts.zig");
@@ -30,43 +32,82 @@ pub fn pickProvider(name: ?[]const u8, have_model: bool, have_deepgram_key: bool
 }
 
 /// ffmpeg recording `seconds` from `input` to a 16 kHz mono WAV at `path`.
-pub fn recordArgv(buf: *[16][]const u8, os: std.Target.Os.Tag, input: []const u8, seconds: []const u8, path: []const u8) []const []const u8 {
+/// -progress reports on stdout, the first time once the output is open:
+/// that is when the microphone is capturing.
+pub fn recordArgv(buf: *[18][]const u8, os: std.Target.Os.Tag, input: []const u8, seconds: []const u8, path: []const u8) []const []const u8 {
     const format = switch (os) {
         .windows => "dshow",
         .macos => "avfoundation",
         else => "pulse",
     };
-    buf.* = .{ "ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", format, "-i", input, "-t", seconds, "-ac", "1", "-ar", "16000", path };
+    buf.* = .{ "ffmpeg", "-hide_banner", "-loglevel", "error", "-progress", "pipe:1", "-y", "-f", format, "-i", input, "-t", seconds, "-ac", "1", "-ar", "16000", path };
     return buf;
 }
 
-/// Record the microphone for `seconds` to a WAV at `path`. WINTERMOLT_MIC
-/// names it: a DirectShow device on Windows (else the first one listed), an
-/// AVFoundation index such as ":1" on macOS (else ":0"), a PulseAudio source
-/// elsewhere (else "default").
-pub fn record(alloc: Allocator, path: []const u8, seconds: u32) !void {
-    var input_buf: [256]u8 = undefined;
+/// ffmpeg recording the microphone, already capturing.
+pub const Recording = struct {
+    child: std.process.Child,
+
+    /// Wait for the recording to end.
+    pub fn finish(self: *Recording) !void {
+        var progress = stdio.readerFor(self.child.stdout.?);
+        var sink: [4096]u8 = undefined;
+        while ((progress.read(&sink) catch 0) > 0) {} // until ffmpeg exits
+        const term = try fsio.waitChild(&self.child);
+        if (term != .exited or term.exited != 0) {
+            mic_len = 0; // look the device up again next time
+            return error.RecordingFailed;
+        }
+    }
+};
+
+/// Start recording the microphone for `seconds` to a WAV at `path`, and
+/// return once it is capturing: opening a DirectShow device takes seconds on
+/// some machines, and "speak now" must not come before it does.
+/// WINTERMOLT_MIC names the microphone: a DirectShow device on Windows (else
+/// the first one listed), an AVFoundation index such as ":1" on macOS (else
+/// ":0"), a PulseAudio source elsewhere (else "default").
+pub fn startRecording(alloc: Allocator, path: []const u8, seconds: u32) !Recording {
+    var secs_buf: [12]u8 = undefined;
+    var argv_buf: [18][]const u8 = undefined;
+    const argv = recordArgv(&argv_buf, builtin.os.tag, try micInput(alloc), try std.fmt.bufPrint(&secs_buf, "{d}", .{seconds}), path);
+    var child = try fsio.spawnStdout(alloc, argv);
+    var progress = stdio.readerFor(child.stdout.?);
+    var line: [512]u8 = undefined;
+    _ = progress.readUntilDelimiter(&line, '\n') catch {
+        // ffmpeg ended before reporting: the device did not open.
+        _ = fsio.waitChild(&child) catch {};
+        mic_len = 0;
+        return error.RecordingFailed;
+    };
+    return .{ .child = child };
+}
+
+// The DirectShow input /listen found: listing the devices takes seconds, so a
+// session does it once.
+var mic_buf: [256]u8 = undefined;
+var mic_len: usize = 0;
+
+fn micInput(alloc: Allocator) ![]const u8 {
     const mic = compat.getenv("WINTERMOLT_MIC");
-    const input = switch (builtin.os.tag) {
-        .windows => blk: {
-            if (mic) |m| break :blk try std.fmt.bufPrint(&input_buf, "audio={s}", .{m});
-            const listing = try camera.listDshow(alloc);
-            defer listing.deinit(alloc);
-            var lines = std.mem.splitScalar(u8, listing.stderr, '\n');
-            while (lines.next()) |line| if (camera.dshowDeviceName(line, "audio")) |name|
-                break :blk try std.fmt.bufPrint(&input_buf, "audio={s}", .{name});
-            return error.NoMicrophone;
+    return switch (builtin.os.tag) {
+        .windows => {
+            if (mic) |m| return std.fmt.bufPrint(&mic_buf, "audio={s}", .{m});
+            if (mic_len == 0) {
+                const listing = try camera.listDshow(alloc);
+                defer listing.deinit(alloc);
+                var lines = std.mem.splitScalar(u8, listing.stderr, '\n');
+                while (lines.next()) |line| if (camera.dshowDeviceName(line, "audio")) |name| {
+                    mic_len = (try std.fmt.bufPrint(&mic_buf, "audio={s}", .{name})).len;
+                    break;
+                };
+                if (mic_len == 0) return error.NoMicrophone;
+            }
+            return mic_buf[0..mic_len];
         },
         .macos => mic orelse ":0",
         else => mic orelse "default",
     };
-
-    var secs_buf: [12]u8 = undefined;
-    var argv_buf: [16][]const u8 = undefined;
-    const argv = recordArgv(&argv_buf, builtin.os.tag, input, try std.fmt.bufPrint(&secs_buf, "{d}", .{seconds}), path);
-    const run = try fsio.runCapture(alloc, argv, 64 * 1024, null);
-    defer run.deinit(alloc);
-    if (!run.exited or run.exit_code != 0) return error.RecordingFailed;
 }
 
 /// What was said in a WAV, by WINTERMOLT_STT_PROVIDER or the first provider
@@ -101,7 +142,81 @@ fn findModel(alloc: Allocator) !?[]u8 {
     return null;
 }
 
+// whisper-cli loads its backends and the model on every run (2-10 s here);
+// whisper-server loads them once. /listen starts it, the rest of the session
+// reuses it, and it ends with wintermolt, crash or not (fsio.spawnTied).
+const server_port = "8178";
+const server_url = "http://127.0.0.1:" ++ server_port ++ "/inference";
+const boundary = "wintermolt-whisper-6b1f0c93d2a4"; // the form body must never contain it
+var server: ?std.process.Child = null;
+var server_answered = false;
+
+/// Start whisper-server, if whisper.cpp is what will transcribe and it is not
+/// running yet. /listen calls this first, so the model loads while you speak.
+/// Without whisper-server installed, whisper-cli does the work.
+pub fn startServer(alloc: Allocator) void {
+    if (server != null) return;
+    if (pickProvider(compat.getenv("WINTERMOLT_STT_PROVIDER"), true, false) != .whisper) return;
+    const model = (findModel(alloc) catch null) orelse return;
+    defer alloc.free(model);
+    server = fsio.spawnTied(alloc, &.{ "whisper-server", "-m", model, "--host", "127.0.0.1", "--port", server_port }) catch null;
+}
+
+/// The server is starting and has not transcribed anything yet: the next
+/// transcription waits for the model to load, the first time only.
+pub fn serverLoading() bool {
+    return server != null and !server_answered;
+}
+
+pub fn stopServer() void {
+    if (server) |*child| fsio.stopTied(child);
+    server = null;
+    server_answered = false;
+}
+
+/// POST the WAV to whisper-server, waiting while it loads: it listens only
+/// once the model is in, so until then the connection is refused.
+fn transcribeServer(alloc: Allocator, wav_path: []const u8) ![]u8 {
+    const file = try fsio.openFile(wav_path, .{});
+    defer fsio.close(file);
+    const audio = try fsio.readToEndAlloc(file, alloc, 64 * 1024 * 1024);
+    defer alloc.free(audio);
+    const body = try multipartWav(alloc, audio);
+    defer alloc.free(body);
+
+    const deadline = fsio.monoNs() + 30 * std.time.ns_per_s;
+    const reply = while (true) {
+        if (tts.httpPost(alloc, server_url, "Content-Type: multipart/form-data; boundary=" ++ boundary, "Accept: application/json", body)) |r| break r else |e| {
+            if (e != error.CurlFailed or fsio.monoNs() > deadline) return e;
+            fsio.sleepNs(250 * std.time.ns_per_ms);
+        }
+    };
+    defer alloc.free(reply);
+    const said = try parseServerTranscript(alloc, reply);
+    server_answered = true;
+    return said;
+}
+
+/// whisper-server's /inference takes the audio as a form upload named "file".
+pub fn multipartWav(alloc: Allocator, audio: []const u8) ![]u8 {
+    return std.mem.concat(alloc, u8, &.{
+        "--" ++ boundary ++ "\r\nContent-Disposition: form-data; name=\"file\"; filename=\"audio.wav\"\r\nContent-Type: audio/wav\r\n\r\n",
+        audio,
+        "\r\n--" ++ boundary ++ "--\r\n",
+    });
+}
+
+/// whisper-server's reply, {"text": " what was said\n"}.
+pub fn parseServerTranscript(alloc: Allocator, json: []const u8) ![]u8 {
+    const parsed = try std.json.parseFromSlice(struct { text: []const u8 }, alloc, json, .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    return parseWhisperOutput(alloc, parsed.value.text);
+}
+
 fn transcribeWhisper(alloc: Allocator, model: []const u8, wav_path: []const u8) ![]u8 {
+    if (server != null) {
+        if (transcribeServer(alloc, wav_path)) |said| return said else |_| stopServer(); // the next /listen starts a fresh one
+    }
     const cli = compat.getenv("WINTERMOLT_WHISPER_CLI") orelse "whisper-cli";
     const run = try fsio.runCapture(alloc, &.{ cli, "-m", model, "-f", wav_path, "-nt", "-np" }, 1 << 20, null);
     defer run.deinit(alloc);
@@ -177,10 +292,33 @@ test "parseDeepgramTranscript: the first alternative of the first channel" {
     try std.testing.expectEqualStrings("hello world", said);
 }
 
-test "recordArgv: a 16 kHz mono WAV, from DirectShow, AVFoundation or PulseAudio" {
-    var buf: [16][]const u8 = undefined;
+test "multipartWav: the WAV as the form's file field, between boundaries" {
+    const alloc = std.testing.allocator;
+    const body = try multipartWav(alloc, "RIFF\x00\x01");
+    defer alloc.free(body);
+    try std.testing.expectEqualStrings("--" ++ boundary ++ "\r\n" ++
+        "Content-Disposition: form-data; name=\"file\"; filename=\"audio.wav\"\r\n" ++
+        "Content-Type: audio/wav\r\n\r\n" ++
+        "RIFF\x00\x01" ++
+        "\r\n--" ++ boundary ++ "--\r\n", body);
+}
+
+test "parseServerTranscript: whisper-server's text, trimmed, and silence is nothing" {
+    const alloc = std.testing.allocator;
+    const said = try parseServerTranscript(alloc, "{\"text\":\" The quick brown fox.\\n\"}");
+    defer alloc.free(said);
+    try std.testing.expectEqualStrings("The quick brown fox.", said);
+    const blank = try parseServerTranscript(alloc, "{\"text\":\" [BLANK_AUDIO]\\n\"}");
+    defer alloc.free(blank);
+    try std.testing.expectEqualStrings("", blank);
+    try std.testing.expectError(error.MissingField, parseServerTranscript(alloc, "{\"error\":\"failed to read audio\"}"));
+}
+
+test "recordArgv: a 16 kHz mono WAV, from DirectShow, AVFoundation or PulseAudio, reporting progress on stdout" {
+    var buf: [18][]const u8 = undefined;
     const win = recordArgv(&buf, .windows, "audio=Microphone (Yeti)", "5", "mic.wav");
     try std.testing.expectEqualStrings("ffmpeg", win[0]);
+    try std.testing.expectEqualStrings("pipe:1", argAfter(win, "-progress"));
     try std.testing.expectEqualStrings("dshow", argAfter(win, "-f"));
     try std.testing.expectEqualStrings("audio=Microphone (Yeti)", argAfter(win, "-i"));
     try std.testing.expectEqualStrings("5", argAfter(win, "-t"));
