@@ -1802,6 +1802,8 @@ fn printHelp(w: anytype) !void {
         \\  WINTERMOLT_NO_FALLBACK=1 — A failed request fails (-e exits 1) instead of
         \\                         being answered by Ollama or OpenAI
         \\  WINTERMOLT_NO_TOOLS=1  — Send no tool definitions (models without function calling)
+        \\  WINTERMOLT_MAX_ITERATIONS=N — Tool-loop iterations per turn before the agent
+        \\                         gives up (default: 25). Raise it for long multi-step tasks
         \\  WINTERMOLT_STALL_TIMEOUT=SECS — Drop a model request after SECS with nothing
         \\                         received (default: 180; 0 = never)
         \\  WINTERMOLT_PLAIN=1   — Same as --plain: never open the full-screen view
@@ -1827,6 +1829,7 @@ fn printHelp(w: anytype) !void {
 // ---------------------------------------------------------------------------
 test {
     _ = @import("agent/redact.zig");
+    _ = @import("agent/config.zig");
     _ = @import("api/deepseek.zig");
     _ = @import("api/ollama.zig");
     _ = @import("api/openai_sse.zig");
