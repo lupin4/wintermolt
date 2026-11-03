@@ -142,6 +142,12 @@ jobs:
             echo "sve (SVE) instructions: $sve"
             [ "$sve" -eq 0 ]
             echo "OK: arm64 carries zero SVE instructions"
+            # LSE atomics (ARMv8.1) and dot product (8.2) SIGILL on the Pi's
+            # Cortex-A53 (ARMv8.0) too, and the thor kernel archives carry both.
+            v81=$(objdump -d "$B" | grep -cE '[[:space:]](((ld|st)(add|clr|eor|set|smax|smin|umax|umin)|swp|casp?)[albh]*|[su]dot)[[:space:]]' || true)
+            echo "LSE / dot-product (ARMv8.1+) instructions: $v81"
+            [ "$v81" -eq 0 ]
+            echo "OK: arm64 carries zero ARMv8.1+ instructions"
           fi
           if [ "$arch" = x86_64 ]; then
             # zmm: AVX-512 sits above this lane's x86_64_v3 floor.
