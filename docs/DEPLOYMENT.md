@@ -15,7 +15,7 @@ keep them running.
 | `--keys`         | Interactive credential setup (also `--setup`).           |
 | `--chat`         | Spawn the chat-bridge sidecar (see [who can reach the agent](#who-can-reach-the-agent)). |
 | `--pairing <cmd>` | Chat access: `list`, `approve <platform> <code>`, `revoke <platform> <sender>`. |
-| `--web`          | Spawn the web UI bridge (WebSocket + JSON lines).        |
+| `--web`          | Chat in a browser; wintermolt serves the page itself (see [Web UI](#web-ui)). |
 | `--menubar`      | macOS menu bar sidecar.                                  |
 | `--gateway`      | OpenAI-compatible HTTP gateway on `:8080`.               |
 | `--mcp-server`   | JSON-RPC 2.0 MCP server over stdio (see [MCP.md](MCP.md)). |
@@ -136,9 +136,32 @@ Per platform:
 ./wintermolt --web
 ```
 
-Spawns the web sidecar (WebSocket + static files) on port `3000`. `PORT`
-or `WINTERMOLT_WEB_PORT` changes it (`PORT` wins when both are set). Visit
-`http://localhost:3000`.
+Serves a chat page from the binary itself (no Node, nothing to install)
+and opens it in your browser. The page streams replies, shows each tool as
+it runs, and has panels for past conversations (read-only), skills, the
+workspace files (editable) and which API keys are set (never their values).
+
+It prints the link to open:
+
+```
+[web] Open http://127.0.0.1:3000/#token=…
+```
+
+The token in that link is the only way in: a page without it, or a
+WebSocket from another site, is refused. The page keeps the token in the
+browser, so a reload works; a new wintermolt start makes a new one.
+
+| Variable | Default | What it does |
+|---|---|---|
+| `PORT`, `WINTERMOLT_WEB_PORT` | `3000` | Port; `PORT` wins when both are set |
+| `WINTERMOLT_WEB_HOST` | `127.0.0.1` | Address to listen on. Anything but loopback lets other machines connect, over plain HTTP: put it behind TLS (Tailscale serve, a reverse proxy) |
+| `WINTERMOLT_WEB_TOKEN` | random each start | A fixed token, 16 characters or more, so a bookmarked link keeps working |
+| `WINTERMOLT_HEADLESS` | | Set it to skip opening a browser (also skipped on Cloud Run) |
+
+One agent serves every open page, one message at a time; a second page
+waits while the first one's reply runs. Commands in the page: `/new`,
+`/model [backend] [model]`, `/skill [name] [what to do]`, `/help`. The
+rest work in the terminal.
 
 ## macOS menu bar
 

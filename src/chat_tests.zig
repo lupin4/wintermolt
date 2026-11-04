@@ -8,4 +8,6 @@
 test {
     _ = @import("chat/access.zig");
     _ = @import("chat/bridge.zig");
+    // Here for the sqlite3 this root links: the history store's titles.
+    _ = @import("agent/storage.zig");
 }

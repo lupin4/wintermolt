@@ -13,6 +13,25 @@ const compat = @import("compat.zig");
 const stdio = @import("stdio.zig");
 const fsio = @import("fsio.zig");
 
+pub const ApiKey = struct { key: []const u8, label: []const u8, hint: ?[]const u8 };
+
+/// The keys /keys sets and the web UI's Keys panel shows (set or not, never the value).
+pub const api_keys = [_]ApiKey{
+    .{ .key = "ANTHROPIC_API_KEY", .label = "Anthropic (Claude)", .hint = "sk-ant-" },
+    .{ .key = "OPENAI_API_KEY", .label = "OpenAI (GPT + TTS)", .hint = "sk-" },
+    .{ .key = "GOOGLE_GEMINI_API_KEY", .label = "Google Gemini", .hint = "AIza" },
+    .{ .key = "DEEPSEEK_API_KEY", .label = "DeepSeek", .hint = "sk-" },
+    .{ .key = "QWEN_API_KEY", .label = "Qwen", .hint = null },
+    .{ .key = "PINECONE_API_KEY", .label = "Pinecone (RAG)", .hint = null },
+    .{ .key = "PINECONE_HOST", .label = "Pinecone Host URL", .hint = "https://" },
+    .{ .key = "ELEVENLABS_API_KEY", .label = "ElevenLabs (voice)", .hint = null },
+    .{ .key = "DEEPGRAM_API_KEY", .label = "Deepgram (voice in and out)", .hint = null },
+    .{ .key = "DISCORD_BOT_TOKEN", .label = "Discord Bot", .hint = null },
+    .{ .key = "TELEGRAM_BOT_TOKEN", .label = "Telegram Bot", .hint = null },
+    .{ .key = "SLACK_BOT_TOKEN", .label = "Slack Bot", .hint = "xoxb-" },
+    .{ .key = "SLACK_APP_TOKEN", .label = "Slack App", .hint = "xapp-" },
+};
+
 /// Key-value pair for .env file generation
 const KeyValue = struct {
     key: []const u8,

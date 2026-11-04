@@ -458,6 +458,19 @@ pub fn build(b: *std.Build) void {
     chat_access_test.root_module.linkSystemLibrary("sqlite3", .{});
     test_step.dependOn(&b.addRunArtifact(chat_access_test).step);
 
+    // --web: who may open the socket (token, Origin), and the page and the
+    // socket over a real connection on a free port. Its own root for the same
+    // reason; libc for fsio.
+    const web_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/web_tests.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+    });
+    test_step.dependOn(&b.addRunArtifact(web_test).step);
+
     // The environment, end to end: a value setenv puts there at runtime (every
     // ~/.wintermolt/.env key does) must reach getenv and each child spawned
     // afterwards. Its own root for the reason the compat files have theirs; also

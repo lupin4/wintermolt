@@ -227,8 +227,7 @@ pub const Storage = struct {
 
     /// Set the conversation title (first user message, truncated to 80 chars).
     pub fn updateTitle(self: *Storage, conv_id: []const u8, text: []const u8) !void {
-        const max_len: usize = 80;
-        const title = if (text.len > max_len) text[0..max_len] else text;
+        const title = titleOf(text);
 
         const sql = "UPDATE conversations SET title = ?1 WHERE id = ?2 AND title IS NULL;";
         const stmt = try self.prepare(sql);
@@ -794,4 +793,21 @@ fn writeJsonStringQuoted(w: anytype, s: []const u8) !void {
         }
     }
     try w.writeByte('"');
+}
+
+/// A conversation's title from its first message: the first line, at most 80
+/// bytes, never cut inside a UTF-8 character (the web UI sends titles as JSON).
+pub fn titleOf(text: []const u8) []const u8 {
+    const line = std.mem.trim(u8, text[0 .. std.mem.indexOfScalar(u8, text, '\n') orelse text.len], " \t\r");
+    var n = @min(line.len, 80);
+    while (n < line.len and n > 0 and line[n] & 0xC0 == 0x80) n -= 1;
+    return line[0..n];
+}
+
+test "titleOf: the first line, cut at 80 bytes on a character boundary" {
+    try std.testing.expectEqualStrings("Fix the build", titleOf("  Fix the build\nIt fails on Windows"));
+    const long = "a" ** 79 ++ "\u{e9}tude"; // é straddles byte 80
+    try std.testing.expectEqualStrings("a" ** 79, titleOf(long));
+    try std.testing.expectEqualStrings("a" ** 80, titleOf("a" ** 90));
+    try std.testing.expectEqualStrings("", titleOf("\nsecond line"));
 }

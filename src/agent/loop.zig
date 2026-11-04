@@ -75,6 +75,8 @@ pub const AgentLoop = struct {
     /// or the retry after compacting did. The error is already on stderr; `-e`
     /// turns this into its exit status, the only thing a script can check.
     turn_failed: bool = false,
+    /// Why, when turn_failed: an error name, for a caller with no stderr (--web).
+    turn_error: []const u8 = "",
 
     /// The local CLI or the owner's main DM session: MEMORY.md is in its
     /// prompt. --chat clears it for groups and per-peer DM sessions.
@@ -296,6 +298,8 @@ pub const AgentLoop = struct {
         if (self.storage) |*s| {
             if (self.conversation_id) |conv_id| {
                 s.saveMessage(conv_id, "user", self.message_sequence, &.{.{ .text = user_text }}) catch {};
+                // Named by its first message (updateTitle never renames one), so History is not a list of "Untitled".
+                if (self.message_sequence == 0) s.updateTitle(conv_id, user_text) catch {};
                 self.message_sequence += 1;
             }
         }
@@ -311,6 +315,7 @@ pub const AgentLoop = struct {
         self.last_message_ts = fsio.milliTimestamp();
         self.tool_errors_this_turn = 0;
         self.turn_failed = false;
+        self.turn_error = "";
 
         // Wire subagent manager into tools module for spawn_agent tool
         if (self.subagent_manager) |mgr_opaque| {
@@ -368,6 +373,7 @@ pub const AgentLoop = struct {
                         relevant_tools,
                     ) catch |e2| {
                         self.turn_failed = true;
+                        self.turn_error = @errorName(e2);
                         try stderr.print("\n[Error] Retry failed: {s}\n", .{@errorName(e2)});
                         return;
                     };
@@ -391,6 +397,7 @@ pub const AgentLoop = struct {
                     }
                 }
                 self.turn_failed = true;
+                self.turn_error = @errorName(e);
                 try stderr.print("\n[Error] API call failed: {s}\n", .{@errorName(e)});
                 return;
             };
@@ -408,6 +415,7 @@ pub const AgentLoop = struct {
                     continue;
                 }
                 self.turn_failed = true;
+                self.turn_error = "EmptyReply";
                 try stderr.writeAll("[Error] The model returned an empty reply twice\n");
                 return;
             }

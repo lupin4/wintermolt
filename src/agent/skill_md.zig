@@ -291,6 +291,13 @@ fn writeXml(w: *std.Io.Writer, s: []const u8) !void {
     };
 }
 
+/// What `/skill <name> [input]` asks the model, in the terminal and the web UI. Caller owns it.
+pub fn usePrompt(alloc: Allocator, skill: Skill, input: []const u8) ![]u8 {
+    return std.fmt.allocPrint(alloc, "Use the {s} skill: read {s} with file_read and follow it.{s}{s}", .{
+        skill.name, skill.location, if (input.len > 0) "\n\n" else "", input,
+    });
+}
+
 /// The skill named `name`, from every root. Caller frees it.
 pub fn find(alloc: Allocator, name: []const u8) !?Skill {
     const all = try discover(alloc);

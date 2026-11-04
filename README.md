@@ -518,10 +518,10 @@ the bot mentioned. The rules and their `WINTERMOLT_CHAT_*` settings are in
 ### Web UI
 
 ```bash
-wintermolt --web     # Serves http://localhost:3000
+wintermolt --web     # Serves http://127.0.0.1:3000 and opens it
 ```
 
-Real-time streaming via WebSocket. The AI's responses render token-by-token in the browser with tool execution previews.
+A chat page served by the binary itself: no Node, nothing to install. Replies stream in as they are written, each tool shows while it runs, and panels list past conversations, skills, the workspace files (editable) and which keys are set. Open the link it prints; the token in it keeps other sites and users out. Details and settings in [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#web-ui).
 
 ### CLI-Anything — Wintermolt as a Tool for Other Agents
 
@@ -578,7 +578,7 @@ Wintermolt ships with [forLearn](https://github.com/forKernels/forLearn), which 
 | Single-shot | `wintermolt -e "prompt"` | Run one prompt, print result, exit; status 1 if no backend answered |
 | Setup | `wintermolt --setup` | Interactive API key + model wizard |
 | Chat | `wintermolt --chat` | Multi-platform messaging bot |
-| Web | `wintermolt --web` | Browser UI at localhost:3000 |
+| Web | `wintermolt --web` | Chat in a browser, served by wintermolt on 127.0.0.1:3000 |
 | Menu Bar | `wintermolt --menubar` | macOS native status bar app |
 | MCP Server | `wintermolt --mcp-server` | Expose tools via JSON-RPC 2.0 |
 
@@ -738,7 +738,10 @@ wintermolt (one native binary, 1.6–14 MB)
 │   └── json_rpc.zig             JSON-RPC 2.0 protocol
 │
 ├── src/chat/bridge.zig          Chat platform bridge (JSON lines IPC)
-├── src/web/bridge.zig           Web UI bridge (WebSocket + JSON lines)
+├── src/web/                     Web UI (--web), compiled into the binary
+│   ├── server.zig               HTTP + WebSocket server, token check
+│   ├── bridge.zig               Page messages <-> the agent loop
+│   └── index.html, app.js       The page
 │
 ├── prebuilt/                    Prebuilt executables (committed to repo)
 │   ├── wintermolt-macos               macOS Apple Silicon
@@ -755,7 +758,7 @@ wintermolt (one native binary, 1.6–14 MB)
 
 **Prebuilt libraries:** `libforagent.a` and `libforlearn.a` are pure Zig static archives — no Fortran runtime, no gfortran needed. For kernel-accelerated inference and Fortran-backed compute, see [Wintermute](https://github.com/lupin4/Wintermute) (proprietary).
 
-**IPC pattern:** All sidecars (chat, web, menu bar) communicate via **JSON lines over stdin/stdout pipes**. The Zig binary spawns the sidecar as a child process. No sockets, no HTTP servers, no shared memory. Clean process boundaries.
+**IPC pattern:** The sidecars (chat, menu bar) communicate via **JSON lines over stdin/stdout pipes**. The Zig binary spawns the sidecar as a child process. The web UI is the exception: `--web` serves its page and WebSocket from the binary itself, on loopback by default.
 
 ---
 
@@ -787,6 +790,9 @@ wintermolt (one native binary, 1.6–14 MB)
 | `WINTERMOLT_MAX_ITERATIONS` | `25` | Model requests one turn may make before the agent stops; raise it for long multi-step tasks |
 | `WINTERMOLT_STALL_TIMEOUT` | `180` | Seconds a model request may receive nothing before it is dropped; a stream that keeps arriving is never cut off (`0` = never) |
 | `WINTERMOLT_WORKSPACE_DIR` | `~/.wintermolt/workspace` | Where `AGENTS.md`, `SOUL.md`, `USER.md`, `IDENTITY.md` and `MEMORY.md` are read from, every turn (see [Persistent Memory](#persistent-memory)) |
+| `WINTERMOLT_WEB_PORT` | `3000` | `--web` port (`PORT` wins when both are set) |
+| `WINTERMOLT_WEB_HOST` | `127.0.0.1` | `--web` listen address; anything but loopback is reachable from other machines over plain HTTP |
+| `WINTERMOLT_WEB_TOKEN` | random each start | Fixed `--web` token (16+ characters), so a bookmarked link keeps working |
 | `TAILSCALE_API_KEY` | — | Tailscale REST API key (optional) |
 | `PINECONE_API_KEY` | — | Pinecone API key (enables RAG memory) |
 | `PINECONE_HOST` | — | Pinecone index host URL |

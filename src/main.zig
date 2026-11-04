@@ -26,6 +26,8 @@ const loop_mod = @import("agent/loop.zig");
 const chat_bridge = @import("chat/bridge.zig");
 const chat_access = @import("chat/access.zig");
 const web_bridge = @import("web/bridge.zig");
+const web_server = @import("web/server.zig");
+const builtin = @import("builtin");
 const menubar_bridge = @import("menubar/bridge.zig");
 const router_mod = @import("agent/router.zig");
 const pool_mod = @import("agent/agent_pool.zig");
@@ -538,32 +540,55 @@ pub fn main(init: std.process.Init) !void {
         return;
     }
 
-    // Web mode
+    // Web mode: this process serves the page and its socket (web/server.zig).
     if (web_mode) {
-        const port = compat.getenv("PORT") orelse compat.getenv("WINTERMOLT_WEB_PORT") orelse "3000";
-        try stderr.print("[wintermolt] Starting web mode on port {s}...\n", .{port});
-        var bridge = web_bridge.WebBridge.init(alloc, &agent) catch |e| {
-            try stderr.print("[wintermolt] Failed to start web sidecar: {s}\n", .{@errorName(e)});
+        const port_text = compat.getenv("PORT") orelse compat.getenv("WINTERMOLT_WEB_PORT") orelse "3000";
+        const port = std.fmt.parseInt(u16, port_text, 10) catch {
+            try stderr.print("[web] Not a port: {s}\n", .{port_text});
             std.process.exit(1);
         };
-        defer bridge.deinit();
+        const host = compat.getenv("WINTERMOLT_WEB_HOST") orelse "127.0.0.1";
+        // The token is all that stands between the network and bash.
+        var token_hex: [32]u8 = undefined;
+        const token: []const u8 = if (compat.getenv("WINTERMOLT_WEB_TOKEN")) |t| blk: {
+            if (t.len < 16) {
+                try stderr.writeAll("[web] WINTERMOLT_WEB_TOKEN must be at least 16 characters\n");
+                std.process.exit(1);
+            }
+            break :blk t;
+        } else blk: {
+            var raw: [16]u8 = undefined;
+            if (!fsio.randomBytes(&raw)) {
+                try stderr.writeAll("[web] No random source for the token; set WINTERMOLT_WEB_TOKEN\n");
+                std.process.exit(1);
+            }
+            token_hex = std.fmt.bytesToHex(raw, .lower);
+            break :blk &token_hex;
+        };
 
-        fsio.sleepNs(500 * std.time.ns_per_ms);
-        const is_headless = compat.getenv("K_SERVICE") != null or
-            compat.getenv("WINTERMOLT_HEADLESS") != null;
+        var bridge: web_bridge.WebBridge = .{ .agent = &agent };
+        var srv = web_server.Server.init(std.heap.c_allocator, host, port, token, bridge.handler()) catch |e| {
+            try stderr.print("[web] Cannot listen on {s}:{d}: {s}\n", .{ host, port, @errorName(e) });
+            std.process.exit(1);
+        };
+        defer srv.deinit();
+
+        const loopback = std.mem.startsWith(u8, host, "127.") or std.mem.eql(u8, host, "::1");
+        const shown = if (std.mem.eql(u8, host, "0.0.0.0")) "127.0.0.1" else host;
+        const url = try std.fmt.allocPrint(alloc, "http://{s}:{d}/#token={s}", .{ shown, srv.port(), token });
+        try stderr.print("[web] Open {s}\n", .{url});
+        if (!loopback) try stderr.writeAll("[web] Reachable beyond this machine, over plain HTTP: whoever has the link can drive the agent. Use Tailscale or a network you trust.\n");
+        const is_headless = compat.getenv("K_SERVICE") != null or compat.getenv("WINTERMOLT_HEADLESS") != null;
         if (!is_headless) {
-            const url = std.fmt.allocPrint(alloc, "http://localhost:{s}", .{port}) catch "http://localhost:3000";
-            try stderr.print("[wintermolt] Opening {s}\n", .{url});
-            const open_args = try alloc.alloc([]const u8, 2);
-            open_args[0] = "open";
-            open_args[1] = url;
-            // Fire and forget: `open <url>` hands off to the browser and we do
-            // not care when it exits.
-            fsio.spawnDetached(alloc, open_args) catch {};
+            // Fire and forget: the opener hands the link to the browser.
+            const argv: []const []const u8 = switch (builtin.os.tag) {
+                .windows => &.{ "cmd", "/c", "start", "", url },
+                .macos => &.{ "open", url },
+                else => &.{ "xdg-open", url },
+            };
+            fsio.spawnDetached(alloc, argv) catch {};
         }
-
-        bridge.run();
-        try stderr.writeAll("[wintermolt] Web sidecar exited\n");
+        srv.run();
         return;
     }
 
@@ -1036,22 +1061,7 @@ fn handleModel(agent: *loop_mod.AgentLoop, w: anytype, arg: ?[]const u8) !void {
 
 /// /keys command — add, update, or list individual API keys.
 fn handleKeysCmd(alloc: std.mem.Allocator, w: anytype, r: anytype, arg: ?[]const u8) !void {
-    const ApiEntry = struct { key: []const u8, label: []const u8, hint: ?[]const u8 };
-    const api_keys = [_]ApiEntry{
-        .{ .key = "ANTHROPIC_API_KEY", .label = "Anthropic (Claude)", .hint = "sk-ant-" },
-        .{ .key = "OPENAI_API_KEY", .label = "OpenAI (GPT + TTS)", .hint = "sk-" },
-        .{ .key = "GOOGLE_GEMINI_API_KEY", .label = "Google Gemini", .hint = "AIza" },
-        .{ .key = "DEEPSEEK_API_KEY", .label = "DeepSeek", .hint = "sk-" },
-        .{ .key = "QWEN_API_KEY", .label = "Qwen", .hint = null },
-        .{ .key = "PINECONE_API_KEY", .label = "Pinecone (RAG)", .hint = null },
-        .{ .key = "PINECONE_HOST", .label = "Pinecone Host URL", .hint = "https://" },
-        .{ .key = "ELEVENLABS_API_KEY", .label = "ElevenLabs (voice)", .hint = null },
-        .{ .key = "DEEPGRAM_API_KEY", .label = "Deepgram (voice in and out)", .hint = null },
-        .{ .key = "DISCORD_BOT_TOKEN", .label = "Discord Bot", .hint = null },
-        .{ .key = "TELEGRAM_BOT_TOKEN", .label = "Telegram Bot", .hint = null },
-        .{ .key = "SLACK_BOT_TOKEN", .label = "Slack Bot", .hint = "xoxb-" },
-        .{ .key = "SLACK_APP_TOKEN", .label = "Slack App", .hint = "xapp-" },
-    };
+    const api_keys = setup.api_keys;
 
     var existing = setup.loadExistingEnv(alloc);
 
@@ -1280,9 +1290,7 @@ fn handleSkill(agent: *loop_mod.AgentLoop, alloc: std.mem.Allocator, w: anytype,
         return;
     };
     defer skill.deinit(alloc);
-    const prompt = try std.fmt.allocPrint(alloc, "Use the {s} skill: read {s} with file_read and follow it.{s}{s}", .{
-        skill.name, skill.location, if (input.len > 0) "\n\n" else "", input,
-    });
+    const prompt = try skill_md.usePrompt(alloc, skill, input);
     defer alloc.free(prompt);
     try agent.processInput(prompt);
 }

@@ -47,6 +47,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **`--web` works: a chat page served by the binary itself.** It spawned a
+  TypeScript sidecar that is not in the repository, so it never started.
+  Now wintermolt serves the page and its WebSocket directly (no Node), on
+  `127.0.0.1:3000`, and opens it in the browser. Replies stream in with
+  their tool calls; panels show past conversations, skills, the workspace
+  files (editable) and which keys are set, never their values. The link it
+  prints carries a token, and a page or WebSocket without it, or from
+  another site, is refused. `WINTERMOLT_WEB_HOST` and `WINTERMOLT_WEB_TOKEN`
+  are new (see docs/DEPLOYMENT.md).
 - **Workspace files, as in OpenClaw.** `AGENTS.md`, `SOUL.md`, `USER.md`,
   `IDENTITY.md` and `MEMORY.md` in `~/.wintermolt/workspace`
   (`WINTERMOLT_WORKSPACE_DIR`) go into the system prompt every turn, with
@@ -123,6 +132,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Saved conversations have titles.** Nothing ever set one, so every
+  conversation was untitled. A conversation is now named by the first line
+  of its first message, at most 80 bytes.
 - **Spoken audio plays on Windows and Linux.** `/tts` played only on macOS,
   through `afplay`; the tool used `aplay`, which cannot play the mp3 the
   cloud voices return. Both now use `afplay` on macOS and ffmpeg's `ffplay`

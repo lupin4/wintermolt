@@ -1,0 +1,271 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>wintermolt</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%231d5d96'/%3E%3Cpath d='M3 4l2 8 3-6 3 6 2-8' fill='none' stroke='white' stroke-width='1.6'/%3E%3C/svg%3E">
+<style>
+/* "The sky above the port was the color of television, tuned to a dead channel."
+   Light: that static silver. Dark: a deep blue slate. Accent, primary and
+   secondary are the banner's three roles, as in the TUI. */
+:root {
+  color-scheme: light dark;
+  --bg: #d6d8da;
+  --surface: #e7e8e9;
+  --line: #b8bcc0;
+  --ink: #15191e;
+  --muted: #545c65;
+  --accent: #1d5d96;
+  --primary: #6a3d9e;
+  --secondary: #0e7369;
+  --warning: #93500c;
+  --ok: #276b42;
+  --err: #a42f29;
+  --mono: ui-monospace, "Cascadia Mono", "Cascadia Code", "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+  --serif: "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, serif;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  --column: 44rem;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #131a22;
+    --surface: #1a2330;
+    --line: #2d3948;
+    --ink: #d8dfe6;
+    --muted: #8e9ba9;
+    --accent: #74b3ee;
+    --primary: #ba96f2;
+    --secondary: #54c4b5;
+    --warning: #e3a45e;
+    --ok: #6fc69a;
+    --err: #f28d82;
+  }
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 16px/1.5 var(--sans);
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  height: 100dvh;
+  overflow: hidden;
+}
+button, input, textarea { font: inherit; color: inherit; }
+button {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 5px 10px;
+  cursor: pointer;
+}
+button:hover { background: color-mix(in srgb, var(--ink) 8%, transparent); }
+button:disabled { opacity: .5; cursor: default; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+a { color: var(--accent); }
+
+/* ── Bar ───────────────────────────────────────────── */
+.bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  padding-top: calc(8px + env(safe-area-inset-top));
+  border-bottom: 1px solid var(--line);
+  min-width: 0;
+}
+.mark { font: 700 15px/1 var(--mono); letter-spacing: .04em; margin-right: 8px; white-space: nowrap; }
+.model { font: 14px/1.2 var(--mono); color: var(--muted); max-width: 40vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.model[data-state="off"] { color: var(--err); }
+.spacer { flex: 1; }
+.tabs { display: flex; gap: 2px; overflow-x: auto; }
+.tabs button[aria-pressed="true"] { border-color: var(--line); background: var(--surface); }
+.ra { color: var(--accent); } .rp { color: var(--primary); } .rs { color: var(--secondary); }
+.rf { color: var(--ink); } .rm { color: var(--muted); } .rw { color: var(--warning); }
+
+/* ── Transcript ────────────────────────────────────── */
+main { overflow-y: auto; overflow-x: hidden; scroll-behavior: auto; }
+#log { max-width: var(--column); margin: 0 auto; padding: 28px 20px 48px; }
+.hero { margin: 4px 0 36px; }
+.art { font-family: var(--mono); white-space: pre; line-height: 1.12; margin: 0 0 18px; font-size: 12px; overflow: hidden; }
+.hero p { margin: 0; color: var(--muted); max-width: 34rem; }
+.you {
+  font: 15px/1.55 var(--mono);
+  margin: 30px 0 10px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.you::before { content: "› "; color: var(--accent); font-weight: 700; }
+.you img { display: block; max-width: 220px; max-height: 160px; margin-top: 8px; border-radius: 4px; border: 1px solid var(--line); }
+.reply { font: 18px/1.62 var(--serif); overflow-wrap: break-word; }
+.reply p, .reply ul, .reply ol, .reply pre, .reply blockquote, .reply .table { margin: 0 0 .8em; }
+.reply ul, .reply ol { padding-left: 1.4em; }
+.reply li { margin: .15em 0; }
+.reply h3, .reply h4, .reply h5, .reply h6 { font: 600 1.05em/1.3 var(--sans); margin: 1.2em 0 .4em; }
+.reply h3 { font-size: 1.15em; }
+.reply code { font: .82em/1.4 var(--mono); background: color-mix(in srgb, var(--ink) 7%, transparent); padding: .08em .3em; border-radius: 3px; }
+.reply pre { background: var(--surface); border-left: 3px solid var(--secondary); padding: 10px 14px; overflow-x: auto; border-radius: 0 4px 4px 0; }
+.reply pre code { background: none; padding: 0; font-size: 14px; line-height: 1.5; }
+.reply blockquote { border-left: 3px solid var(--line); padding-left: 12px; color: var(--muted); }
+.reply hr { border: 0; border-top: 1px solid var(--line); margin: 1.2em 0; }
+.reply .table { overflow-x: auto; }
+.reply table { border-collapse: collapse; font: 14px/1.4 var(--sans); }
+.reply th, .reply td { border-bottom: 1px solid var(--line); padding: 5px 12px 5px 0; text-align: left; vertical-align: top; }
+.reply th { font-weight: 600; }
+.tool {
+  font: 13px/1.5 var(--mono);
+  color: var(--muted);
+  border-left: 2px solid var(--line);
+  padding: 1px 10px;
+  margin: 8px 0;
+}
+.tool b { color: var(--primary); font-weight: 600; }
+.tool.done { border-left-color: var(--ok); }
+.tool.failed { border-left-color: var(--err); }
+.tool.failed span { color: var(--err); }
+.notice { font: 14px/1.5 var(--mono); color: var(--muted); white-space: pre-wrap; margin: 4px 0 8px; }
+.error { font: 15px/1.5 var(--sans); color: var(--err); margin: 6px 0 10px; }
+.working { font: 14px/1.5 var(--sans); color: var(--muted); }
+.reply.live > .text:last-of-type > :last-child::after {
+  content: "";
+  display: inline-block;
+  width: .42em;
+  height: .95em;
+  margin-left: 3px;
+  vertical-align: -.12em;
+  background: var(--accent);
+  animation: blink 1.05s steps(2, start) infinite;
+}
+@keyframes blink { to { visibility: hidden; } }
+.gate { font: 16px/1.6 var(--sans); max-width: 32rem; }
+.gate code { font-family: var(--mono); }
+
+/* ── Composer ──────────────────────────────────────── */
+footer {
+  border-top: 1px solid var(--line);
+  background: var(--surface);
+  padding: 10px 16px;
+  padding-bottom: calc(10px + env(safe-area-inset-bottom));
+}
+.compose { max-width: var(--column); margin: 0 auto; }
+.attached { display: none; align-items: center; gap: 8px; margin-bottom: 8px; font: 13px var(--sans); color: var(--muted); }
+.attached.on { display: flex; }
+.attached img { height: 40px; border-radius: 3px; border: 1px solid var(--line); }
+.row { display: grid; grid-template-columns: auto 1fr auto auto; gap: 8px; align-items: end; }
+.prompt { font: 700 15px/1.55 var(--mono); color: var(--accent); padding: 6px 0; }
+#input {
+  font: 15px/1.55 var(--mono);
+  background: transparent;
+  border: 0;
+  resize: none;
+  padding: 6px 0;
+  min-height: 2.3em;
+  max-height: 40vh;
+  outline: none;
+}
+#input::placeholder { color: var(--muted); }
+#send { border-color: var(--line); background: var(--bg); font-weight: 600; }
+.hint { font: 12px/1.4 var(--sans); color: var(--muted); margin-top: 4px; }
+
+/* ── Drawer ────────────────────────────────────────── */
+.panel {
+  position: fixed;
+  top: 0; right: 0; bottom: 0;
+  width: min(420px, 100vw);
+  background: var(--surface);
+  border-left: 1px solid var(--line);
+  transform: translateX(100%);
+  transition: transform .18s ease-out;
+  display: flex;
+  flex-direction: column;
+  z-index: 10;
+  visibility: hidden;
+}
+.panel.open { transform: none; visibility: visible; }
+.panel-head { display: flex; align-items: center; gap: 8px; padding: 12px 16px; padding-top: calc(12px + env(safe-area-inset-top)); border-bottom: 1px solid var(--line); }
+.panel-head h2 { font: 600 16px/1.3 var(--sans); margin: 0; flex: 1; }
+.panel-body { overflow-y: auto; padding: 8px 16px 24px; flex: 1; }
+.panel-body p { color: var(--muted); font-size: 14px; }
+.item { display: block; width: 100%; text-align: left; padding: 10px 8px; margin: 2px -8px; border-radius: 6px; width: calc(100% + 16px); }
+.item strong { display: block; font-weight: 600; }
+.item small { display: block; color: var(--muted); font-size: 13px; line-height: 1.4; }
+.item code { font: 12px var(--mono); color: var(--muted); overflow-wrap: anywhere; }
+.keyrow { display: flex; justify-content: space-between; gap: 12px; padding: 7px 0; border-bottom: 1px solid var(--line); font-size: 14px; }
+.keyrow .set { color: var(--ok); }
+.keyrow .unset { color: var(--muted); }
+.editor { display: flex; flex-direction: column; gap: 8px; height: 100%; }
+.editor textarea { flex: 1; min-height: 50vh; font: 13px/1.5 var(--mono); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 10px; resize: vertical; }
+.editor .count { font-size: 13px; color: var(--muted); }
+.editor .count.over { color: var(--warning); }
+.actions { display: flex; gap: 8px; }
+.actions .primary { border-color: var(--line); background: var(--bg); font-weight: 600; }
+.saved { color: var(--ok); font-size: 14px; }
+.transcript { font: 15px/1.6 var(--serif); }
+.dir { font: 12px var(--mono); color: var(--muted); overflow-wrap: anywhere; }
+
+@media (max-width: 640px) {
+  .bar { flex-wrap: wrap; }
+  /* The model label gives way first, so New chat stays on the top row. */
+  .model { flex: 1; min-width: 0; max-width: none; text-align: left; }
+  .spacer { display: none; }
+  .tabs { order: 3; width: 100%; }
+  .reply { font-size: 17px; }
+  .hint { display: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .panel { transition: none; }
+  .reply.live > .text:last-of-type > :last-child::after { animation: none; }
+}
+</style>
+</head>
+<body>
+<header class="bar">
+  <span class="mark" aria-label="wintermolt"><span class="ra">WIN</span><span class="rp">TERM</span><span class="rs">OLT</span></span>
+  <button id="model" class="model" title="Change the model">connecting</button>
+  <span class="spacer"></span>
+  <nav class="tabs" aria-label="Panels">
+    <button data-panel="history" aria-pressed="false">History</button>
+    <button data-panel="skills" aria-pressed="false">Skills</button>
+    <button data-panel="workspace" aria-pressed="false">Workspace</button>
+    <button data-panel="keys" aria-pressed="false">Keys</button>
+  </nav>
+  <button id="new" title="Start a new conversation">New chat</button>
+</header>
+
+<main id="scroll">
+  <div id="log" role="log" aria-label="Conversation">
+    <section class="hero" id="hero">
+      <pre class="art" id="art" aria-hidden="true"></pre>
+      <p>Ask anything. wintermolt answers with the model named above, and can use its tools on this machine: files, the shell, the web. <code>/help</code> lists the commands.</p>
+    </section>
+  </div>
+</main>
+
+<footer>
+  <div class="compose">
+    <div class="attached" id="attached"><img id="thumb" alt="Attached image"><span id="thumb-name"></span><button id="unattach">Remove</button></div>
+    <div class="row">
+      <span class="prompt" aria-hidden="true">›</span>
+      <textarea id="input" rows="1" placeholder="Message wintermolt" aria-label="Message"></textarea>
+      <button id="attach" title="Attach an image">Image</button>
+      <button id="send">Send</button>
+    </div>
+    <div class="hint">Enter sends, Shift+Enter adds a line. Paste or drop an image to attach it.</div>
+    <input type="file" id="file" accept="image/png,image/jpeg,image/gif,image/webp" hidden>
+  </div>
+</footer>
+
+<aside class="panel" id="panel" aria-labelledby="panel-title">
+  <div class="panel-head">
+    <h2 id="panel-title"></h2>
+    <button id="panel-close">Close</button>
+  </div>
+  <div class="panel-body" id="panel-body"></div>
+</aside>
+
+<script src="app.js"></script>
+</body>
+</html>

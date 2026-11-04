@@ -113,8 +113,8 @@ step 5.
 
 | OpenClaw | wintermolt | Status | Step |
 |---|---|---|---|
-| Control UI (sessions, config, nodes) | `--web` chat page | Part | later |
-| WebSocket gateway, nodes | `--gateway` OpenAI-compatible bridge | Part | later |
+| Control UI (sessions, config, nodes) | `--web`, served by the binary: chat, read-only history, skills, workspace files, which keys are set | Part | later |
+| WebSocket gateway, nodes | `--gateway` OpenAI-compatible bridge; its TypeScript sidecar (`gateway/`) is not in the repo, so it does not start | Part | later |
 | macOS menu bar app | `--menubar` | Have | |
 | iOS, Android, watchOS nodes; Voice Wake, Talk Mode | none | Out | |
 | `openclaw doctor` | none | No | 6 |
