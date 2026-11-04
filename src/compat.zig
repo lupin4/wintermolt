@@ -287,3 +287,31 @@ pub fn setSocketNonBlocking(sock: std.posix.socket_t) !void {
     const fl = try std.posix.fcntl(sock, std.posix.F.GETFL, 0);
     _ = try std.posix.fcntl(sock, std.posix.F.SETFL, fl | (@as(usize, 1) << @bitOffsetOf(std.posix.O, "NONBLOCK")));
 }
+
+// =============================================================================
+// PATH lookup
+// =============================================================================
+
+/// An executable called `name` is on PATH. Windows splits PATH on ';' (its
+/// entries have a drive's ':') and also tries the .exe, .cmd and .bat names.
+pub fn onPath(name: []const u8) bool {
+    const path_env = getenv("PATH") orelse return false;
+    const exts: []const []const u8 = if (comptime builtin.os.tag == .windows) &.{ "", ".exe", ".cmd", ".bat" } else &.{""};
+    var it = std.mem.splitScalar(u8, path_env, std.fs.path.delimiter);
+    while (it.next()) |dir| {
+        if (dir.len == 0) continue;
+        for (exts) |ext| {
+            var buf: [1024]u8 = undefined;
+            const full = std.fmt.bufPrint(&buf, "{s}{c}{s}{s}", .{ dir, std.fs.path.sep, name, ext }) catch continue;
+            fsio.access(full, .{}) catch continue;
+            return true;
+        }
+    }
+    return false;
+}
+
+test "onPath: the shell is on PATH, a made-up name is not" {
+    const shell = if (comptime builtin.os.tag == .windows) "cmd" else "sh";
+    try std.testing.expect(onPath(shell));
+    try std.testing.expect(!onPath("wintermolt-no-such-program-4f1c"));
+}

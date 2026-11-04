@@ -23,6 +23,11 @@
 //     open      any group, any member
 //     then, unless WINTERMOLT_CHAT_REQUIRE_MENTION=0, the bot must be mentioned
 //
+//   SESSIONS — WINTERMOLT_CHAT_DM_SCOPE (sessionKey)
+//     main      (default) direct messages share one conversation
+//     per-peer  each direct sender has their own
+//     every group has its own conversation, whatever the scope
+//
 // Entries are "platform:id", comma separated, or "*" for everyone. Only the
 // first ':' splits, so "matrix:@alice:example.org" is one Matrix user. A group
 // entry matches the chat's channel ID or its guild (a Discord server, a Zulip
@@ -43,9 +48,12 @@ const device_pairing = @import("../gateway/pairing.zig");
 pub const DmPolicy = enum { pairing, allowlist, open, disabled };
 pub const GroupPolicy = enum { allowlist, open, disabled };
 pub const ChatType = enum { direct, group };
+/// OpenClaw's session.dmScope: direct messages share one session, or get one each.
+pub const DmScope = enum { main, @"per-peer" };
 
 pub const Policy = struct {
     dm: DmPolicy = .pairing,
+    dm_scope: DmScope = .main,
     group: GroupPolicy = .allowlist,
     require_mention: bool = true,
     allow_from: []const u8 = "",
@@ -62,10 +70,12 @@ pub const Env = struct {
     groups: ?[]const u8 = null,
     group_allow_from: ?[]const u8 = null,
     require_mention: ?[]const u8 = null,
+    dm_scope: ?[]const u8 = null,
 
     pub fn read() Env {
         return .{
             .dm_policy = compat.getenv("WINTERMOLT_CHAT_DM_POLICY"),
+            .dm_scope = compat.getenv("WINTERMOLT_CHAT_DM_SCOPE"),
             .allow_from = compat.getenv("WINTERMOLT_CHAT_ALLOW_FROM"),
             .group_policy = compat.getenv("WINTERMOLT_CHAT_GROUP_POLICY"),
             .groups = compat.getenv("WINTERMOLT_CHAT_GROUPS"),
@@ -75,11 +85,12 @@ pub const Env = struct {
     }
 };
 
-pub const PolicyError = error{ InvalidDmPolicy, InvalidGroupPolicy, InvalidRequireMention };
+pub const PolicyError = error{ InvalidDmPolicy, InvalidGroupPolicy, InvalidRequireMention, InvalidDmScope };
 
 pub fn parsePolicy(env: Env) PolicyError!Policy {
     var p: Policy = .{};
     if (env.dm_policy) |v| p.dm = std.meta.stringToEnum(DmPolicy, v) orelse return error.InvalidDmPolicy;
+    if (env.dm_scope) |v| p.dm_scope = std.meta.stringToEnum(DmScope, v) orelse return error.InvalidDmScope;
     if (env.group_policy) |v| p.group = std.meta.stringToEnum(GroupPolicy, v) orelse return error.InvalidGroupPolicy;
     if (env.require_mention) |v| {
         if (std.mem.eql(u8, v, "1")) {
@@ -92,6 +103,21 @@ pub fn parsePolicy(env: Env) PolicyError!Policy {
     if (env.groups) |v| p.groups = v;
     p.group_allow_from = env.group_allow_from;
     return p;
+}
+
+/// The session a processed message belongs to. Direct messages share the
+/// agent's own session, or one per sender with WINTERMOLT_CHAT_DM_SCOPE=per-peer.
+/// A group always has its own, so no member can read what was said in a DM.
+/// Caller owns the key.
+pub fn sessionKey(alloc: std.mem.Allocator, p: *const Policy, agent_id: []const u8, m: Inbound) ![]u8 {
+    // decide() drops a message with no chat type; if one gets here, isolate it.
+    return switch (m.chat_type orelse .group) {
+        .direct => switch (p.dm_scope) {
+            .main => alloc.dupe(u8, agent_id),
+            .@"per-peer" => std.fmt.allocPrint(alloc, "{s}:{s}:dm:{s}", .{ agent_id, m.platform, m.from }),
+        },
+        .group => std.fmt.allocPrint(alloc, "{s}:{s}:group:{s}", .{ agent_id, m.platform, m.channel }),
+    };
 }
 
 /// True when `list` has "*" or the entry "platform:id".
@@ -594,6 +620,36 @@ test "an unknown setting is an error, not a default" {
     try testing.expectError(error.InvalidDmPolicy, parsePolicy(.{ .dm_policy = "opne" }));
     try testing.expectError(error.InvalidGroupPolicy, parsePolicy(.{ .group_policy = "all" }));
     try testing.expectError(error.InvalidRequireMention, parsePolicy(.{ .require_mention = "no" }));
+    try testing.expectError(error.InvalidDmScope, parsePolicy(.{ .dm_scope = "per-channel-peer" }));
+}
+
+test "sessionKey: direct messages share the agent's session, each group has its own" {
+    const alloc = testing.allocator;
+    const p = try parsePolicy(.{});
+    const keys = [_][]u8{
+        try sessionKey(alloc, &p, "main", dm("telegram", "111")),
+        try sessionKey(alloc, &p, "main", dm("discord", "222")),
+        try sessionKey(alloc, &p, "main", group("telegram", "111", "-100", true)),
+        try sessionKey(alloc, &p, "main", group("telegram", "111", "-200", true)),
+        try sessionKey(alloc, &p, "coder", group("telegram", "111", "-100", true)),
+    };
+    defer for (keys) |k| alloc.free(k);
+    try testing.expectEqualStrings("main", keys[0]);
+    try testing.expectEqualStrings("main", keys[1]);
+    try testing.expectEqualStrings("main:telegram:group:-100", keys[2]);
+    try testing.expectEqualStrings("main:telegram:group:-200", keys[3]);
+    try testing.expectEqualStrings("coder:telegram:group:-100", keys[4]);
+}
+
+test "sessionKey: per-peer gives each direct sender, per platform, a session" {
+    const alloc = testing.allocator;
+    const p = try parsePolicy(.{ .dm_scope = "per-peer" });
+    const a = try sessionKey(alloc, &p, "main", dm("telegram", "111"));
+    defer alloc.free(a);
+    const b = try sessionKey(alloc, &p, "main", dm("discord", "111"));
+    defer alloc.free(b);
+    try testing.expectEqualStrings("main:telegram:dm:111", a);
+    try testing.expectEqualStrings("main:discord:dm:111", b);
 }
 
 test "store: a code is issued once, then the request stays quiet until approved" {

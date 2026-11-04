@@ -21,6 +21,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `_GROUP_ALLOW_FROM` and `_REQUIRE_MENTION` set the rules (see
   docs/DEPLOYMENT.md). A value that is not one of the documented ones stops
   `--chat` at startup instead of falling back to a default.
+- **A group no longer shares the owner's conversation.** Every `--chat`
+  message, from any DM or group on any platform, went to one conversation,
+  so a group member could ask about what was said in a direct message. Each
+  group now has its own; direct messages still share one, as in OpenClaw,
+  and `WINTERMOLT_CHAT_DM_SCOPE=per-peer` gives each direct sender their
+  own.
 - **Webhook adapters authenticate what they receive.** LINE checks
   `X-Line-Signature` against the channel secret. Feishu checks the event's
   verification token, which needs the new `FEISHU_VERIFICATION_TOKEN`.
@@ -41,6 +47,24 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Workspace files, as in OpenClaw.** `AGENTS.md`, `SOUL.md`, `USER.md`,
+  `IDENTITY.md` and `MEMORY.md` in `~/.wintermolt/workspace`
+  (`WINTERMOLT_WORKSPACE_DIR`) go into the system prompt every turn, with
+  OpenClaw's limits: 20,000 characters a file, 60,000 in all, 4,000 for
+  `USER.md`. `MEMORY.md` is left out of `--chat` groups and per-peer DM
+  sessions; a `spawn_agent` child gets `AGENTS.md` only.
+- **`SKILL.md` skills** (OpenClaw, ClawHub, Anthropic Agent Skills) from
+  `./skills`, `./.agents/skills`, the workspace's `skills` and
+  `.agents/skills`, `~/.agents/skills` and `~/.wintermolt/skills`. The
+  prompt lists their names and descriptions in `<available_skills>`; the
+  `skills` tool's `use` returns one's instructions, and `/skill [name]
+  [input]` lists them or uses one. OpenClaw's `metadata.openclaw` gates
+  (`os`, `always`, `requires.bins`, `anyBins`, `env`) and
+  `disable-model-invocation` apply.
+- **A reply with nothing in it is asked for again.** A model that ended its
+  turn with no text and no tool call (qwen3 can spend the turn thinking)
+  printed nothing and `-e` exited 0. It is asked once more, and a second
+  empty reply is an error, exit status 1.
 - **Voice, end to end: `/listen [seconds | audio file]`.** ffmpeg records
   the microphone (the first DirectShow audio device on Windows, `:0` on
   macOS, PulseAudio's `default` elsewhere; `WINTERMOLT_MIC` names another),
@@ -76,7 +100,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   With `WINTERMOLT_TTS_PROVIDER` unset, the first provider whose key is set
   speaks (Deepgram, OpenAI, ElevenLabs), else the system voice. Before, an
   unset provider meant OpenAI, and without its key, no speech at all.
-  `--keys` offers `DEEPGRAM_API_KEY`.
+  `wintermolt --keys` (step 5, Voice) and `/keys deepgram` take your own
+  `DEEPGRAM_API_KEY`; a key Deepgram refuses, `/listen` says so.
 - **`/image <file> [prompt]` attaches an image** (png, jpeg, gif, webp) to
   the next turn, in the plain prompt and the full-screen view. Drag a file in
   for its path: the quoted form Windows Terminal pastes and the `\ ` form

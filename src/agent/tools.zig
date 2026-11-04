@@ -26,6 +26,8 @@ const browser_tool = @import("../tools/browser.zig");
 const image_io = @import("../tools/image_io.zig");
 const skills_mod = @import("skills.zig");
 const skill_loader = @import("skill_loader.zig");
+const skill_md = @import("skill_md.zig");
+const fsio = @import("../fsio.zig");
 const scheduler_mod = @import("scheduler.zig");
 const sse = @import("../api/sse.zig");
 const mcp_client = @import("../mcp/client.zig");
@@ -466,6 +468,20 @@ fn executeSkills(alloc: Allocator, input_json: []const u8) ![]u8 {
     if (std.mem.eql(u8, operation, "use")) {
         const name = sse.findJsonString(input_json, "name") orelse
             return std.fmt.allocPrint(alloc, "Error: 'use' operation requires a 'name' field", .{});
+        // A SKILL.md skill (skill_md.zig) first: its instructions, as file_read would give them.
+        if (try skill_md.find(alloc, name)) |sk| {
+            defer sk.deinit(alloc);
+            const file = fsio.openFile(sk.location, .{}) catch |e|
+                return std.fmt.allocPrint(alloc, "Error: cannot open {s}: {s}", .{ sk.location, @errorName(e) });
+            defer fsio.close(file);
+            const body = fsio.readToEndAlloc(file, alloc, 256 * 1024) catch |e|
+                return std.fmt.allocPrint(alloc, "Error: cannot read {s}: {s}", .{ sk.location, @errorName(e) });
+            defer alloc.free(body);
+            const base_dir = std.fs.path.dirname(sk.location) orelse ".";
+            const expanded = try std.mem.replaceOwned(u8, alloc, body, "{baseDir}", base_dir);
+            defer alloc.free(expanded);
+            return std.fmt.allocPrint(alloc, "Skill {s}, from {s}. Follow these instructions:\n\n{s}", .{ sk.name, sk.location, expanded });
+        }
         const registry = skill_registry_ptr orelse
             return std.fmt.allocPrint(alloc, "Error: no runtime skills are loaded", .{});
         const text = registry.useSkill(name) catch |err| return switch (err) {
@@ -496,6 +512,13 @@ fn executeSkills(alloc: Allocator, input_json: []const u8) ![]u8 {
                 try w.print("  [{s}] {s} — {s}\n", .{ sk.category, sk.name, sk.description });
             }
         }
+    }
+
+    const md: []skill_md.Skill = skill_md.discover(alloc) catch &.{};
+    defer if (md.len > 0) skill_md.freeAll(alloc, md);
+    if (md.len > 0) {
+        try w.writeAll("\n\n--- SKILL.md skills ---\n(operation='use' with name='<skill>' loads its instructions)\n");
+        for (md) |sk| try w.print("  {s} — {s}\n", .{ sk.name, sk.description });
     }
 
     return try alloc.dupe(u8, buf.written());

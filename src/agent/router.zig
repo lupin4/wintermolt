@@ -76,16 +76,11 @@ pub const Binding = struct {
     enabled: bool,
 };
 
-/// Result of a route resolution.
+/// Result of a route resolution. The session within the agent is
+/// chat/access.zig's sessionKey.
 pub const ResolvedRoute = struct {
     agent_id: []const u8,
     matched_tier: ?BindingTier,
-    session_key: [128]u8, // Stack-allocated session key buffer
-    session_key_len: usize,
-
-    pub fn getSessionKey(self: *const ResolvedRoute) []const u8 {
-        return self.session_key[0..self.session_key_len];
-    }
 };
 
 /// Routing context extracted from an incoming message.
@@ -156,51 +151,51 @@ pub const Router = struct {
     pub fn resolve(self: *const Router, ctx: *const RouteContext) ResolvedRoute {
         // Tier 1: Peer binding (direct user match)
         if (self.findBinding(.peer, ctx)) |b| {
-            return self.makeRoute(b, ctx);
+            return .{ .agent_id = b.agent_id, .matched_tier = b.tier };
         }
 
         // Tier 2: Parent peer (thread parent inheritance)
         if (ctx.parent_peer != null) {
             if (self.findBinding(.parent_peer, ctx)) |b| {
-                return self.makeRoute(b, ctx);
+                return .{ .agent_id = b.agent_id, .matched_tier = b.tier };
             }
         }
 
         // Tier 3: Guild + roles
         if (ctx.guild != null and ctx.roles != null) {
             if (self.findBinding(.guild_role, ctx)) |b| {
-                return self.makeRoute(b, ctx);
+                return .{ .agent_id = b.agent_id, .matched_tier = b.tier };
             }
         }
 
         // Tier 4: Guild only
         if (ctx.guild != null) {
             if (self.findBinding(.guild, ctx)) |b| {
-                return self.makeRoute(b, ctx);
+                return .{ .agent_id = b.agent_id, .matched_tier = b.tier };
             }
         }
 
         // Tier 5: Team
         if (ctx.team_id != null) {
             if (self.findBinding(.team, ctx)) |b| {
-                return self.makeRoute(b, ctx);
+                return .{ .agent_id = b.agent_id, .matched_tier = b.tier };
             }
         }
 
         // Tier 6: Account
         if (ctx.account_id != null) {
             if (self.findBinding(.account, ctx)) |b| {
-                return self.makeRoute(b, ctx);
+                return .{ .agent_id = b.agent_id, .matched_tier = b.tier };
             }
         }
 
         // Tier 7: Channel catch-all
         if (self.findBinding(.channel, ctx)) |b| {
-            return self.makeRoute(b, ctx);
+            return .{ .agent_id = b.agent_id, .matched_tier = b.tier };
         }
 
         // Default: route to "main" agent
-        return self.makeDefaultRoute(ctx);
+        return .{ .agent_id = self.default_agent_id, .matched_tier = null };
     }
 
     /// Add a new routing binding. Persists to SQLite.
@@ -388,29 +383,6 @@ pub const Router = struct {
         return null;
     }
 
-    fn makeRoute(self: *const Router, binding: *const Binding, ctx: *const RouteContext) ResolvedRoute {
-        _ = self;
-        var result = ResolvedRoute{
-            .agent_id = binding.agent_id,
-            .matched_tier = binding.tier,
-            .session_key = undefined,
-            .session_key_len = 0,
-        };
-        result.session_key_len = buildSessionKey(&result.session_key, binding.agent_id, ctx);
-        return result;
-    }
-
-    fn makeDefaultRoute(self: *const Router, ctx: *const RouteContext) ResolvedRoute {
-        var result = ResolvedRoute{
-            .agent_id = self.default_agent_id,
-            .matched_tier = null,
-            .session_key = undefined,
-            .session_key_len = 0,
-        };
-        result.session_key_len = buildSessionKey(&result.session_key, self.default_agent_id, ctx);
-        return result;
-    }
-
     fn loadBindings(self: *Router) !void {
         const db = self.db orelse return;
 
@@ -508,21 +480,6 @@ pub const Router = struct {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/// Build a session key: "agent:{agentId}:{platform}:{channel}:{from}"
-fn buildSessionKey(buf: *[128]u8, agent_id: []const u8, ctx: *const RouteContext) usize {
-    const result = std.fmt.bufPrint(buf, "agent:{s}:{s}:{s}:{s}", .{
-        agent_id,
-        ctx.platform,
-        truncate(ctx.channel, 24),
-        truncate(ctx.from, 24),
-    }) catch return 0;
-    return result.len;
-}
-
-fn truncate(s: []const u8, max: usize) []const u8 {
-    return if (s.len > max) s[0..max] else s;
-}
 
 /// Check if any role in binding_roles (comma-separated) appears in context_roles (comma-separated).
 fn rolesOverlap(binding_roles: []const u8, context_roles: []const u8) bool {

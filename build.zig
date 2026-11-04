@@ -406,8 +406,9 @@ pub fn build(b: *std.Build) void {
     });
     test_step.dependOn(&b.addRunArtifact(banner_test).step);
 
-    // Skill manifests, and `skills use` handing a skill's role prompt to the
-    // model. Its own root for the same reason; libc for fsio and bash.zig.
+    // Skill manifests, `skills use` handing a skill's role prompt to the
+    // model, and the workspace files and SKILL.md skills in the prompt. Its own root for the same
+    // reason; libc for fsio and bash.zig.
     const skill_loader_test = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/skill_loader_tests.zig"),

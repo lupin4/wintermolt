@@ -322,7 +322,7 @@ fn getChatBinaryPath() []const u8 {
 
     // Dev mode: use bun or node
     if (fileExists("./chat/src/index.ts")) {
-        if (commandExists("bun")) return "bun";
+        if (compat.onPath("bun")) return "bun";
         return "node";
     }
 
@@ -356,17 +356,4 @@ fn allocChatArgs(alloc: Allocator, binary: []const u8) ![]const []const u8 {
 fn fileExists(path: []const u8) bool {
     fsio.access(path, .{}) catch return false;
     return true;
-}
-
-/// Search $PATH for an executable by name.
-fn commandExists(name: []const u8) bool {
-    const path_env = compat.getenv("PATH") orelse return false;
-    var iter = std.mem.splitScalar(u8, path_env, ':');
-    while (iter.next()) |dir| {
-        var path_buf: [1024]u8 = undefined;
-        const full = std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ dir, name }) catch continue;
-        fsio.access(full, .{}) catch continue;
-        return true;
-    }
-    return false;
 }

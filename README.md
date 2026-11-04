@@ -435,6 +435,27 @@ Uses Google's [A2UI protocol](https://github.com/anthropics/anthropic-cookbook) 
 
 ### Persistent Memory
 
+**Workspace files** — as in OpenClaw, Markdown files in
+`~/.wintermolt/workspace` (or `WINTERMOLT_WORKSPACE_DIR`) go into the
+system prompt on every turn, so an edit counts from the next one:
+
+| File | For |
+|:-----|:----|
+| `AGENTS.md` | How the agent should work |
+| `SOUL.md` | Persona, tone, boundaries |
+| `USER.md` | Who you are and what you want (first 4,000 characters) |
+| `IDENTITY.md` | The agent's name and manner |
+| `MEMORY.md` | What it should remember. Only in your own sessions: never a `--chat` group, nor a `per-peer` DM session |
+
+Create the folder and whichever files you want; a missing one is left out.
+Each is cut at 20,000 characters and all of them at 60,000, and the agent
+is told which were cut. Ask it to remember something and it writes it into
+`MEMORY.md` with its file tools; a small model may rewrite the whole file in
+its own words, so keep your own copy of anything you cannot lose. A
+`spawn_agent` child gets `AGENTS.md` only. On a
+local model, keep them short: they share its context window (8,192 tokens
+by default) with the conversation.
+
 **SQLite history** — Every conversation persists in `~/.wintermolt/history.db`. Resume any session.
 
 **Pinecone RAG** — Optional semantic memory via vector search. The AI automatically indexes conversations and recalls relevant context from past sessions.
@@ -514,7 +535,14 @@ Wintermolt has no tool that generates harnesses for other software. The `cli_any
 
 ### Skills System
 
-Extensible skill catalog with built-in skills + runtime plugin discovery from `~/.wintermolt/plugins/`.
+`SKILL.md` skills, the format of OpenClaw, ClawHub and Anthropic's Agent
+Skills, from `./skills`, `./.agents/skills`, the workspace, `~/.agents/skills`
+and `~/.wintermolt/skills`: the model sees each skill's name and description
+every turn and loads the instructions when a task fits, and `/skill <name>`
+uses one on request. OpenClaw's `os`, `requires.bins` and `requires.env`
+gates hide a skill that cannot run here. Wintermolt's own `skill.json`
+manifests load as before, with runtime plugin discovery from
+`~/.wintermolt/plugins/`. See [docs/SKILLS.md](docs/SKILLS.md).
 
 ### forAgent — Persistent Agent Sessions
 
@@ -627,6 +655,7 @@ full-screen view use `/keys list`, or run `wintermolt --keys`.
 | `/screenshot [prompt]` | Screen capture + AI vision |
 | `/listen [seconds \| file]` | Speak a prompt (or give a recording); the reply is spoken ([voice](docs/TOOLS.md#voice)) |
 | `/tts <text>` | Speak text aloud |
+| `/skill [name] [input]` | List `SKILL.md` skills, or have the model use one ([skills](docs/SKILLS.md)) |
 | `/schedule` | Manage cron jobs (list, add, remove, enable, disable) |
 | `/tailscale` | Show Tailscale network peers and status |
 | `/mcp` | Show MCP client/server status |
@@ -646,6 +675,7 @@ full-screen view use `/keys list`, or run `wintermolt --keys`.
 | Page | Covers |
 | :--- | :--- |
 | [docs/BACKENDS.md](docs/BACKENDS.md) | All 8 backends, default models, env vars, `--keys` flow. |
+| [docs/OPENCLAW_PARITY.md](docs/OPENCLAW_PARITY.md) | What OpenClaw does that wintermolt does not yet, and the order it is being closed. |
 | [docs/TOOLS.md](docs/TOOLS.md) | The 20 built-in tools (9 core + 11 extended), triggers, safety. |
 | [docs/SKILLS.md](docs/SKILLS.md) | Skill manifest format, built-in catalog, custom skills. |
 | [docs/MCP.md](docs/MCP.md) | MCP client + server, `~/.wintermolt/mcp.json`, Claude Desktop / Zed wiring. |
@@ -756,6 +786,7 @@ wintermolt (one native binary, 1.6–14 MB)
 | `WINTERMOLT_NO_TOOLS` | — | Set `1` to send no tool definitions, for models without function calling |
 | `WINTERMOLT_MAX_ITERATIONS` | `25` | Model requests one turn may make before the agent stops; raise it for long multi-step tasks |
 | `WINTERMOLT_STALL_TIMEOUT` | `180` | Seconds a model request may receive nothing before it is dropped; a stream that keeps arriving is never cut off (`0` = never) |
+| `WINTERMOLT_WORKSPACE_DIR` | `~/.wintermolt/workspace` | Where `AGENTS.md`, `SOUL.md`, `USER.md`, `IDENTITY.md` and `MEMORY.md` are read from, every turn (see [Persistent Memory](#persistent-memory)) |
 | `TAILSCALE_API_KEY` | — | Tailscale REST API key (optional) |
 | `PINECONE_API_KEY` | — | Pinecone API key (enables RAG memory) |
 | `PINECONE_HOST` | — | Pinecone index host URL |

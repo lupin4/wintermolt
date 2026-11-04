@@ -32,6 +32,7 @@ const pool_mod = @import("agent/agent_pool.zig");
 const subagent_mod = @import("agent/subagent.zig");
 const tts_mod = @import("agent/tts.zig");
 const stt_mod = @import("agent/stt.zig");
+const skill_md = @import("agent/skill_md.zig");
 const session_mod = @import("agent/session.zig");
 const gateway_bridge = @import("gateway/bridge.zig");
 const i18n = @import("agent/i18n.zig");
@@ -486,11 +487,18 @@ pub fn main(init: std.process.Init) !void {
             // Resolve which agent should handle this message
             const route = router.resolve(&route_ctx);
 
-            // Get or create the agent from the pool
-            const routed_agent = pool.getOrCreate(route.agent_id) catch |e| {
+            // One pooled conversation per session: a group never shares the
+            // DM history (chat_access.sessionKey).
+            const session_key = try chat_access.sessionKey(alloc, &chat_policy, route.agent_id, inbound);
+            defer alloc.free(session_key);
+            // shortcut: an evicted session (idle 30m, or past WINTERMOLT_MAX_AGENTS) restarts empty; resume it from storage when sessions must outlive the pool.
+            const routed_agent = pool.getOrCreate(session_key) catch |e| {
                 try stderr.print("[Error] Agent pool failed: {s}\n", .{@errorName(e)});
                 continue;
             };
+            // Only the agent's own DM session is private: MEMORY.md stays
+            // out of groups and per-peer sessions (agent/workspace.zig).
+            routed_agent.private = std.mem.eql(u8, session_key, route.agent_id);
 
             // Ensure agent has a conversation started
             if (routed_agent.conversation_id == null) {
@@ -712,6 +720,10 @@ fn dispatchCommand(
     }
     if (std.mem.eql(u8, trimmed, "/image") or std.mem.startsWith(u8, trimmed, "/image ")) {
         try handleImage(agent, alloc, stdout, std.mem.trim(u8, trimmed[6..], " \t"));
+        return .handled;
+    }
+    if (std.mem.eql(u8, trimmed, "/skill") or std.mem.startsWith(u8, trimmed, "/skill ")) {
+        try handleSkill(agent, alloc, stdout, std.mem.trim(u8, trimmed[6..], " \t"));
         return .handled;
     }
     if (std.mem.startsWith(u8, trimmed, "/screenshot")) {
@@ -1247,6 +1259,34 @@ fn parseImageArg(arg: []const u8, buf: []u8) ?struct { path: []const u8, prompt:
     return .{ .path = path, .prompt = std.mem.trim(u8, arg[i..], " \t") };
 }
 
+/// /skill lists the SKILL.md skills; /skill <name> [input] has the model use one.
+fn handleSkill(agent: *loop_mod.AgentLoop, alloc: std.mem.Allocator, w: anytype, arg: []const u8) !void {
+    if (arg.len == 0) {
+        const all = try skill_md.discover(alloc);
+        defer skill_md.freeAll(alloc, all);
+        if (all.len == 0) {
+            try w.writeAll("No SKILL.md skills. Put one in ./skills/<name>/, ~/.agents/skills/<name>/ or ~/.wintermolt/skills/<name>/ (docs/SKILLS.md).\n");
+            return;
+        }
+        for (all) |s| try w.print("  {s} -- {s}\n    {s}\n", .{ s.name, s.description[0..@min(s.description.len, 100)], s.location });
+        try w.writeAll("Use one with /skill <name> [what to do].\n");
+        return;
+    }
+    const space = std.mem.indexOfAny(u8, arg, " \t") orelse arg.len;
+    const name = arg[0..space];
+    const input = std.mem.trim(u8, arg[space..], " \t");
+    const skill = (try skill_md.find(alloc, name)) orelse {
+        try w.print("[skill] No skill named {s}. /skill lists them.\n", .{name});
+        return;
+    };
+    defer skill.deinit(alloc);
+    const prompt = try std.fmt.allocPrint(alloc, "Use the {s} skill: read {s} with file_read and follow it.{s}{s}", .{
+        skill.name, skill.location, if (input.len > 0) "\n\n" else "", input,
+    });
+    defer alloc.free(prompt);
+    try agent.processInput(prompt);
+}
+
 fn handleImage(agent: *loop_mod.AgentLoop, alloc: std.mem.Allocator, w: anytype, arg: []const u8) !void {
     var path_buf: [1024]u8 = undefined;
     const parsed = parseImageArg(arg, &path_buf) orelse {
@@ -1582,7 +1622,11 @@ fn handleListen(agent: *loop_mod.AgentLoop, alloc: std.mem.Allocator, w: anytype
     tui.setActivity(null);
     if (seconds != null) fsio.deleteFile(path) catch {}; // ours; never the user's file
     const text = said catch |e| {
-        try w.print("[listen] Could not transcribe it: {s} (needs a whisper.cpp model in ~/.wintermolt/models, or DEEPGRAM_API_KEY)\n", .{@errorName(e)});
+        // Deepgram is the only provider with a key to refuse.
+        if (e == error.ApiKeyRejected)
+            try w.writeAll("[listen] Deepgram refused DEEPGRAM_API_KEY (set it with `wintermolt --keys`, or /keys deepgram)\n")
+        else
+            try w.print("[listen] Could not transcribe it: {s} (needs a whisper.cpp model in ~/.wintermolt/models, or DEEPGRAM_API_KEY)\n", .{@errorName(e)});
         return;
     };
     defer alloc.free(text);
@@ -1744,6 +1788,7 @@ fn printHelp(w: anytype) !void {
         \\  /look [prompt] — Capture camera image and describe it
         \\  /image <file> [prompt] — Attach an image file (drag it in for the path)
         \\  /screenshot    — Capture screen and describe it
+        \\  /skill [name] [input] — List SKILL.md skills, or have the model use one
         \\  /stats         — Show session statistics
         \\  /compact       — Compact conversation history
         \\  /constitution  — View/reload system prompt
@@ -1807,6 +1852,8 @@ fn printHelp(w: anytype) !void {
         \\  WINTERMOLT_CHAT_GROUP_ALLOW_FROM  Who may trigger it in a group
         \\                                (default: WINTERMOLT_CHAT_ALLOW_FROM)
         \\  WINTERMOLT_CHAT_REQUIRE_MENTION=0  Answer group messages without a mention
+        \\  WINTERMOLT_CHAT_DM_SCOPE      main (default: DMs share one conversation) | per-peer
+        \\                                (each sender their own); every group has its own
         \\
         \\Environment:
         \\  ANTHROPIC_API_KEY    — Claude API key (optional)

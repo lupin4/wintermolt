@@ -128,9 +128,16 @@ pub fn runSetup(alloc: std.mem.Allocator, force: bool) !void {
         }
     }
 
+    // ─── Voice ──────────────────────────────
+    try stdout.writeAll("\n \x1b[1;33m─── Voice (press Enter to skip) ────────────\x1b[0m\n");
+    try stdout.writeAll(" \x1b[90mYour own key, from console.deepgram.com. It speaks the replies, and hears /listen\x1b[0m\n");
+    try stdout.writeAll(" \x1b[90mwhen no local whisper.cpp model is installed (or WINTERMOLT_STT_PROVIDER=deepgram).\x1b[0m\n");
+    const deepgram_key = try promptKey(stdin, stdout, &line_buf, " \x1b[1m5.\x1b[0m Deepgram API Key (voice in and out)", null, existing.get("DEEPGRAM_API_KEY"), false);
+    if (deepgram_key) |key| try keys.append(alloc, .{ .key = "DEEPGRAM_API_KEY", .value = key });
+
     // ─── Model Selection ────────────────────
     try stdout.writeAll("\n \x1b[1;33m─── Model Selection ────────────────────────\x1b[0m\n");
-    try stdout.writeAll(" \x1b[1m5.\x1b[0m Default model tier (Ollama local):\n");
+    try stdout.writeAll(" \x1b[1m6.\x1b[0m Default model tier (Ollama local):\n");
     try stdout.writeAll("    \x1b[90m[1]\x1b[0m Sonnet — qwen3:0.6b (balanced, default)\n");
     try stdout.writeAll("    \x1b[90m[2]\x1b[0m Haiku  — qwen3:0.6b (fast, lightweight)\n");
     try stdout.writeAll("    \x1b[90m[3]\x1b[0m Opus   — qwen3:8b (most capable)\n");
@@ -148,22 +155,22 @@ pub fn runSetup(alloc: std.mem.Allocator, force: bool) !void {
     // ─── Chat Platforms ─────────────────────
     try stdout.writeAll("\n \x1b[1;33m─── Chat Platforms (press Enter to skip) ───\x1b[0m\n");
 
-    const discord_token = try promptKey(stdin, stdout, &line_buf, " \x1b[1m6.\x1b[0m Discord Bot Token", null, existing.get("DISCORD_BOT_TOKEN"), false);
+    const discord_token = try promptKey(stdin, stdout, &line_buf, " \x1b[1m7.\x1b[0m Discord Bot Token", null, existing.get("DISCORD_BOT_TOKEN"), false);
     if (discord_token) |key| try keys.append(alloc, .{ .key = "DISCORD_BOT_TOKEN", .value = key });
 
-    const telegram_token = try promptKey(stdin, stdout, &line_buf, " \x1b[1m7.\x1b[0m Telegram Bot Token", null, existing.get("TELEGRAM_BOT_TOKEN"), false);
+    const telegram_token = try promptKey(stdin, stdout, &line_buf, " \x1b[1m8.\x1b[0m Telegram Bot Token", null, existing.get("TELEGRAM_BOT_TOKEN"), false);
     if (telegram_token) |key| try keys.append(alloc, .{ .key = "TELEGRAM_BOT_TOKEN", .value = key });
 
-    const slack_token = try promptKey(stdin, stdout, &line_buf, " \x1b[1m8.\x1b[0m Slack Bot Token", "xoxb-", existing.get("SLACK_BOT_TOKEN"), false);
+    const slack_token = try promptKey(stdin, stdout, &line_buf, " \x1b[1m9.\x1b[0m Slack Bot Token", "xoxb-", existing.get("SLACK_BOT_TOKEN"), false);
     if (slack_token) |key| {
         try keys.append(alloc, .{ .key = "SLACK_BOT_TOKEN", .value = key });
-        const slack_app = try promptKey(stdin, stdout, &line_buf, "     \x1b[1m8b.\x1b[0m Slack App Token", "xapp-", existing.get("SLACK_APP_TOKEN"), false);
+        const slack_app = try promptKey(stdin, stdout, &line_buf, "     \x1b[1m9b.\x1b[0m Slack App Token", "xapp-", existing.get("SLACK_APP_TOKEN"), false);
         if (slack_app) |app| try keys.append(alloc, .{ .key = "SLACK_APP_TOKEN", .value = app });
     }
 
     // ─── Tool Policies ──────────────────────
     try stdout.writeAll("\n \x1b[1;33m─── Tool Policies ──────────────────────────\x1b[0m\n");
-    try stdout.writeAll(" \x1b[1m9.\x1b[0m Restrict tools? (for shared/cloud deployments)\n");
+    try stdout.writeAll(" \x1b[1m10.\x1b[0m Restrict tools? (for shared/cloud deployments)\n");
     try stdout.writeAll("    \x1b[90m[Enter]\x1b[0m All tools enabled (default)\n");
     try stdout.writeAll("    \x1b[90m[block]\x1b[0m Block specific tools (e.g. \"bash\")\n");
 

@@ -34,6 +34,8 @@ const skill_loader = @import("skill_loader.zig");
 const redact = @import("redact.zig");
 const scheduler_mod = @import("scheduler.zig");
 const camera_tool = @import("../tools/camera.zig");
+const workspace = @import("workspace.zig");
+const skill_md = @import("skill_md.zig");
 
 // Output leak guard (redact.zig): per-reply redactor + inner callback at module
 // scope (TextCallback carries no userdata). Replies are sequential per process.
@@ -73,6 +75,10 @@ pub const AgentLoop = struct {
     /// or the retry after compacting did. The error is already on stderr; `-e`
     /// turns this into its exit status, the only thing a script can check.
     turn_failed: bool = false,
+
+    /// The local CLI or the owner's main DM session: MEMORY.md is in its
+    /// prompt. --chat clears it for groups and per-peer DM sessions.
+    private: bool = true,
 
     // Subagent hierarchy
     depth: u8, // 0 = root agent, >0 = subagent
@@ -323,7 +329,19 @@ pub const AgentLoop = struct {
         else
             &.{};
 
+        // The workspace files are read every turn, as OpenClaw does, so an
+        // edit counts from the next one (workspace.zig).
+        const scope: workspace.Scope = if (self.depth > 0) .subagent else if (self.private) .private else .shared;
+        const project = workspace.load(self.alloc, scope) catch try self.alloc.dupe(u8, "");
+        defer self.alloc.free(project);
+        const skills_md = skill_md.load(self.alloc) catch try self.alloc.dupe(u8, "");
+        defer self.alloc.free(skills_md);
+        const system_prompt = try std.mem.concat(self.alloc, u8, &.{ self.system_prompt, project, skills_md });
+        defer self.alloc.free(system_prompt);
+        self.history.setOverhead(system_prompt.len, relevant_tools.len * 200, self.config.max_tokens);
+
         var iteration: usize = 0;
+        var asked_again = false;
         const max_iterations: usize = @max(1, self.config.max_iterations);
         while (iteration < max_iterations) : (iteration += 1) {
             // Fire voice start callback on first iteration
@@ -335,7 +353,7 @@ pub const AgentLoop = struct {
             const text_cb: ?sse.TextCallback = if (self.stream_callback) |cb| cb else if (self.capture_buf != null) &captureText else &printText;
 
             var response = self.sendToBackend(
-                self.system_prompt,
+                system_prompt,
                 self.history.getMessages(),
                 text_cb,
                 relevant_tools,
@@ -344,7 +362,7 @@ pub const AgentLoop = struct {
                     try stderr.writeAll("\n[Context pressure] Compacting history...\n");
                     self.history.emergencyCompact();
                     var retry_resp = self.sendToBackend(
-                        self.system_prompt,
+                        system_prompt,
                         self.history.getMessages(),
                         text_cb,
                         relevant_tools,
@@ -379,6 +397,20 @@ pub const AgentLoop = struct {
             defer response.deinit();
 
             try stdout.writeByte('\n');
+
+            // A reply with no text and no tool call (qwen3 can spend its whole
+            // turn thinking, e.g. over a skill it means to use) printed nothing
+            // and exited 0. Ask once more; a second empty reply fails the turn.
+            if (isEmptyReply(&response)) {
+                if (!asked_again) {
+                    asked_again = true;
+                    try stderr.writeAll("[model] Empty reply; asking again\n");
+                    continue;
+                }
+                self.turn_failed = true;
+                try stderr.writeAll("[Error] The model returned an empty reply twice\n");
+                return;
+            }
 
             // Add assistant response to history
             try self.history.addAssistantResponse(&response);
@@ -964,6 +996,16 @@ pub const AgentLoop = struct {
             n += 1;
         };
         return buf[0..n];
+    }
+
+    /// Nothing to show and nothing to run: no text but whitespace, no tool call.
+    fn isEmptyReply(resp: *const protocol.Response) bool {
+        for (resp.content.items) |block| switch (block) {
+            .text => |t| if (std.mem.trim(u8, t, " \t\r\n").len > 0) return false,
+            .tool_use => return false,
+            else => {},
+        };
+        return true;
     }
 
     /// One-shot redaction of a complete text block (non-streaming secondary

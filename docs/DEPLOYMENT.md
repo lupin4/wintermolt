@@ -100,6 +100,22 @@ WINTERMOLT_CHAT_GROUPS=telegram:-1001234567890 \
 wintermolt --chat
 ```
 
+**Conversations.** Each group has its own conversation, so nothing said in
+a direct message, or in another group, is in its history. Direct messages
+share one conversation, OpenClaw's default, which suits one owner on several
+platforms. When several people may message the bot directly, give each their
+own with `WINTERMOLT_CHAT_DM_SCOPE=per-peer` (one per sender per platform).
+A routed agent (`/route`) keeps the same split under its own name. A
+conversation idle for `WINTERMOLT_AGENT_IDLE_TIMEOUT` (30 minutes), or the
+oldest once `WINTERMOLT_MAX_AGENTS` (16) are open, is closed, and the next
+message starts it empty.
+
+This keeps conversations apart; it is not a wall between people. Anyone the
+bot answers can still use its tools on this host, `bash` and `memory_search`
+(which searches every stored conversation) among them. Admit only people you
+would let use this machine, or narrow the tools with
+`WINTERMOLT_TOOL_BLOCKLIST`.
+
 A value that is not one of the above stops `--chat` at startup rather
 than being read as a default. Every dropped message is logged with the
 reason.
