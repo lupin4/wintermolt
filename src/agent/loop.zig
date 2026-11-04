@@ -264,6 +264,32 @@ pub const AgentLoop = struct {
         return null;
     }
 
+    /// Replace the history with these turns, as if they had been said here.
+    pub fn loadTurns(self: *AgentLoop, turns: []const storage_mod.Turn) !void {
+        self.history.deinit();
+        self.history = history_mod.History.init(self.alloc);
+        for (turns) |t| {
+            var m = protocol.Message{ .role = t.role };
+            defer m.content.deinit(self.alloc);
+            try m.content.append(self.alloc, .{ .text = t.text });
+            try self.history.addMessage(m); // copies
+        }
+    }
+
+    /// Continue a saved conversation: its text comes back into the history
+    /// (storage.textTurns) and what follows is saved under the same id.
+    pub fn resumeConversation(self: *AgentLoop, conv_id: []const u8) !void {
+        const s = if (self.storage) |*s| s else return error.NoHistory;
+        const saved = try s.loadConversation(conv_id);
+        defer s.freeMessages(saved);
+        if (saved.len == 0) return error.ConversationNotFound;
+        const turns = try storage_mod.textTurns(self.alloc, saved);
+        defer storage_mod.freeTurns(self.alloc, turns);
+        try self.loadTurns(turns);
+        self.conversation_id = try s.alloc.dupe(u8, conv_id);
+        self.message_sequence = @intCast(saved[saved.len - 1].sequence_num + 1);
+    }
+
     /// Archive current conversation and reset history.
     pub fn archiveAndReset(self: *AgentLoop) void {
         self.history.deinit();

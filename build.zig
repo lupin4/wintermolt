@@ -469,6 +469,8 @@ pub fn build(b: *std.Build) void {
             .link_libc = true,
         }),
     });
+    // The gateway stamps its replies with forTime's clock.
+    addPrebuiltArchive(web_test.root_module, b, "fortime", short_target);
     test_step.dependOn(&b.addRunArtifact(web_test).step);
 
     // The environment, end to end: a value setenv puts there at runtime (every

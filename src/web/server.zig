@@ -79,7 +79,7 @@ pub fn authorize(target: []const u8, origin: ?[]const u8, host: ?[]const u8, tok
     return .ok;
 }
 
-fn sameToken(given: []const u8, token: []const u8) bool {
+pub fn sameToken(given: []const u8, token: []const u8) bool {
     if (token.len == 0 or given.len != token.len) return false;
     var diff: u8 = 0;
     for (given, token) |a, b| diff |= a ^ b;

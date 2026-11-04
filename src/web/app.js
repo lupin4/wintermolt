@@ -143,9 +143,10 @@ function handle(m) {
       }
       break;
     }
-    case 'notice':
-      addLine(reply(m.id), 'notice', m.text);
+    case 'notice': // a terminal command's printout: drop its colour codes
+      addLine(reply(m.id), 'notice', String(m.text).replace(/\x1b\[[0-9;?]*[A-Za-z]/g, ''));
       break;
+    case 'resumed': showResumed(m.items || []); break;
     case 'error':
       if (m.id) addLine(reply(m.id), 'error', explain(m.error));
       else flash(explain(m.error));
@@ -154,7 +155,7 @@ function handle(m) {
       finish(m.id);
       break;
     case 'history': renderHistory(m.items || []); break;
-    case 'transcript': renderTranscript(m.text || ''); break;
+    case 'transcript': renderTranscript(m.conversation_id, m.text || ''); break;
     case 'skills': renderSkills(m.items || []); break;
     case 'workspace': renderWorkspace(m.dir, m.files || []); break;
     case 'workspace_file': renderEditor(m.name, m.content || ''); break;
@@ -513,7 +514,7 @@ function renderHistory(items) {
     panelBody.appendChild(el('p', '', 'No saved conversations yet. They appear here once you have chatted.'));
     return;
   }
-  panelBody.appendChild(el('p', '', 'Past conversations, newest first. They open read-only.'));
+  panelBody.appendChild(el('p', '', 'Past conversations, newest first. Open one to read it or carry on with it.'));
   for (const c of items) {
     const b = el('button', 'item');
     b.appendChild(el('strong', '', c.title || 'Untitled'));
@@ -526,15 +527,43 @@ function renderHistory(items) {
   }
 }
 
-function renderTranscript(text) {
+function renderTranscript(conversationId, text) {
   if (state.panel !== 'history') return;
   panelBody.replaceChildren();
+  const actions = el('div', 'actions');
+  const resume = el('button', 'primary', 'Continue this conversation');
+  resume.addEventListener('click', () => {
+    if (state.running) return flash('Wait for the reply to finish first.');
+    resume.disabled = true;
+    resume.textContent = 'Continuing…';
+    send({ type: 'resume', id: `r${++state.seq}`, conversation_id: conversationId });
+  });
   const back = el('button', '', 'Back to the list');
   back.addEventListener('click', () => requestPanel('history'));
-  panelBody.appendChild(back);
+  actions.append(resume, back);
+  panelBody.appendChild(actions);
   const t = el('div', 'transcript reply');
   t.innerHTML = md(text);
   panelBody.appendChild(t);
+}
+
+/** An earlier conversation, carried on here: redraw it as the model now sees it. */
+function showResumed(items) {
+  clearLog();
+  const note = el('div', 'notice', 'Continued from History. The model has what was said, not what its tools returned then.');
+  log.appendChild(note);
+  for (const it of items) {
+    if (it.role === 'user') { addYou(it.text); continue; }
+    const r = el('div', 'reply');
+    const t = el('div', 'text');
+    t.innerHTML = md(it.text);
+    r.appendChild(t);
+    log.appendChild(r);
+  }
+  closePanel();
+  pinned = true;
+  stick();
+  input.focus();
 }
 
 function renderSkills(items) {

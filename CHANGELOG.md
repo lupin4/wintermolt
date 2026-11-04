@@ -56,6 +56,22 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   prints carries a token, and a page or WebSocket without it, or from
   another site, is refused. `WINTERMOLT_WEB_HOST` and `WINTERMOLT_WEB_TOKEN`
   are new (see docs/DEPLOYMENT.md).
+- **The web page runs the terminal's commands** (`/stats`, `/session`,
+  `/schedule`, `/export` and the rest) and shows what they print. `/keys`
+  stays in the terminal, since `/keys list` shows part of each key.
+- **Carry on an earlier conversation.** History in the web page opens a
+  conversation to read or to continue: what was said goes back to the model
+  and new messages are saved under the same conversation. Tool results were
+  never saved, so they do not come back.
+- **`--gateway` works: an OpenAI-compatible API served by the binary
+  itself.** It spawned a TypeScript sidecar that is not in the repository,
+  and the Zig side sent only the first `content` string of a request, in a
+  new conversation each time, never streamed. Now `POST /v1/chat/completions`
+  takes the whole conversation and answers whole or streamed (server-sent
+  events), and `GET /v1/models` names the backend. Every request needs the
+  API key it prints (`WINTERMOLT_GATEWAY_KEY` sets a fixed one); it listens
+  on `127.0.0.1` (`WINTERMOLT_GATEWAY_HOST`). The sidecar's device pairing
+  endpoints went with it; they never ran.
 - **Workspace files, as in OpenClaw.** `AGENTS.md`, `SOUL.md`, `USER.md`,
   `IDENTITY.md` and `MEMORY.md` in `~/.wintermolt/workspace`
   (`WINTERMOLT_WORKSPACE_DIR`) go into the system prompt every turn, with

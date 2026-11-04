@@ -6,8 +6,9 @@
 //
 // From the page:
 //   {"type":"message","id":"m1","text":"...","image":{"media_type":"image/png","data":"<base64>"}}
-//       text starting with "/" is a command: /new, /model [name], /skill [name] [input], /help
+//       text starting with "/" is one of the terminal's commands (Commands), except /keys and /quit
 //   {"type":"history"}                         {"type":"transcript","conversation_id":"..."}
+//   {"type":"resume","id":"m2","conversation_id":"..."}
 //   {"type":"skills"}                          {"type":"keys"}
 //   {"type":"workspace"}                       {"type":"workspace_read","name":"SOUL.md"}
 //   {"type":"workspace_write","name":"SOUL.md","content":"..."}
@@ -15,6 +16,7 @@
 //   status {backend, model, busy}   token {id, text}   tool_start {id, tool, tool_id}
 //   tool_done {id, tool_id, ok}     notice {id, text}  error {id, error}   done {id}
 //   history {items}   transcript {conversation_id, text}   skills {items}   keys {items}
+//   resumed {id, items: [{role, text}]}
 //   workspace {dir, files}   workspace_file {name, content}
 
 const std = @import("std");
@@ -42,8 +44,16 @@ const In = struct {
     content: ?[]const u8 = null,
 };
 
+/// The terminal's slash commands (main.zig's dispatchCommand, as the TUI runs
+/// them). Writes what the command prints to `out`; false if `line` is no command.
+pub const Commands = struct {
+    ctx: *anyopaque,
+    run: *const fn (ctx: *anyopaque, line: []const u8, out: *std.Io.Writer) anyerror!bool,
+};
+
 pub const WebBridge = struct {
     agent: *loop_mod.AgentLoop,
+    commands: ?Commands = null,
     /// Held while the agent (or its storage) is in use.
     busy: fsio.Mutex = .init,
 
@@ -81,6 +91,7 @@ pub const WebBridge = struct {
         }
         if (eql(t, "history")) return self.sendHistory();
         if (eql(t, "transcript")) return self.sendTranscript(m.conversation_id);
+        if (eql(t, "resume")) return self.resumeConversation(m.id, m.conversation_id);
     }
 
     fn sendStatus(self: *WebBridge) void {
@@ -88,74 +99,76 @@ pub const WebBridge = struct {
         emit(.{ .type = "status", .backend = info.name, .model = info.model, .busy = false });
     }
 
-    /// One turn of the agent, streamed to the page. Holds `busy`.
-    fn run(self: *WebBridge, id: []const u8, text: []const u8, m: In) void {
-        defer emit(.{ .type = "done", .id = id });
+    /// Route the agent's output for request `id` to this page. Holds `busy`.
+    fn begin(self: *WebBridge, id: []const u8) void {
         if (self.agent.storage != null and self.agent.conversation_id == null) self.agent.startConversation();
-
+        self.agent.turn_failed = false; // a command that runs no turn must not report the last one's failure
         active_id = id;
         carry_len = 0;
         self.agent.stream_callback = &onText;
         self.agent.tool_start_callback = &onToolStart;
         self.agent.tool_done_callback = &onToolDone;
-        defer {
-            flushCarry();
-            self.agent.stream_callback = null;
-            self.agent.tool_start_callback = null;
-            self.agent.tool_done_callback = null;
-            active_id = "";
-        }
+    }
 
+    fn end(self: *WebBridge, id: []const u8) void {
+        flushCarry();
+        self.agent.stream_callback = null;
+        self.agent.tool_start_callback = null;
+        self.agent.tool_done_callback = null;
+        active_id = "";
+        if (self.agent.turn_failed) emit(.{ .type = "error", .id = id, .@"error" = self.agent.turn_error });
+        self.sendStatus();
+        emit(.{ .type = "done", .id = id });
+    }
+
+    /// One turn of the agent, streamed to the page. Holds `busy`.
+    fn run(self: *WebBridge, id: []const u8, text: []const u8, m: In) void {
+        self.begin(id);
+        defer self.end(id);
         const result = if (m.image) |img|
             self.agent.processInputImage(if (text.len > 0) text else "What's in this image?", .{ .media_type = img.media_type, .data = img.data })
         else
             self.agent.processInput(text);
-        result catch |e| return emit(.{ .type = "error", .id = id, .@"error" = @errorName(e) });
-        if (self.agent.turn_failed) emit(.{ .type = "error", .id = id, .@"error" = self.agent.turn_error });
-        self.sendStatus();
+        result catch |e| emit(.{ .type = "error", .id = id, .@"error" = @errorName(e) });
     }
 
-    /// A slash command. Holds `busy`.
+    /// A slash command: the terminal's own, its printout shown as a notice. Holds `busy`.
     fn command(self: *WebBridge, id: []const u8, line: []const u8) void {
-        const space = std.mem.indexOfAny(u8, line, " \t") orelse line.len;
-        const name = line[0..space];
-        const arg = std.mem.trim(u8, line[space..], " \t");
+        self.begin(id);
+        defer self.end(id);
+        const name = line[0 .. std.mem.indexOfAny(u8, line, " \t") orelse line.len];
+        if (eql(name, "/keys")) return notice(id, "Set keys with wintermolt --keys in a terminal. The Keys panel shows which are set; this page never shows a key.");
+        if (eql(name, "/quit") or eql(name, "/exit")) return notice(id, "Close the tab to leave. wintermolt keeps running until you stop it in its terminal.");
+        const cmds = self.commands orelse return notice(id, "Commands are not available here.");
 
-        if (eql(name, "/new") or eql(name, "/clear")) {
-            self.agent.archiveAndReset();
-            notice(id, "New conversation.");
-        } else if (eql(name, "/model")) {
-            if (arg.len == 0) {
-                notice(id, "Backends: ollama, claude, openai, deepseek, qwen, gemini, kernel, forai. Switch with /model <backend> [model].");
-            } else {
-                const sp = std.mem.indexOfAny(u8, arg, " \t") orelse arg.len;
-                const model = std.mem.trim(u8, arg[sp..], " \t");
-                self.agent.switchBackend(arg[0..sp], if (model.len > 0) model else null) catch |e| {
-                    emit(.{ .type = "error", .id = id, .@"error" = @errorName(e) });
-                };
-            }
-            self.sendStatus();
-        } else if (eql(name, "/skill") and arg.len == 0) {
-            sendSkills();
-        } else if (eql(name, "/skill")) {
-            const sp = std.mem.indexOfAny(u8, arg, " \t") orelse arg.len;
-            if (skill_md.find(gpa, arg[0..sp]) catch null) |skill| {
-                defer skill.deinit(gpa);
-                if (skill_md.usePrompt(gpa, skill, std.mem.trim(u8, arg[sp..], " \t"))) |prompt| {
-                    defer gpa.free(prompt);
-                    return self.run(id, prompt, .{ .type = "message" }); // run sends done
-                } else |_| {}
-            } else {
-                var buf: [256]u8 = undefined;
-                notice(id, std.fmt.bufPrint(&buf, "No skill named {s}. /skill lists them.", .{arg[0..@min(sp, 100)]}) catch "No such skill.");
-            }
-        } else if (eql(name, "/help")) {
-            notice(id, "Here: /new, /model [backend] [model], /skill [name] [what to do], /help. Every other command works in the terminal.");
-        } else {
-            var buf: [256]u8 = undefined;
-            notice(id, std.fmt.bufPrint(&buf, "{s} works in the terminal, not here yet. /help lists what does.", .{name[0..@min(name.len, 100)]}) catch "That works in the terminal, not here yet.");
+        var out: std.Io.Writer.Allocating = .init(gpa);
+        defer out.deinit();
+        const known = cmds.run(cmds.ctx, line, &out.writer) catch |e| {
+            emit(.{ .type = "error", .id = id, .@"error" = @errorName(e) });
+            return;
+        };
+        if (!known) {
+            var buf: [160]u8 = undefined;
+            return notice(id, std.fmt.bufPrint(&buf, "No command {s}. /help lists them.", .{name[0..@min(name.len, 100)]}) catch "No such command. /help lists them.");
         }
-        emit(.{ .type = "done", .id = id });
+        const text = std.mem.trim(u8, out.written(), " \r\n");
+        if (text.len > 0) notice(id, text[0..server.wholeChars(text)]);
+    }
+
+    /// Continue a saved conversation; the page redraws it from what the model now sees. Holds `busy`.
+    fn resumeConversation(self: *WebBridge, id: []const u8, conversation_id: []const u8) void {
+        defer emit(.{ .type = "done", .id = id });
+        self.agent.resumeConversation(conversation_id) catch |e|
+            return emit(.{ .type = "error", .id = id, .@"error" = @errorName(e) });
+        const Item = struct { role: []const u8, text: []const u8 };
+        var items: std.ArrayList(Item) = .empty;
+        defer items.deinit(gpa);
+        for (self.agent.history.getMessages()) |msg| for (msg.content.items) |block| switch (block) {
+            .text => |t| items.append(gpa, .{ .role = @tagName(msg.role), .text = t }) catch return,
+            else => {},
+        };
+        emit(.{ .type = "resumed", .id = id, .items = items.items });
+        self.sendStatus();
     }
 
     /// Holds `busy`: the agent's storage is one SQLite connection.

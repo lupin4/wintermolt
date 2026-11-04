@@ -38,6 +38,9 @@
 //   WINTERMOLT_WEB_PORT      — Optional. Web UI port (default: 3000; PORT wins)
 //   WINTERMOLT_WEB_HOST      — Optional. Web UI listen address (default: 127.0.0.1)
 //   WINTERMOLT_WEB_TOKEN     — Optional. Fixed web UI token, 16+ chars (default: random)
+//   WINTERMOLT_GATEWAY_PORT  — Optional. --gateway port (default: 8080)
+//   WINTERMOLT_GATEWAY_HOST  — Optional. --gateway listen address (default: 127.0.0.1)
+//   WINTERMOLT_GATEWAY_KEY   — Optional. Fixed --gateway API key, 16+ chars (default: random)
 //   PINECONE_API_KEY         — Optional. Enables RAG semantic search.
 //   PINECONE_HOST            — Required if API key set. Index host URL.
 //   PINECONE_INDEX           — Optional. Index name (default: "wintermolt")

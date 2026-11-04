@@ -795,6 +795,47 @@ fn writeJsonStringQuoted(w: anytype, s: []const u8) !void {
     try w.writeByte('"');
 }
 
+/// One message, as text: what goes back into the history to continue a conversation.
+pub const Turn = struct { role: protocol.Role, text: []u8 };
+
+/// The text of saved messages, one turn per change of speaker, starting with
+/// the user. Tool calls are dropped: their results are never saved, and a
+/// tool call without its result is refused by the APIs. Caller frees with freeTurns.
+pub fn textTurns(alloc: Allocator, saved: []const SavedMessage) ![]Turn {
+    const Block = struct { type: []const u8, text: ?[]const u8 = null };
+    var turns: std.ArrayList(Turn) = .empty;
+    errdefer {
+        for (turns.items) |t| alloc.free(t.text);
+        turns.deinit(alloc);
+    }
+    for (saved) |m| {
+        const role = std.meta.stringToEnum(protocol.Role, m.role) orelse continue;
+        if (turns.items.len == 0 and role != .user) continue;
+        const parsed = std.json.parseFromSlice([]Block, alloc, m.content_json, .{ .ignore_unknown_fields = true }) catch continue;
+        defer parsed.deinit();
+        for (parsed.value) |b| {
+            const text = b.text orelse continue;
+            if (!std.mem.eql(u8, b.type, "text") or text.len == 0) continue;
+            if (turns.items.len > 0 and turns.items[turns.items.len - 1].role == role) {
+                const last = &turns.items[turns.items.len - 1];
+                const joined = try std.mem.concat(alloc, u8, &.{ last.text, "\n\n", text });
+                alloc.free(last.text);
+                last.text = joined;
+            } else {
+                const copy = try alloc.dupe(u8, text);
+                errdefer alloc.free(copy);
+                try turns.append(alloc, .{ .role = role, .text = copy });
+            }
+        }
+    }
+    return turns.toOwnedSlice(alloc);
+}
+
+pub fn freeTurns(alloc: Allocator, turns: []Turn) void {
+    for (turns) |t| alloc.free(t.text);
+    alloc.free(turns);
+}
+
 /// A conversation's title from its first message: the first line, at most 80
 /// bytes, never cut inside a UTF-8 character (the web UI sends titles as JSON).
 pub fn titleOf(text: []const u8) []const u8 {
@@ -810,4 +851,25 @@ test "titleOf: the first line, cut at 80 bytes on a character boundary" {
     try std.testing.expectEqualStrings("a" ** 79, titleOf(long));
     try std.testing.expectEqualStrings("a" ** 80, titleOf("a" ** 90));
     try std.testing.expectEqualStrings("", titleOf("\nsecond line"));
+}
+
+test "textTurns: text only, one turn per role change, starting with the user" {
+    const a = std.testing.allocator;
+    const saved = [_]SavedMessage{
+        .{ .role = "assistant", .sequence_num = 0, .content_json = "[{\"type\":\"text\",\"text\":\"stray\"}]", .created_at = 0 },
+        .{ .role = "user", .sequence_num = 1, .content_json = "[{\"type\":\"text\",\"text\":\"run ls\"}]", .created_at = 0 },
+        .{ .role = "assistant", .sequence_num = 2, .content_json = "[{\"type\":\"tool_use\",\"id\":\"t1\",\"name\":\"bash\",\"input\":{\"cmd\":\"ls\"}}]", .created_at = 0 },
+        .{ .role = "assistant", .sequence_num = 3, .content_json = "[{\"type\":\"text\",\"text\":\"Two files.\"},{\"type\":\"image\",\"text\":\"[image frame]\"}]", .created_at = 0 },
+        .{ .role = "assistant", .sequence_num = 4, .content_json = "[{\"type\":\"text\",\"text\":\"a and b\"}]", .created_at = 0 },
+        .{ .role = "user", .sequence_num = 5, .content_json = "not json", .created_at = 0 },
+        .{ .role = "user", .sequence_num = 6, .content_json = "[{\"type\":\"text\",\"text\":\"thanks\"}]", .created_at = 0 },
+    };
+    const turns = try textTurns(a, &saved);
+    defer freeTurns(a, turns);
+    try std.testing.expectEqual(@as(usize, 3), turns.len);
+    try std.testing.expectEqual(protocol.Role.user, turns[0].role);
+    try std.testing.expectEqualStrings("run ls", turns[0].text);
+    try std.testing.expectEqual(protocol.Role.assistant, turns[1].role);
+    try std.testing.expectEqualStrings("Two files.\n\na and b", turns[1].text);
+    try std.testing.expectEqualStrings("thanks", turns[2].text);
 }

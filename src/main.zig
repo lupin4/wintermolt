@@ -36,7 +36,7 @@ const tts_mod = @import("agent/tts.zig");
 const stt_mod = @import("agent/stt.zig");
 const skill_md = @import("agent/skill_md.zig");
 const session_mod = @import("agent/session.zig");
-const gateway_bridge = @import("gateway/bridge.zig");
+const gateway_server = @import("gateway/server.zig");
 const i18n = @import("agent/i18n.zig");
 const extensions_mod = @import("agent/extensions.zig");
 const tailscale_tool = @import("tools/tailscale.zig");
@@ -548,25 +548,11 @@ pub fn main(init: std.process.Init) !void {
             std.process.exit(1);
         };
         const host = compat.getenv("WINTERMOLT_WEB_HOST") orelse "127.0.0.1";
-        // The token is all that stands between the network and bash.
         var token_hex: [32]u8 = undefined;
-        const token: []const u8 = if (compat.getenv("WINTERMOLT_WEB_TOKEN")) |t| blk: {
-            if (t.len < 16) {
-                try stderr.writeAll("[web] WINTERMOLT_WEB_TOKEN must be at least 16 characters\n");
-                std.process.exit(1);
-            }
-            break :blk t;
-        } else blk: {
-            var raw: [16]u8 = undefined;
-            if (!fsio.randomBytes(&raw)) {
-                try stderr.writeAll("[web] No random source for the token; set WINTERMOLT_WEB_TOKEN\n");
-                std.process.exit(1);
-            }
-            token_hex = std.fmt.bytesToHex(raw, .lower);
-            break :blk &token_hex;
-        };
+        const token = serverSecret(stderr, "web", "WINTERMOLT_WEB_TOKEN", &token_hex);
 
-        var bridge: web_bridge.WebBridge = .{ .agent = &agent };
+        var web_cmds: WebCommands = .{ .agent = &agent, .alloc = alloc, .session_mgr = &session_mgr };
+        var bridge: web_bridge.WebBridge = .{ .agent = &agent, .commands = web_cmds.commands() };
         var srv = web_server.Server.init(std.heap.c_allocator, host, port, token, bridge.handler()) catch |e| {
             try stderr.print("[web] Cannot listen on {s}:{d}: {s}\n", .{ host, port, @errorName(e) });
             std.process.exit(1);
@@ -607,15 +593,24 @@ pub fn main(init: std.process.Init) !void {
 
     // Gateway mode — OpenAI-compatible API server
     if (gateway_mode) {
-        const gw_port = compat.getenv("WINTERMOLT_GATEWAY_PORT") orelse "8080";
-        try stderr.print("[wintermolt] Starting gateway mode on port {s}...\n", .{gw_port});
-        var gw_bridge = gateway_bridge.GatewayBridge.init(alloc, &agent) catch |e| {
-            try stderr.print("[wintermolt] Failed to start gateway sidecar: {s}\n", .{@errorName(e)});
+        const port_text = compat.getenv("WINTERMOLT_GATEWAY_PORT") orelse "8080";
+        const port = std.fmt.parseInt(u16, port_text, 10) catch {
+            try stderr.print("[gateway] Not a port: {s}\n", .{port_text});
             std.process.exit(1);
         };
-        defer gw_bridge.deinit();
-        gw_bridge.run();
-        try stderr.writeAll("[wintermolt] Gateway sidecar exited\n");
+        const host = compat.getenv("WINTERMOLT_GATEWAY_HOST") orelse "127.0.0.1";
+        var key_hex: [32]u8 = undefined;
+        const key = serverSecret(stderr, "gateway", "WINTERMOLT_GATEWAY_KEY", &key_hex);
+        var gw_agent: GatewayAgent = .{ .agent = &agent };
+        var srv = gateway_server.Server.init(std.heap.c_allocator, host, port, key, gw_agent.api()) catch |e| {
+            try stderr.print("[gateway] Cannot listen on {s}:{d}: {s}\n", .{ host, port, @errorName(e) });
+            std.process.exit(1);
+        };
+        defer srv.deinit();
+        try stderr.print("[gateway] OpenAI-compatible API at http://{s}:{d}/v1\n[gateway] API key: {s}\n", .{ host, srv.port(), key });
+        if (!(std.mem.startsWith(u8, host, "127.") or std.mem.eql(u8, host, "::1")))
+            try stderr.writeAll("[gateway] Reachable beyond this machine, over plain HTTP: whoever has the key can drive the agent. Use Tailscale or a network you trust.\n");
+        srv.run();
         return;
     }
 
@@ -947,6 +942,73 @@ const TuiRunner = struct {
         const self: *TuiRunner = @ptrCast(@alignCast(ctx));
         const b = self.agent.getBackendInfo();
         return .{ .backend = b.name, .model = b.model };
+    }
+};
+
+/// The secret a server mode asks for: `env` (16+ characters), else 32 random
+/// hex digits in `buf`. It is all that stands between the network and bash,
+/// so a short one, or no random source, stops the start.
+fn serverSecret(stderr: anytype, comptime tag: []const u8, comptime env: []const u8, buf: *[32]u8) []const u8 {
+    if (compat.getenv(env)) |t| {
+        if (t.len >= 16) return t;
+        stderr.writeAll("[" ++ tag ++ "] " ++ env ++ " must be at least 16 characters\n") catch {};
+        std.process.exit(1);
+    }
+    var raw: [16]u8 = undefined;
+    if (!fsio.randomBytes(&raw)) {
+        stderr.writeAll("[" ++ tag ++ "] No random source; set " ++ env ++ "\n") catch {};
+        std.process.exit(1);
+    }
+    buf.* = std.fmt.bytesToHex(raw, .lower);
+    return buf;
+}
+
+/// --gateway's view of the agent: the client's messages in, text out. Nothing
+/// is saved: the client sends the whole conversation with every request.
+const GatewayAgent = struct {
+    agent: *loop_mod.AgentLoop,
+    label: [160]u8 = undefined,
+
+    fn api(self: *GatewayAgent) gateway_server.Agent {
+        return .{ .ctx = self, .answer = answer, .model = model };
+    }
+
+    fn answer(ctx: *anyopaque, chat: *const gateway_server.Chat, out: *const fn ([]const u8) void) []const u8 {
+        const self: *GatewayAgent = @ptrCast(@alignCast(ctx));
+        self.agent.loadTurns(chat.history) catch |e| return @errorName(e);
+        self.agent.conversation_id = null;
+        self.agent.stream_callback = out;
+        defer self.agent.stream_callback = null;
+        self.agent.processInput(chat.prompt) catch |e| return @errorName(e);
+        if (!self.agent.turn_failed) return "";
+        return if (self.agent.turn_error.len > 0) self.agent.turn_error else "TurnFailed";
+    }
+
+    fn model(ctx: *anyopaque) []const u8 {
+        const self: *GatewayAgent = @ptrCast(@alignCast(ctx));
+        const b = self.agent.getBackendInfo();
+        return std.fmt.bufPrint(&self.label, "{s}:{s}", .{ b.name, b.model }) catch b.name;
+    }
+};
+
+/// The REPL's commands for --web pages. The bridge calls this holding its lock,
+/// so the agent and `alloc` (an arena) are never used by two threads at once.
+const WebCommands = struct {
+    agent: *loop_mod.AgentLoop,
+    alloc: std.mem.Allocator,
+    session_mgr: *session_mod.SessionManager,
+
+    fn commands(self: *WebCommands) web_bridge.Commands {
+        return .{ .ctx = self, .run = run };
+    }
+
+    fn run(ctx: *anyopaque, line: []const u8, out: *std.Io.Writer) anyerror!bool {
+        const self: *WebCommands = @ptrCast(@alignCast(ctx));
+        var no_stdin: NoStdin = .{};
+        return switch (try dispatchCommand(self.agent, self.alloc, self.session_mgr, out, out, &no_stdin, line)) {
+            .prompt => false,
+            .quit, .handled => true,
+        };
     }
 };
 

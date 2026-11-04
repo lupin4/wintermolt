@@ -793,6 +793,9 @@ wintermolt (one native binary, 1.6–14 MB)
 | `WINTERMOLT_WEB_PORT` | `3000` | `--web` port (`PORT` wins when both are set) |
 | `WINTERMOLT_WEB_HOST` | `127.0.0.1` | `--web` listen address; anything but loopback is reachable from other machines over plain HTTP |
 | `WINTERMOLT_WEB_TOKEN` | random each start | Fixed `--web` token (16+ characters), so a bookmarked link keeps working |
+| `WINTERMOLT_GATEWAY_PORT` | `8080` | `--gateway` port |
+| `WINTERMOLT_GATEWAY_HOST` | `127.0.0.1` | `--gateway` listen address; anything but loopback is reachable from other machines over plain HTTP |
+| `WINTERMOLT_GATEWAY_KEY` | random each start | Fixed `--gateway` API key (16+ characters), so clients keep working across restarts |
 | `TAILSCALE_API_KEY` | — | Tailscale REST API key (optional) |
 | `PINECONE_API_KEY` | — | Pinecone API key (enables RAG memory) |
 | `PINECONE_HOST` | — | Pinecone index host URL |

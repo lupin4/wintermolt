@@ -17,7 +17,7 @@ keep them running.
 | `--pairing <cmd>` | Chat access: `list`, `approve <platform> <code>`, `revoke <platform> <sender>`. |
 | `--web`          | Chat in a browser; wintermolt serves the page itself (see [Web UI](#web-ui)). |
 | `--menubar`      | macOS menu bar sidecar.                                  |
-| `--gateway`      | OpenAI-compatible HTTP gateway on `:8080`.               |
+| `--gateway`      | OpenAI-compatible API on `127.0.0.1:8080`, served by wintermolt itself (see [gateway](#openai-compatible-gateway)). |
 | `--mcp-server`   | JSON-RPC 2.0 MCP server over stdio (see [MCP.md](MCP.md)). |
 | `--extension <cmd>` | Plugin manager: `list`, `available`, `install`, `remove`. |
 
@@ -138,7 +138,8 @@ Per platform:
 
 Serves a chat page from the binary itself (no Node, nothing to install)
 and opens it in your browser. The page streams replies, shows each tool as
-it runs, and has panels for past conversations (read-only), skills, the
+it runs, and has panels for past conversations (open one to read it or
+carry on with it), skills, the
 workspace files (editable) and which API keys are set (never their values).
 
 It prints the link to open:
@@ -159,9 +160,13 @@ browser, so a reload works; a new wintermolt start makes a new one.
 | `WINTERMOLT_HEADLESS` | | Set it to skip opening a browser (also skipped on Cloud Run) |
 
 One agent serves every open page, one message at a time; a second page
-waits while the first one's reply runs. Commands in the page: `/new`,
-`/model [backend] [model]`, `/skill [name] [what to do]`, `/help`. The
-rest work in the terminal.
+waits while the first one's reply runs. The terminal's commands work in
+the page (`/help` lists them), except `/keys`, which would show part of a
+key, and `/quit`. Commands that use a camera, microphone or speaker
+(`/look`, `/listen`, `/tts`) use the ones on the machine wintermolt runs on.
+
+A conversation carried on from History brings back what was said, not what
+its tools returned: tool results are not saved.
 
 ## macOS menu bar
 
@@ -178,15 +183,41 @@ Click the menu bar icon to chat without a terminal. macOS-only.
 ./wintermolt --gateway
 ```
 
-Listens on `:8080` (`WINTERMOLT_GATEWAY_PORT` changes it) and accepts `POST /v1/chat/completions` requests
-in the OpenAI Chat Completions format. Useful for routing existing
-OpenAI-client code through Wintermolt's backend dispatcher.
+An OpenAI-compatible API, served by the binary itself: point an OpenAI
+client (an SDK, Open WebUI, an editor plugin) at wintermolt and it gets the
+agent, tools included. It prints the base URL and the API key to use:
+
+```
+[gateway] OpenAI-compatible API at http://127.0.0.1:8080/v1
+[gateway] API key: …
+```
 
 ```bash
-curl http://localhost:8080/v1/chat/completions \
+curl http://127.0.0.1:8080/v1/chat/completions \
+  -H "Authorization: Bearer $KEY" \
   -H "Content-Type: application/json" \
-  -d '{"model": "ollama:qwen3:0.6b", "messages": [{"role": "user", "content": "hi"}]}'
+  -d '{"messages": [{"role": "user", "content": "hi"}], "stream": true}'
 ```
+
+- `POST /v1/chat/completions`, streamed (`"stream": true`, server-sent
+  events) or whole. `GET /v1/models` lists the one model it answers with.
+- It answers with wintermolt's own backend and model, whatever the request's
+  `model` says. Pick them with `WINTERMOLT_BACKEND` and `WINTERMOLT_MODEL`
+  (see [BACKENDS.md](BACKENDS.md)).
+- The client sends the whole conversation each time, and wintermolt keeps
+  none of it: gateway requests are not in History. A `system` message counts
+  as the user's (the agent keeps its own system prompt). Images and tool
+  messages in a request are dropped.
+- Without the key every request gets a 401. A web page cannot send the key
+  to another site without a CORS preflight, which the gateway never answers,
+  so a page you visit cannot drive the agent.
+- One request at a time; a second waits for the first.
+
+| Variable | Default | What it does |
+|---|---|---|
+| `WINTERMOLT_GATEWAY_PORT` | `8080` | Port |
+| `WINTERMOLT_GATEWAY_HOST` | `127.0.0.1` | Address to listen on. Anything but loopback is reachable from other machines over plain HTTP: put it behind TLS |
+| `WINTERMOLT_GATEWAY_KEY` | random each start | A fixed API key, 16 characters or more, so clients keep working across restarts |
 
 ## Scheduler
 
