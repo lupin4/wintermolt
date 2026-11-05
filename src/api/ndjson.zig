@@ -31,6 +31,11 @@ pub const NdjsonParser = struct {
     done_length: bool = false,
     /// Accumulated tool calls (Ollama sends complete tool_calls in one NDJSON line)
     tool_calls: ArrayList(ToolCall) = .empty,
+    /// The first bytes of the body as sent, for httpErrorText: an error body
+    /// is one JSON object, often with no newline to end its line.
+    raw_head: ArrayList(u8) = .empty,
+
+    const raw_head_cap = 4096;
 
     const ToolCall = struct {
         id: []u8,
@@ -48,6 +53,7 @@ pub const NdjsonParser = struct {
     pub fn deinit(self: *NdjsonParser) void {
         self.text_buf.deinit(self.alloc);
         self.line_buf.deinit(self.alloc);
+        self.raw_head.deinit(self.alloc);
         for (self.tool_calls.items) |tc| {
             self.alloc.free(tc.id);
             self.alloc.free(tc.name);
@@ -58,6 +64,8 @@ pub const NdjsonParser = struct {
 
     /// Feed a chunk of raw NDJSON data from curl.
     pub fn feed(self: *NdjsonParser, chunk: []const u8) !void {
+        const room = raw_head_cap - self.raw_head.items.len;
+        try self.raw_head.appendSlice(self.alloc, chunk[0..@min(room, chunk.len)]);
         for (chunk) |byte| {
             if (byte == '\n') {
                 if (self.line_buf.items.len > 0) {
@@ -68,6 +76,13 @@ pub const NdjsonParser = struct {
                 try self.line_buf.append(self.alloc, byte);
             }
         }
+    }
+
+    /// What a non-200 response said: Ollama's {"error":"..."} message, else up
+    /// to 500 bytes of the body ("" when it had none).
+    pub fn httpErrorText(self: *const NdjsonParser) []const u8 {
+        const body = std.mem.trim(u8, self.raw_head.items, " \t\r\n");
+        return sse.findJsonString(body, "error") orelse body[0..@min(body.len, 500)];
     }
 
     fn processLine(self: *NdjsonParser, line: []const u8) !void {

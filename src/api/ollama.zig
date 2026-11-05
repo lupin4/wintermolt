@@ -247,7 +247,12 @@ pub const OllamaClient = struct {
         }
         if (http_code != 200) {
             const stderr = stdio.stderr();
-            stderr.print("\n[ollama HTTP {d}] Request failed\n", .{http_code}) catch {};
+            const error_text = parser.httpErrorText();
+            if (error_text.len > 0) {
+                stderr.print("\n[ollama HTTP {d}] {s}\n", .{ http_code, error_text }) catch {};
+            } else {
+                stderr.print("\n[ollama HTTP {d}] Request failed\n", .{http_code}) catch {};
+            }
             return error.HttpError;
         }
 
@@ -623,4 +628,25 @@ test "loadBody: the model, keep_alive and num_ctx a chat request sends, and no p
     );
     var tiny: [8]u8 = undefined;
     try std.testing.expectError(error.WriteFailed, loadBody(&tiny, "qwen3:8b", "30m", 8192));
+}
+
+// The default backend and model on a fresh install: Ollama answers a model it
+// has not pulled with HTTP 404 and {"error":"model 'qwen3:8b' not found"}, and
+// that message is what says to pull it. The body may or may not end in "\n".
+test "http error: Ollama's own message is kept, with or without a newline" {
+    const alloc = std.testing.allocator;
+    for ([_][]const u8{ "{\"error\":\"model 'qwen3:8b' not found\"}", "{\"error\":\"model 'qwen3:8b' not found\"}\n" }) |body| {
+        var parser = ndjson.NdjsonParser.init(alloc, null);
+        defer parser.deinit();
+        try parser.feed(body);
+        try std.testing.expectEqualStrings("model 'qwen3:8b' not found", parser.httpErrorText());
+    }
+    // A body that is not JSON is shown as sent; no body at all is "".
+    var plain = ndjson.NdjsonParser.init(alloc, null);
+    defer plain.deinit();
+    try plain.feed("404 page not found\n");
+    try std.testing.expectEqualStrings("404 page not found", plain.httpErrorText());
+    var empty = ndjson.NdjsonParser.init(alloc, null);
+    defer empty.deinit();
+    try std.testing.expectEqualStrings("", empty.httpErrorText());
 }

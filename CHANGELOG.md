@@ -169,6 +169,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **A model Ollama does not have says so.** On a fresh install the default,
+  `qwen3:8b`, is often not pulled yet, and the error was
+  `[ollama HTTP 404] Request failed`. It now prints Ollama's own message:
+  `[ollama HTTP 404] model 'qwen3:8b' not found`.
 - **`--keys` no longer erases settings you added to `.env` by hand.** It
   rewrote `~/.wintermolt/.env` with only the keys it asks about, so a line
   such as `WINTERMOLT_STT_PROVIDER=deepgram`, the `/theme` choice, or a
