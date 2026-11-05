@@ -87,6 +87,8 @@ pub fn classify(tool_name: []const u8, result: []const u8) Status {
         std.mem.indexOf(u8, text, "is not permitted by current policy") != null) return .failed;
     // agent/control.zig: a command that was denied, unanswered or stopped.
     if (std.mem.startsWith(u8, text, "Not run:")) return .failed;
+    // tools/bash.zig: a command the stop killed.
+    if (std.mem.endsWith(u8, std.mem.trimEnd(u8, text, " \t\r\n"), "\n[stopped by the user]")) return .failed;
     const prefixes: []const []const u8 = if (std.mem.eql(u8, tool_name, "bash"))
         &bash_failure_prefixes
     else
@@ -134,4 +136,11 @@ test "a command that was not approved fails, whichever tool asked for it" {
     try testing.expectEqual(Status.failed, classify("bash", "Not run: the user denied this command."));
     try testing.expectEqual(Status.failed, classify("schedule", "Not run: the user stopped this reply."));
     try testing.expectEqual(Status.failed, classify("word_count", "Not run: nobody answered the approval request within 30 minutes."));
+}
+
+test "a command killed by a stop fails (tools/bash.zig ends its output so)" {
+    try testing.expectEqual(Status.failed, classify("bash", "partial output\n[exit code: 1]\n[stopped by the user]"));
+    try testing.expectEqual(Status.failed, classify("bash", "\n[exit code: -9]\n[stopped by the user]\r\n"));
+    // The words alone, in what a command printed, are not a stop.
+    try testing.expectEqual(Status.ok, classify("bash", "grep found: [stopped by the user]\nmore\n[exit code: 0]"));
 }
