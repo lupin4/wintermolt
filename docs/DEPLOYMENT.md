@@ -110,6 +110,31 @@ conversation idle for `WINTERMOLT_AGENT_IDLE_TIMEOUT` (30 minutes), or the
 oldest once `WINTERMOLT_MAX_AGENTS` (16) are open, is closed, and the next
 message starts it empty.
 
+**Commands and the queue.** A message that arrives while a reply runs waits
+its turn, 20 at most; past that the sender is asked to try again. These are
+answered at once by wintermolt and never reach the model:
+
+- `/stop` stops this conversation's reply and drops its waiting messages.
+  Direct messages share a conversation unless
+  `WINTERMOLT_CHAT_DM_SCOPE=per-peer`, so any direct sender can stop it.
+- `/new` (or `/reset`) starts the conversation over, in its turn.
+- `/status` says whether a reply is running and how many messages wait.
+- `/help` lists these.
+- `/approve <id> allow-once|allow-always|deny` answers an approval request.
+
+**Approving commands.** With `WINTERMOLT_BASH_APPROVAL=ask`, a shell command
+the agent wants to run is posted, with an id, to the conversation whose
+message started the reply. Only senders in `WINTERMOLT_CHAT_APPROVERS` (a
+`platform:id` list, or `*`) can answer; `/approve` from anyone else is
+ignored and logged. With no approvers set, every such command is refused at
+once. A request nobody answers in 30 minutes is a no.
+
+```bash
+WINTERMOLT_BASH_APPROVAL=ask \
+WINTERMOLT_CHAT_APPROVERS=telegram:123456789 \
+wintermolt --chat
+```
+
 This keeps conversations apart; it is not a wall between people. Anyone the
 bot answers can still use its tools on this host, `bash` and `memory_search`
 (which searches every stored conversation) among them. Admit only people you

@@ -126,6 +126,15 @@ main { overflow-y: auto; overflow-x: hidden; scroll-behavior: auto; }
 .tool.done { border-left-color: var(--ok); }
 .tool.failed { border-left-color: var(--err); }
 .tool.failed span { color: var(--err); }
+.approval {
+  border-left: 2px solid var(--warning);
+  padding: 4px 10px 8px;
+  margin: 8px 0;
+  font: 14px/1.5 var(--sans);
+}
+.approval code { display: block; font: 13px/1.5 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; margin: 4px 0 8px; }
+.approval .choices { display: flex; flex-wrap: wrap; gap: 6px; }
+.approval .answered { color: var(--muted); }
 .notice { font: 14px/1.5 var(--mono); color: var(--muted); white-space: pre-wrap; margin: 4px 0 8px; }
 .error { font: 15px/1.5 var(--sans); color: var(--err); margin: 6px 0 10px; }
 .working { font: 14px/1.5 var(--sans); color: var(--muted); }

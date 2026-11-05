@@ -11,6 +11,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const fsio = @import("../fsio.zig");
 const stdio = @import("../stdio.zig");
+const control = @import("../agent/control.zig");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 const Child = std.process.Child;
@@ -59,7 +60,7 @@ fn executeHost(alloc: Allocator, command: []const u8) ![]u8 {
         &[_][]const u8{ "cmd.exe", "/c", cmd_z }
     else
         &[_][]const u8{ "/bin/sh", "-l", "-c", cmd_z };
-    const run = try fsio.runCapture(alloc, argv, MAX_OUTPUT, null);
+    const run = try fsio.runCaptureCancelable(alloc, argv, MAX_OUTPUT, null, control.stopRequested);
     defer run.deinit(alloc);
 
     const stdout = run.stdout;
@@ -87,6 +88,7 @@ fn executeHost(alloc: Allocator, command: []const u8) ![]u8 {
     if (exit_code != 0) {
         try w.print("\n[exit code: {d}]", .{exit_code});
     }
+    if (control.stopRequested()) try w.writeAll("\n[stopped by the user]");
 
     if (result.written().len == 0) {
         try w.writeAll("[no output]");

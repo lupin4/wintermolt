@@ -23,8 +23,10 @@ const compat = @import("compat.zig");
 const ArrayList = std.ArrayList;
 const config_mod = @import("agent/config.zig");
 const loop_mod = @import("agent/loop.zig");
+const control = @import("agent/control.zig");
 const chat_bridge = @import("chat/bridge.zig");
 const chat_access = @import("chat/access.zig");
+const chat_queue = @import("chat/queue.zig");
 const web_bridge = @import("web/bridge.zig");
 const web_server = @import("web/server.zig");
 const builtin = @import("builtin");
@@ -408,7 +410,10 @@ pub fn main(init: std.process.Init) !void {
             if (chat_policy.require_mention) ", mention required" else "",
         });
 
-        var bridge = chat_bridge.ChatBridge.init(alloc) catch |e| {
+        // The sidecar is read on its own thread (ChatReader) while replies run
+        // here, so the bridge, the queue and the reader allocate from
+        // c_allocator: main's arena is not thread-safe.
+        var bridge = chat_bridge.ChatBridge.init(std.heap.c_allocator) catch |e| {
             try stderr.print("[wintermolt] Failed to start chat sidecar: {s}\n", .{@errorName(e)});
             std.process.exit(1);
         };
@@ -428,112 +433,23 @@ pub fn main(init: std.process.Init) !void {
             try stderr.print("[wintermolt] Loaded {d} routing bindings\n", .{router.bindings.items.len});
         }
 
-        while (bridge.readMessage()) |msg| {
-            try stderr.print("[{s}] {s}: {s}\n", .{ msg.platform, msg.from, msg.text });
+        var queue = chat_queue.Queue.init(std.heap.c_allocator);
+        defer queue.deinit();
+        var reader: ChatReader = .{ .bridge = &bridge, .policy = &chat_policy, .store = &access_store, .router = &router, .queue = &queue };
+        var chat_asker: ChatAsker = .{ .bridge = &bridge };
+        control.setAsker(chat_asker.asker());
+        const reader_thread = std.Thread.spawn(.{}, ChatReader.run, .{&reader}) catch |e| {
+            try stderr.print("[chat] Cannot start the reader: {s}\n", .{@errorName(e)});
+            std.process.exit(1);
+        };
+        defer reader_thread.join();
 
-            // Approvals count only for direct messages under the pairing
-            // policy, so the store is read only then. A store that cannot be
-            // read approves no one.
-            const approved = if (msg.chat_type == .direct and chat_policy.dm == .pairing)
-                access_store.isApproved(msg.platform, msg.from) catch |e| blk: {
-                    try stderr.print("[chat] Pairing store: {s}; {s}:{s} treated as not approved\n", .{ @errorName(e), msg.platform, msg.from });
-                    break :blk false;
-                }
-            else
-                false;
-            const inbound = chat_access.Inbound{
-                .platform = msg.platform,
-                .from = msg.from,
-                .channel = msg.channel,
-                .guild = msg.guild,
-                .chat_type = msg.chat_type,
-                .mentioned = msg.mentioned,
-            };
-            switch (chat_access.decide(&chat_policy, inbound, approved)) {
-                .process => {},
-                .drop => |why| {
-                    try stderr.print("[chat] Ignored {s}:{s}: {s}\n", .{ msg.platform, msg.from, why.describe() });
-                    continue;
-                },
-                .pair => {
-                    const outcome = access_store.requestPairing(msg.platform, msg.from, msg.from_name, fsio.timestamp()) catch |e| {
-                        try stderr.print("[chat] Pairing store: {s}; {s}:{s} ignored\n", .{ @errorName(e), msg.platform, msg.from });
-                        continue;
-                    };
-                    switch (outcome) {
-                        .issued => |code| {
-                            const reply = try chat_access.pairingReply(alloc, msg.platform, msg.from, &code);
-                            defer alloc.free(reply);
-                            bridge.sendReplyThreaded(msg.platform, msg.channel, reply, msg.thread_id) catch |e| {
-                                try stderr.print("[Error] Reply failed: {s}\n", .{@errorName(e)});
-                            };
-                            try stderr.print("[chat] Pairing code sent to {s}:{s}. Approve with: wintermolt --pairing approve {s} {s}\n", .{ msg.platform, msg.from, msg.platform, code });
-                        },
-                        .pending => try stderr.print("[chat] Ignored {s}:{s}: pairing code already sent, not yet approved\n", .{ msg.platform, msg.from }),
-                        .full => try stderr.print("[chat] Ignored {s}:{s}: {s} already has {d} pending pairing requests\n", .{ msg.platform, msg.from, msg.platform, chat_access.MAX_PENDING_PER_PLATFORM }),
-                    }
-                    continue;
-                },
-            }
-
-            // Build routing context from the incoming message
-            const route_ctx = router_mod.RouteContext{
-                .platform = msg.platform,
-                .from = msg.from,
-                .channel = msg.channel,
-                .thread_id = msg.thread_id,
-                .guild = msg.guild,
-                .roles = msg.roles,
-            };
-
-            // Resolve which agent should handle this message
-            const route = router.resolve(&route_ctx);
-
-            // One pooled conversation per session: a group never shares the
-            // DM history (chat_access.sessionKey).
-            const session_key = try chat_access.sessionKey(alloc, &chat_policy, route.agent_id, inbound);
-            defer alloc.free(session_key);
-            // shortcut: an evicted session (idle 30m, or past WINTERMOLT_MAX_AGENTS) restarts empty; resume it from storage when sessions must outlive the pool.
-            const routed_agent = pool.getOrCreate(session_key) catch |e| {
-                try stderr.print("[Error] Agent pool failed: {s}\n", .{@errorName(e)});
-                continue;
-            };
-            // Only the agent's own DM session is private: MEMORY.md stays
-            // out of groups and per-peer sessions (agent/workspace.zig).
-            routed_agent.private = std.mem.eql(u8, session_key, route.agent_id);
-
-            // Ensure agent has a conversation started
-            if (routed_agent.conversation_id == null) {
-                routed_agent.startConversation();
-            }
-
-            // Track session
-            const session_id = chat_sessions.getOrCreateSession(
-                route.agent_id,
-                msg.platform,
-                msg.channel,
-                msg.from,
-            ) catch null;
-            if (session_id) |sid| {
-                chat_sessions.recordMessage(sid);
-                alloc.free(sid);
-            }
-
-            var response_buf: ArrayList(u8) = .empty;
-            defer response_buf.deinit(alloc);
-
-            routed_agent.processInputCapture(msg.text, &response_buf) catch |e| {
-                try stderr.print("[Error] Agent {s} failed: {s}\n", .{ route.agent_id, @errorName(e) });
-                continue;
-            };
-
-            if (response_buf.items.len > 0) {
-                // To the conversation, not the person: in a group, `from` is
-                // a member and `channel` is the group.
-                bridge.sendReplyThreaded(msg.platform, msg.channel, response_buf.items, msg.thread_id) catch |e| {
-                    try stderr.print("[Error] Reply failed: {s}\n", .{@errorName(e)});
-                };
-            }
+        while (queue.pop()) |job| {
+            defer job.destroy();
+            defer queue.finish();
+            chat_asker.job = job;
+            defer chat_asker.job = null;
+            runChatJob(alloc, &pool, &chat_sessions, &bridge, job);
         }
 
         try stderr.writeAll("[wintermolt] Chat sidecar exited\n");
@@ -553,6 +469,7 @@ pub fn main(init: std.process.Init) !void {
 
         var web_cmds: WebCommands = .{ .agent = &agent, .alloc = alloc, .session_mgr = &session_mgr };
         var bridge: web_bridge.WebBridge = .{ .agent = &agent, .commands = web_cmds.commands() };
+        control.setAsker(bridge.asker());
         var srv = web_server.Server.init(std.heap.c_allocator, host, port, token, bridge.handler()) catch |e| {
             try stderr.print("[web] Cannot listen on {s}:{d}: {s}\n", .{ host, port, @errorName(e) });
             std.process.exit(1);
@@ -617,7 +534,13 @@ pub fn main(init: std.process.Init) !void {
     // Single-shot mode
     if (exec_prompt) |prompt| {
         agent.startConversation();
+        var e_stdin = stdio.stdinReader();
+        var e_asker: LineAsker = .{ .stdin = &e_stdin };
+        control.setAsker(e_asker.asker());
+        installCtrlC();
+        control.beginRun();
         try agent.processInput(prompt);
+        control.endRun();
         // Nothing answered: a script running `-e` sees only the exit status.
         // The agent is freed first because exit() runs static destructors,
         // and the kernel backend must be gone before ggml-metal's runs.
@@ -650,6 +573,9 @@ pub fn main(init: std.process.Init) !void {
     var stdin_reader = stdio.stdinReader();
     const stdin = &stdin_reader;
     var line_buf: [8192]u8 = undefined;
+    var repl_asker: LineAsker = .{ .stdin = stdin };
+    control.setAsker(repl_asker.asker());
+    installCtrlC();
 
     while (true) {
         // Tick scheduler (runs due jobs)
@@ -667,6 +593,10 @@ pub fn main(init: std.process.Init) !void {
 
         const trimmed = std.mem.trim(u8, line, " \t\r");
         if (trimmed.len == 0) continue;
+
+        // Ctrl+C from here to the next prompt stops the reply instead of quitting.
+        control.beginRun();
+        defer control.endRun();
 
         // REPL commands
         switch (try dispatchCommand(&agent, alloc, &session_mgr, stdout, stderr, stdin, trimmed)) {
@@ -893,6 +823,274 @@ fn handleThemeCmd(alloc: std.mem.Allocator, w: anytype, err_w: anytype, arg: []c
     try w.print("Theme set to {s} and saved to ~/.wintermolt/.env. It applies to the full-screen view and the canvas.\n", .{name});
 }
 
+/// --chat's reader: every sidecar line, on its own thread, so messages are
+/// read while a reply runs. Access is decided here; a command (/stop, /help...)
+/// is answered here; anything else waits in the queue for runChatJob.
+const ChatReader = struct {
+    bridge: *chat_bridge.ChatBridge,
+    policy: *const chat_access.Policy,
+    store: *chat_access.Store,
+    router: *router_mod.Router,
+    queue: *chat_queue.Queue,
+
+    fn run(self: *ChatReader) void {
+        defer self.queue.close();
+        while (self.bridge.readMessage()) |msg| self.handle(msg) catch |e| {
+            stdio.stderr().print("[chat] {s}:{s}: {s}\n", .{ msg.platform, msg.from, @errorName(e) }) catch {};
+        };
+    }
+
+    fn reply(self: *ChatReader, msg: chat_bridge.ChatMessage, text: []const u8) void {
+        self.bridge.sendReplyThreaded(msg.platform, msg.channel, text, msg.thread_id) catch |e| {
+            stdio.stderr().print("[Error] Reply failed: {s}\n", .{@errorName(e)}) catch {};
+        };
+    }
+
+    fn handle(self: *ChatReader, msg: chat_bridge.ChatMessage) !void {
+        const gpa = std.heap.c_allocator;
+        const stderr = stdio.stderr();
+        try stderr.print("[{s}] {s}: {s}\n", .{ msg.platform, msg.from, msg.text });
+
+        // Approvals count only for direct messages under the pairing
+        // policy, so the store is read only then. A store that cannot be
+        // read approves no one.
+        const approved = if (msg.chat_type == .direct and self.policy.dm == .pairing)
+            self.store.isApproved(msg.platform, msg.from) catch |e| blk: {
+                try stderr.print("[chat] Pairing store: {s}; {s}:{s} treated as not approved\n", .{ @errorName(e), msg.platform, msg.from });
+                break :blk false;
+            }
+        else
+            false;
+        const inbound = chat_access.Inbound{
+            .platform = msg.platform,
+            .from = msg.from,
+            .channel = msg.channel,
+            .guild = msg.guild,
+            .chat_type = msg.chat_type,
+            .mentioned = msg.mentioned,
+        };
+        switch (chat_access.decide(self.policy, inbound, approved)) {
+            .process => {},
+            .drop => |why| return stderr.print("[chat] Ignored {s}:{s}: {s}\n", .{ msg.platform, msg.from, why.describe() }),
+            .pair => {
+                const outcome = self.store.requestPairing(msg.platform, msg.from, msg.from_name, fsio.timestamp()) catch |e| {
+                    return stderr.print("[chat] Pairing store: {s}; {s}:{s} ignored\n", .{ @errorName(e), msg.platform, msg.from });
+                };
+                switch (outcome) {
+                    .issued => |code| {
+                        const text = try chat_access.pairingReply(gpa, msg.platform, msg.from, &code);
+                        defer gpa.free(text);
+                        self.reply(msg, text);
+                        try stderr.print("[chat] Pairing code sent to {s}:{s}. Approve with: wintermolt --pairing approve {s} {s}\n", .{ msg.platform, msg.from, msg.platform, code });
+                    },
+                    .pending => try stderr.print("[chat] Ignored {s}:{s}: pairing code already sent, not yet approved\n", .{ msg.platform, msg.from }),
+                    .full => try stderr.print("[chat] Ignored {s}:{s}: {s} already has {d} pending pairing requests\n", .{ msg.platform, msg.from, msg.platform, chat_access.MAX_PENDING_PER_PLATFORM }),
+                }
+                return;
+            },
+        }
+
+        // Which agent, and which of its conversations: a group never shares
+        // the DM history (chat_access.sessionKey).
+        const route = self.router.resolve(&.{
+            .platform = msg.platform,
+            .from = msg.from,
+            .channel = msg.channel,
+            .thread_id = msg.thread_id,
+            .guild = msg.guild,
+            .roles = msg.roles,
+        });
+        const session_key = try chat_access.sessionKey(gpa, self.policy, route.agent_id, inbound);
+        defer gpa.free(session_key);
+
+        var is_new = false;
+        if (chat_queue.command(msg.text)) |cmd| switch (cmd) {
+            .stop => {
+                const r = self.queue.stopSession(session_key);
+                return self.reply(msg, if (r.was_running) "Stopped." else if (r.dropped > 0) "Dropped your waiting messages." else "Nothing is running.");
+            },
+            .status => {
+                var buf: [96]u8 = undefined;
+                return self.reply(msg, std.fmt.bufPrint(&buf, "{s} Messages waiting: {d}.", .{
+                    if (self.queue.isRunning(session_key)) "Working on your reply." else "Not working on your reply.",
+                    self.queue.waiting(),
+                }) catch "?");
+            },
+            .help => return self.reply(msg, chat_queue.help_text),
+            .approve => {
+                const a = control.parseApprove(msg.text) orelse
+                    return self.reply(msg, "Use: /approve <id> allow-once|allow-always|deny");
+                // OpenClaw ignores command-only messages from senders who may not run them.
+                if (!chat_access.listed(compat.getenv("WINTERMOLT_CHAT_APPROVERS") orelse "", msg.platform, msg.from))
+                    return stderr.print("[chat] /approve from {s}:{s} ignored: not in WINTERMOLT_CHAT_APPROVERS\n", .{ msg.platform, msg.from });
+                if (!control.answer(a.id, a.decision)) return self.reply(msg, "No request with that id is waiting.");
+                return self.reply(msg, switch (a.decision) {
+                    .allow_once => "Approved.",
+                    .allow_always => "Approved, until wintermolt restarts.",
+                    .deny => "Denied.",
+                });
+            },
+            // Waits its turn: it changes the agent a reply may be using.
+            .new => is_new = true,
+        };
+
+        const job = try chat_queue.Job.create(gpa, .{
+            .platform = msg.platform,
+            .from = msg.from,
+            .channel = msg.channel,
+            .thread_id = msg.thread_id,
+            .text = msg.text,
+            .agent_id = route.agent_id,
+            .session_key = session_key,
+            // Only the agent's own DM session is private: MEMORY.md stays
+            // out of groups and per-peer sessions (agent/workspace.zig).
+            .private = std.mem.eql(u8, session_key, route.agent_id),
+            .is_new = is_new,
+        });
+        if (!try self.queue.push(job)) {
+            job.destroy();
+            try stderr.print("[chat] Queue full ({d}); {s}:{s} turned away\n", .{ self.queue.cap, msg.platform, msg.from });
+            self.reply(msg, "Too many messages are waiting. Try again in a moment.");
+        }
+    }
+};
+
+/// One queued chat message, answered. On the main thread, the only one that
+/// touches the agents.
+fn runChatJob(
+    alloc: std.mem.Allocator,
+    pool: *pool_mod.AgentPool,
+    chat_sessions: *session_mod.SessionManager,
+    bridge: *chat_bridge.ChatBridge,
+    job: *const chat_queue.Job,
+) void {
+    const stderr = stdio.stderr();
+    // shortcut: an evicted session (idle 30m, or past WINTERMOLT_MAX_AGENTS) restarts empty; resume it from storage when sessions must outlive the pool.
+    const agent = pool.getOrCreate(job.session_key) catch |e| {
+        stderr.print("[Error] Agent pool failed: {s}\n", .{@errorName(e)}) catch {};
+        return;
+    };
+    agent.private = job.private;
+    const reply_to = struct {
+        fn send(b: *chat_bridge.ChatBridge, j: *const chat_queue.Job, text: []const u8) void {
+            // To the conversation, not the person: in a group, `from` is a
+            // member and `channel` is the group.
+            b.sendReplyThreaded(j.platform, j.channel, text, j.thread_id) catch |e| {
+                stdio.stderr().print("[Error] Reply failed: {s}\n", .{@errorName(e)}) catch {};
+            };
+        }
+    }.send;
+
+    if (job.is_new) {
+        agent.archiveAndReset();
+        return reply_to(bridge, job, "New conversation.");
+    }
+    if (agent.conversation_id == null) agent.startConversation();
+    if (chat_sessions.getOrCreateSession(job.agent_id, job.platform, job.channel, job.from) catch null) |sid| {
+        chat_sessions.recordMessage(sid);
+        alloc.free(sid);
+    }
+
+    var response_buf: ArrayList(u8) = .empty;
+    defer response_buf.deinit(alloc);
+    agent.processInputCapture(job.text, &response_buf) catch |e| {
+        stderr.print("[Error] Agent {s} failed: {s}\n", .{ job.agent_id, @errorName(e) }) catch {};
+        return;
+    };
+    // Stopped: the reader already said so; half a reply is not one.
+    if (agent.turn_failed and std.mem.eql(u8, agent.turn_error, "Stopped")) return;
+    if (response_buf.items.len > 0) reply_to(bridge, job, response_buf.items);
+}
+
+/// --chat's question before a command runs: to the conversation whose message
+/// started the reply. Only WINTERMOLT_CHAT_APPROVERS may answer (ChatReader);
+/// with none set, nobody can, so the command is refused at once.
+const ChatAsker = struct {
+    bridge: *chat_bridge.ChatBridge,
+    /// The message being answered; set by the main loop for each job.
+    job: ?*const chat_queue.Job = null,
+
+    fn asker(self: *ChatAsker) control.Asker {
+        return .{ .ctx = self, .post = post };
+    }
+
+    fn post(ctx: *anyopaque, id: []const u8, command: []const u8) void {
+        const self: *ChatAsker = @ptrCast(@alignCast(ctx));
+        const job = self.job orelse {
+            _ = control.answer(id, .deny);
+            return;
+        };
+        const gpa = std.heap.c_allocator;
+        const approvers = compat.getenv("WINTERMOLT_CHAT_APPROVERS") orelse "";
+        const text = if (approvers.len == 0)
+            std.fmt.allocPrint(gpa, "Not running a command ({s}): nobody may approve commands from chat. Set WINTERMOLT_CHAT_APPROVERS to who may (platform:id, comma-separated).", .{command})
+        else
+            std.fmt.allocPrint(gpa, "Approval needed to run:\n{s}\n\nReply /approve {s} allow-once, /approve {s} allow-always or /approve {s} deny", .{ command, id, id, id });
+        if (text) |t| {
+            defer gpa.free(t);
+            self.bridge.sendReplyThreaded(job.platform, job.channel, t, job.thread_id) catch {};
+        } else |_| {}
+        if (approvers.len == 0) _ = control.answer(id, .deny);
+    }
+};
+
+/// The plain REPL's and -e's question before a command runs: on stderr, the
+/// answer a line of stdin. End of input means no, so a piped -e never hangs.
+const LineAsker = struct {
+    stdin: *stdio.FileReader,
+
+    fn asker(self: *LineAsker) control.Asker {
+        return .{ .ctx = self, .post = post };
+    }
+
+    fn post(ctx: *anyopaque, id: []const u8, command: []const u8) void {
+        const self: *LineAsker = @ptrCast(@alignCast(ctx));
+        const err = stdio.stderr();
+        control.writeQuestion(err, command) catch {};
+        var buf: [256]u8 = undefined;
+        while (true) {
+            err.writeAll("> ") catch {};
+            const line = self.stdin.readUntilDelimiter(&buf, '\n') catch break;
+            if (control.parseAnswer(line)) |d| {
+                _ = control.answer(id, d);
+                return;
+            }
+            err.writeAll("(answer y, a or n)\n") catch {};
+        }
+        _ = control.answer(id, .deny);
+    }
+};
+
+/// Ctrl+C in the plain REPL and -e: during a reply it stops the reply; at the
+/// prompt it quits, as it always has. (The TUI reads Ctrl+C as a key.)
+fn installCtrlC() void {
+    if (comptime builtin.os.tag == .windows) {
+        _ = SetConsoleCtrlHandler(&onConsoleCtrl, 1);
+    } else {
+        const act: std.posix.Sigaction = .{
+            .handler = .{ .handler = onSigint },
+            .mask = std.posix.sigemptyset(),
+            .flags = std.posix.SA.RESTART,
+        };
+        std.posix.sigaction(.INT, &act, null);
+    }
+}
+
+extern "kernel32" fn SetConsoleCtrlHandler(handler: ?*const fn (u32) callconv(.winapi) c_int, add: c_int) callconv(.winapi) c_int;
+
+/// Its own thread. Non-zero: handled; zero: the default, which ends the process.
+fn onConsoleCtrl(ctrl_type: u32) callconv(.winapi) c_int {
+    const ctrl_c_event = 0;
+    if (ctrl_type != ctrl_c_event or !control.runActive()) return 0;
+    control.requestStop();
+    return 1;
+}
+
+fn onSigint(_: std.posix.SIG) callconv(.c) void {
+    if (control.runActive()) return control.requestStop();
+    std.c._exit(130);
+}
+
 /// What the TUI drives: the REPL's own dispatch, on the TUI's worker thread.
 /// Handlers and the agent write through stdio.stdout()/stderr(), which the
 /// session's sink routes into the transcript.
@@ -1042,6 +1240,8 @@ fn runTui(
     var session = tui.Session.init(gpa, runner.runner(), VERSION);
     defer session.deinit();
     session.theme = theme_choice.name;
+    control.setAsker(session.asker());
+    defer control.setAsker(null);
 
     // Due jobs, as the REPL runs them before its first prompt -- before the
     // screen is taken, so anything they print reaches the normal console.
@@ -1893,6 +2093,8 @@ fn printHelp(w: anytype) !void {
         \\  WINTERMOLT_CHAT_REQUIRE_MENTION=0  Answer group messages without a mention
         \\  WINTERMOLT_CHAT_DM_SCOPE      main (default: DMs share one conversation) | per-peer
         \\                                (each sender their own); every group has its own
+        \\  WINTERMOLT_CHAT_APPROVERS     Who may /approve commands from chat
+        \\  In chat, /stop /new /status /help /approve are answered by wintermolt.
         \\
         \\Environment:
         \\  ANTHROPIC_API_KEY    — Claude API key (optional)
@@ -1900,6 +2102,7 @@ fn printHelp(w: anytype) !void {
         \\                         openai, deepseek, qwen, gemini, kernel, forai.
         \\                         A name that cannot be built exits 1
         \\  WINTERMOLT_MODEL     — Default model
+        \\  WINTERMOLT_BASH_APPROVAL=ask — Ask before every shell command runs
         \\  OLLAMA_HOST          — Ollama URL (default: http://localhost:11434)
         \\  OPENAI_API_KEY       — OpenAI API key
         \\  WINTERMOLT_OPENAI_URL — OpenAI-compatible Chat Completions URL

@@ -515,6 +515,10 @@ sender's direct message gets a pairing code and goes no further until you run
 the bot mentioned. The rules and their `WINTERMOLT_CHAT_*` settings are in
 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#who-can-reach-the-agent).
 
+Messages that arrive during a reply wait their turn. `/stop`, `/new`,
+`/status`, `/help` and `/approve` are answered by wintermolt itself, not the
+model.
+
 ### Web UI
 
 ```bash
@@ -597,7 +601,9 @@ model and whether a request is running.
 | PgUp PgDn, ↑ ↓, Ctrl+↑ Ctrl+↓ | Scroll the transcript |
 | Mouse wheel | Scroll, where the terminal turns the wheel into ↑ ↓ (see below) |
 | Ctrl+L | Repaint the screen |
-| Esc, Ctrl+C, `/quit` | Exit and restore the terminal |
+| Esc | Stop the reply that is running; with none running, exit |
+| `/stop` | Stop the reply that is running |
+| Ctrl+C, `/quit` | Exit and restore the terminal (a running reply is stopped first) |
 
 **Selecting text.** The full-screen view leaves the mouse to your terminal, so
 click-and-drag selection and copy work as they do in any other program:
@@ -648,6 +654,7 @@ full-screen view use `/keys list`, or run `wintermolt --keys`.
 | `/help` | Show all commands |
 | `/quit` `/exit` | Exit the REPL |
 | `/clear` `/new` | Archive conversation and start fresh |
+| `/stop` | Stop the running reply (full-screen view and chat; Ctrl+C does it in the plain REPL and `-e`) |
 | `/model [name]` | Show or switch AI backend |
 | `/theme [name]` | List themes, or switch the full-screen view and canvas and save it |
 | `/look [prompt]` | Camera capture + AI vision |
@@ -788,6 +795,8 @@ wintermolt (one native binary, 1.6–14 MB)
 | `WINTERMOLT_NO_FALLBACK` | — | Set `1` so a failed request fails, instead of being answered by Ollama or OpenAI; `-e` then exits 1 |
 | `WINTERMOLT_NO_TOOLS` | — | Set `1` to send no tool definitions, for models without function calling |
 | `WINTERMOLT_MAX_ITERATIONS` | `25` | Model requests one turn may make before the agent stops; raise it for long multi-step tasks |
+| `WINTERMOLT_BASH_APPROVAL` | `off` | `ask`: every shell command waits for your yes first (see [docs/TOOLS.md](docs/TOOLS.md)) |
+| `WINTERMOLT_CHAT_APPROVERS` | — | Who may answer `/approve` from chat (`platform:id,...`); unset, `--chat` refuses every command it would ask about |
 | `WINTERMOLT_STALL_TIMEOUT` | `180` | Seconds a model request may receive nothing before it is dropped; a stream that keeps arriving is never cut off (`0` = never) |
 | `WINTERMOLT_WORKSPACE_DIR` | `~/.wintermolt/workspace` | Where `AGENTS.md`, `SOUL.md`, `USER.md`, `IDENTITY.md` and `MEMORY.md` are read from, every turn (see [Persistent Memory](#persistent-memory)) |
 | `WINTERMOLT_WEB_PORT` | `3000` | `--web` port (`PORT` wins when both are set) |

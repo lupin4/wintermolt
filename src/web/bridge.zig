@@ -12,12 +12,17 @@
 //   {"type":"skills"}                          {"type":"keys"}
 //   {"type":"workspace"}                       {"type":"workspace_read","name":"SOUL.md"}
 //   {"type":"workspace_write","name":"SOUL.md","content":"..."}
+//   {"type":"stop"}                            stop the reply running now
+//   {"type":"approve","approval_id":"a1b2c3","decision":"allow-once|allow-always|deny"}
+//       stop and approve come on a second socket: the page's own is busy with the reply
 // To the page:
 //   status {backend, model, busy}   token {id, text}   tool_start {id, tool, tool_id}
 //   tool_done {id, tool_id, ok}     notice {id, text}  error {id, error}   done {id}
 //   history {items}   transcript {conversation_id, text}   skills {items}   keys {items}
 //   resumed {id, items: [{role, text}]}
 //   workspace {dir, files}   workspace_file {name, content}
+//   approval {id, approval_id, command}: WINTERMOLT_BASH_APPROVAL=ask, the reply waits for an approve
+//   control {ok}: a stop or approve was taken (false: no question has that id any more)
 
 const std = @import("std");
 const fsio = @import("../fsio.zig");
@@ -27,6 +32,7 @@ const server = @import("server.zig");
 const loop_mod = @import("../agent/loop.zig");
 const skill_md = @import("../agent/skill_md.zig");
 const workspace = @import("../agent/workspace.zig");
+const control = @import("../agent/control.zig");
 
 /// Thread-safe, unlike the arena main gives the agent: pages are handled on their own threads.
 const gpa = std.heap.c_allocator;
@@ -42,6 +48,8 @@ const In = struct {
     conversation_id: []const u8 = "",
     name: []const u8 = "",
     content: ?[]const u8 = null,
+    approval_id: []const u8 = "",
+    decision: []const u8 = "",
 };
 
 /// The terminal's slash commands (main.zig's dispatchCommand, as the TUI runs
@@ -59,6 +67,17 @@ pub const WebBridge = struct {
 
     pub fn handler(self: *WebBridge) server.Handler {
         return .{ .ctx = self, .open = open, .message = message };
+    }
+
+    /// The question before a command runs, to the page whose reply wants it.
+    pub fn asker(self: *WebBridge) control.Asker {
+        return .{ .ctx = self, .post = postQuestion };
+    }
+
+    /// The reply's thread, so emit() reaches its page.
+    fn postQuestion(_: *anyopaque, id: []const u8, shell_command: []const u8) void {
+        flushCarry();
+        emit(.{ .type = "approval", .id = active_id, .approval_id = id, .command = shell_command });
     }
 
     fn open(ctx: *anyopaque) void {
@@ -82,6 +101,17 @@ pub const WebBridge = struct {
         if (eql(t, "workspace")) return sendWorkspace();
         if (eql(t, "workspace_read")) return readWorkspaceFile(m.name);
         if (eql(t, "workspace_write")) return writeWorkspaceFile(m.name, m.content orelse "");
+        // Without the lock: the reply holding it is what these act on.
+        if (eql(t, "stop")) {
+            control.requestStop();
+            return emit(.{ .type = "control", .ok = true });
+        }
+        if (eql(t, "approve")) {
+            const line = std.fmt.allocPrint(gpa, "/approve {s} {s}", .{ m.approval_id, m.decision }) catch return;
+            defer gpa.free(line);
+            const a = control.parseApprove(line) orelse return emit(.{ .type = "control", .ok = false });
+            return emit(.{ .type = "control", .ok = control.answer(a.id, a.decision) });
+        }
 
         self.busy.lockUncancelable(fsio.io());
         defer self.busy.unlock(fsio.io());
@@ -103,6 +133,7 @@ pub const WebBridge = struct {
     fn begin(self: *WebBridge, id: []const u8) void {
         if (self.agent.storage != null and self.agent.conversation_id == null) self.agent.startConversation();
         self.agent.turn_failed = false; // a command that runs no turn must not report the last one's failure
+        control.beginRun();
         active_id = id;
         carry_len = 0;
         self.agent.stream_callback = &onText;
@@ -116,6 +147,7 @@ pub const WebBridge = struct {
         self.agent.tool_start_callback = null;
         self.agent.tool_done_callback = null;
         active_id = "";
+        control.endRun();
         if (self.agent.turn_failed) emit(.{ .type = "error", .id = id, .@"error" = self.agent.turn_error });
         self.sendStatus();
         emit(.{ .type = "done", .id = id });

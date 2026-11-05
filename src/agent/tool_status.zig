@@ -85,6 +85,8 @@ pub fn classify(tool_name: []const u8, result: []const u8) Status {
     // agent/tools.zig checks policy before dispatching, for every tool.
     if (std.mem.startsWith(u8, text, "Tool '") and
         std.mem.indexOf(u8, text, "is not permitted by current policy") != null) return .failed;
+    // agent/control.zig: a command that was denied, unanswered or stopped.
+    if (std.mem.startsWith(u8, text, "Not run:")) return .failed;
     const prefixes: []const []const u8 = if (std.mem.eql(u8, tool_name, "bash"))
         &bash_failure_prefixes
     else
@@ -126,4 +128,10 @@ test "bash: only the tool's own refusals fail, not the command's output" {
 test "a policy refusal fails for every tool" {
     try testing.expectEqual(Status.failed, classify("bash", "Tool 'bash' is not permitted by current policy."));
     try testing.expectEqual(Status.failed, classify("web_search", "Tool 'web_search' is not permitted by current policy."));
+}
+
+test "a command that was not approved fails, whichever tool asked for it" {
+    try testing.expectEqual(Status.failed, classify("bash", "Not run: the user denied this command."));
+    try testing.expectEqual(Status.failed, classify("schedule", "Not run: the user stopped this reply."));
+    try testing.expectEqual(Status.failed, classify("word_count", "Not run: nobody answered the approval request within 30 minutes."));
 }

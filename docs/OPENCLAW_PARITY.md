@@ -3,6 +3,7 @@
 What [OpenClaw](https://docs.openclaw.ai) does that wintermolt does not, and the
 order we close it. Statuses come from reading wintermolt's code on 2026-11-03,
 not from its README; OpenClaw's side from docs.openclaw.ai the same day.
+Step 2's rows were updated on 2026-11-04.
 
 **Have** = works as OpenClaw's does. **Part** = exists, with the gap named.
 **No** = absent. **Out** = not planned for wintermolt (Wintermute or a
@@ -35,8 +36,8 @@ companion app is the place, or OpenClaw itself retired it).
 | Sessions persist on disk | a pooled session closed after 30 min idle restarts empty | Part | 2 |
 | Multi-agent routing by binding | `/route` bindings, agent pool | Have | |
 | `requireMention`, `/activation mention\|always` | `WINTERMOLT_CHAT_REQUIRE_MENTION`, global, startup only | Part | 2 |
-| Queue while busy: `/queue`, `/followup`, `/steer` | one blocking read loop; a slow run holds every platform | No | 2 |
-| Slash commands from a chat message | chat text goes to the model as is | No | 2 |
+| Queue while busy: `/queue`, `/followup`, `/steer` | followup only: messages wait (20 at most) and are answered in order; no `/queue`, steer or collect | Part | 2 |
+| Slash commands from a chat message | `/stop`, `/new`, `/reset`, `/status`, `/help`, `/approve`; any other text goes to the model | Part | 2 |
 | Typing indicators | none | No | 5 |
 | Inbound media, voice-note transcription | attachments parsed, never read | No | 5 |
 | DM pairing, allowlists | pairing codes, `WINTERMOLT_CHAT_*` policies | Have | |
@@ -70,10 +71,10 @@ step 5.
 |---|---|---|---|
 | `/new`, `/reset` | `/new` = `/clear` | Have | |
 | `/compact` summarizes the conversation | drops the oldest messages | Part | 3 |
-| `/stop` | none; Esc quits the TUI | No | 2 |
+| `/stop` | `/stop` (full-screen view, chat), Esc (full-screen view, web page), Ctrl+C (plain REPL, `-e`) | Have | 2 |
 | `/status`, `/usage`, `/context` | `/stats` with a characters/3 estimate | No | 3 |
 | `/think`, `/reasoning`, `/verbose` | none | No | 3 |
-| `/elevated`, `/exec`, `/approve` | bash runs without asking | No | 2 |
+| `/elevated`, `/exec`, `/approve` | `WINTERMOLT_BASH_APPROVAL=ask`: `/approve` in chat, y/a/n in the terminal, buttons on the web page; no `/elevated`, `/exec` | Part | 2 |
 | `/model`, `/models` | `/model` | Part | 3 |
 | `/skill <name> [input]` | `/skill [name] [input]` | Have | 1 |
 | A skill's own slash command (`/<name>`) | none | No | 2 |

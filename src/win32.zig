@@ -230,6 +230,36 @@ pub fn runTiedToUs(process: HANDLE, thread: HANDLE) void {
     _ = ResumeThread(thread);
 }
 
+extern "kernel32" fn TerminateJobObject(hJob: HANDLE, uExitCode: u32) callconv(.winapi) c_int;
+extern "kernel32" fn TerminateProcess(hProcess: HANDLE, uExitCode: u32) callconv(.winapi) c_int;
+extern "kernel32" fn CloseHandle(hObject: HANDLE) callconv(.winapi) c_int;
+
+/// A job for one command, so a stop can end everything it started (cmd.exe
+/// alone would leave its children running). `process` was started suspended,
+/// for the same reason as runTiedToUs. Null if no job could be made; the
+/// command runs either way.
+pub fn runInOwnJob(process: HANDLE, thread: HANDLE) ?HANDLE {
+    defer _ = ResumeThread(thread);
+    const job = CreateJobObjectW(null, null) orelse return null;
+    if (AssignProcessToJobObject(job, process) == 0) {
+        _ = CloseHandle(job);
+        return null;
+    }
+    return job;
+}
+
+pub fn killJob(job: HANDLE) void {
+    _ = TerminateJobObject(job, 1);
+}
+
+pub fn closeJob(job: HANDLE) void {
+    _ = CloseHandle(job);
+}
+
+pub fn killProcess(process: HANDLE) void {
+    _ = TerminateProcess(process, 1);
+}
+
 // ── randomness ──────────────────────────────────────────────────────────────
 //
 // fsio's version goes to libc getentropy, which does not exist on Windows.

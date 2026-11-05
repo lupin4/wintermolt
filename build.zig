@@ -489,6 +489,23 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_env_tests.step);
     b.step("test-env", "Run the environment tests (setenv, .env, child processes)").dependOn(&run_env_tests.step);
 
+    // Stopping a run and asking before a command runs (agent/control.zig), and
+    // the bash tool killing its command on a stop. Its own root for the same
+    // reason; forTime for the clock the stop test times itself with. Also
+    // runnable alone as `zig build test-control`.
+    const control_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/control_tests.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+    });
+    addPrebuiltArchive(control_tests.root_module, b, "fortime", short_target);
+    const run_control_tests = b.addRunArtifact(control_tests);
+    test_step.dependOn(&run_control_tests.step);
+    b.step("test-control", "Run the stop and command-approval tests").dependOn(&run_control_tests.step);
+
     // `-e` end to end, on the real binary: a request no backend answers must
     // fail the process, or a script cannot tell it from an answer. The
     // environment is emptied (no key, no HOME, nothing of the user's) and

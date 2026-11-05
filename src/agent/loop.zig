@@ -36,6 +36,7 @@ const scheduler_mod = @import("scheduler.zig");
 const camera_tool = @import("../tools/camera.zig");
 const workspace = @import("workspace.zig");
 const skill_md = @import("skill_md.zig");
+const control = @import("control.zig");
 
 // Output leak guard (redact.zig): per-reply redactor + inner callback at module
 // scope (TextCallback carries no userdata). Replies are sequential per process.
@@ -375,6 +376,7 @@ pub const AgentLoop = struct {
         var asked_again = false;
         const max_iterations: usize = @max(1, self.config.max_iterations);
         while (iteration < max_iterations) : (iteration += 1) {
+            if (control.stopRequested()) return self.stopTurn();
             // Fire voice start callback on first iteration
             if (iteration == 0) {
                 if (self.voice_start_callback) |cb| cb();
@@ -389,6 +391,7 @@ pub const AgentLoop = struct {
                 text_cb,
                 relevant_tools,
             ) catch |e| {
+                if (control.stopRequested()) return self.stopTurn();
                 if (e == error.ContextOverflow) {
                     try stderr.writeAll("\n[Context pressure] Compacting history...\n");
                     self.history.emergencyCompact();
@@ -515,6 +518,14 @@ pub const AgentLoop = struct {
         try stderr.print("[Warning] Hit max iterations ({d})\n", .{max_iterations});
     }
 
+    /// The reply ends here, at the user's /stop. Not an answer, so -e exits 1
+    /// and the web page says why.
+    fn stopTurn(self: *AgentLoop) !void {
+        self.turn_failed = true;
+        self.turn_error = "Stopped";
+        try stdio.stderr().writeAll("\n[Stopped]\n");
+    }
+
     /// Process input with web UI context (message ID for events).
     pub fn processInputWeb(self: *AgentLoop, user_text: []const u8, message_id: []const u8) !void {
         self.web_message_id = message_id;
@@ -607,7 +618,10 @@ pub const AgentLoop = struct {
             if (self.sendVision(vm, system_prompt, messages, tool_defs, effective_cb)) |resp| {
                 succeeded = true;
                 return resp;
-            } else |e| stderr.print("\n[vision] {s} failed ({s}), the main model answers\n", .{ vm, @errorName(e) }) catch {};
+            } else |e| {
+                if (control.stopRequested()) return error.Stopped;
+                stderr.print("\n[vision] {s} failed ({s}), the main model answers\n", .{ vm, @errorName(e) }) catch {};
+            }
         };
 
         // Try primary backend first
@@ -624,6 +638,8 @@ pub const AgentLoop = struct {
             return resp;
         } else |primary_err| {
             if (primary_err == error.ContextOverflow) return primary_err;
+            // Stopped, not failed: asking Ollama instead would undo the stop.
+            if (control.stopRequested()) return error.Stopped;
 
             const backend_name: []const u8 = switch (self.backend) {
                 .claude => "Claude",
@@ -887,6 +903,19 @@ pub const AgentLoop = struct {
             switch (block) {
                 .tool_use => |tu| {
                     try stdout.print("\x1b[90m[tool: {s}]\x1b[0m ", .{tu.name});
+
+                    // Every tool call still gets a result, or the next request
+                    // carries a tool call with none and the API refuses it.
+                    if (control.stopRequested()) {
+                        try results.append(self.alloc, .{
+                            .tool_use_id = tu.id,
+                            .content = "Not run: the user stopped this reply.",
+                            .is_error = true,
+                        });
+                        if (self.tool_done_callback) |cb| cb(tu.id, false);
+                        try stdout.print("\x1b[33m[stopped]\x1b[0m\n", .{});
+                        continue;
+                    }
 
                     // Notify web bridge of tool start
                     if (self.tool_start_callback) |cb| cb(tu.name, tu.id);

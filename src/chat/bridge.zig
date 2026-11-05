@@ -3,7 +3,8 @@
 // bridge.zig — Chat sidecar IPC bridge
 //
 // Spawns the wintermolt-chat TypeScript sidecar process and communicates
-// via JSON lines over stdin/stdout pipes.
+// via JSON lines over stdin/stdout pipes. One thread reads (main.zig's
+// ChatReader); any thread may send.
 //
 // Protocol:
 //   <- FROM CHAT (incoming messages):
@@ -71,6 +72,8 @@ pub const ChatBridge = struct {
     reader: *stdio.FileReader,
     /// Backs the current ChatMessage; reset at each readMessage.
     arena: std.heap.ArenaAllocator,
+    /// The reader thread and the reply thread both write: one line at a time.
+    write_lock: fsio.Mutex = fsio.mutex_init,
 
     /// Spawn the chat sidecar process.
     /// Looks for wintermolt-chat binary in order:
@@ -134,6 +137,8 @@ pub const ChatBridge = struct {
 
     /// Send a threaded reply to the chat sidecar.
     pub fn sendReplyThreaded(self: *ChatBridge, platform: []const u8, to: []const u8, text: []const u8, thread_id: ?[]const u8) !void {
+        self.write_lock.lockUncancelable(fsio.io());
+        defer self.write_lock.unlock(fsio.io());
         const writer = stdio.writerFor(self.stdin_file);
         try writer.writeAll("{\"type\":\"reply\",\"platform\":\"");
         try writeJsonEscaped(writer, platform);
@@ -150,6 +155,8 @@ pub const ChatBridge = struct {
 
     /// Send a voice message to the chat sidecar (base64-encoded audio).
     pub fn sendVoice(self: *ChatBridge, platform: []const u8, to: []const u8, audio_b64: []const u8) !void {
+        self.write_lock.lockUncancelable(fsio.io());
+        defer self.write_lock.unlock(fsio.io());
         const writer = stdio.writerFor(self.stdin_file);
         try writer.writeAll("{\"type\":\"voice\",\"platform\":\"");
         try writeJsonEscaped(writer, platform);

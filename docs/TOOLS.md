@@ -83,6 +83,21 @@ containing a destructive pattern: `rm -rf /`, `rm -rf ~`, `dd if=`,
 `git push --force`, `git push -f`, `git reset --hard`, `git clean -f`.
 This is a substring check, not a sandbox.
 
+**Asking first.** With `WINTERMOLT_BASH_APPROVAL=ask`, each command waits
+for a yes before it runs: one from `bash`, a `schedule` job as it is added
+(it runs later with nobody watching), or a skill's command. Where you are:
+
+- full-screen view, plain REPL, `-e`: `y` once, `a` always, `n` no. `-e`
+  reads the answer from its input; with none, it is a no.
+- `--web`: the buttons under the command.
+- `--chat`: `/approve <id> allow-once|allow-always|deny`, from someone in
+  `WINTERMOLT_CHAT_APPROVERS` (docs/DEPLOYMENT.md).
+
+"Always" covers that exact command until wintermolt exits. No answer in
+30 minutes is a no, and so is having nobody to ask (`--gateway`,
+`--mcp-server`). The model is told the command did not run and why. Any
+value but `off` asks, so a mistyped setting does not run everything.
+
 For isolation, set `WINTERMOLT_SANDBOX=docker` (or `1`). Each command then
 runs in `docker run --rm` with the working directory mounted read-only at
 `/workspace`:

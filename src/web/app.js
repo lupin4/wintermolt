@@ -102,6 +102,31 @@ function send(obj) {
   return true;
 }
 
+/** A stop or an approval goes over a second socket: wintermolt reads this page's own only between replies. */
+function sendControl(obj, done) {
+  const token = getToken();
+  if (!token) return;
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  const ws = new WebSocket(`${proto}://${location.host}/ws?token=${encodeURIComponent(token)}`);
+  const timer = setTimeout(() => ws.close(), 5000);
+  ws.onopen = () => ws.send(JSON.stringify(obj));
+  ws.onmessage = (e) => {
+    let m;
+    try { m = JSON.parse(e.data); } catch (_) { return; }
+    if (m.type !== 'control') return;
+    clearTimeout(timer);
+    ws.close();
+    if (done) done(m.ok);
+  };
+}
+
+function stopReply() {
+  if (!state.running) return;
+  sendBtn.disabled = true;
+  sendBtn.textContent = 'Stopping';
+  sendControl({ type: 'stop' });
+}
+
 function setModel(text, st) {
   modelBtn.textContent = text;
   modelBtn.dataset.state = st || 'on';
@@ -148,9 +173,10 @@ function handle(m) {
       break;
     case 'resumed': showResumed(m.items || []); break;
     case 'error':
-      if (m.id) addLine(reply(m.id), 'error', explain(m.error));
+      if (m.id) addLine(reply(m.id), m.error === 'Stopped' ? 'notice' : 'error', explain(m.error));
       else flash(explain(m.error));
       break;
+    case 'approval': askApproval(reply(m.id), m.approval_id, m.command); break;
     case 'done':
       finish(m.id);
       break;
@@ -171,6 +197,7 @@ function explain(err) {
     EmptyReply: 'The model returned an empty reply twice. Try again, or rephrase.',
     UnknownBackend: 'No backend by that name. /model lists them.',
     MissingApiKey: 'That backend needs an API key. Set it with wintermolt --keys.',
+    Stopped: 'Stopped.',
   };
   return known[err] || `Something failed: ${err}. The wintermolt window has the details.`;
 }
@@ -218,6 +245,34 @@ function addLine(r, cls, text) {
   d.textContent = text;
   r.el.appendChild(d);
   r.seg = null;
+  stick();
+}
+
+/** WINTERMOLT_BASH_APPROVAL=ask: the reply waits until one of these is pressed. */
+function askApproval(r, approvalId, command) {
+  clearWorking(r);
+  r.seg = null;
+  const box = el('div', 'approval', 'Run this command?');
+  box.appendChild(el('code', null, command));
+  const choices = el('div', 'choices');
+  const answer = (decision, label) => {
+    for (const b of choices.querySelectorAll('button')) b.disabled = true;
+    sendControl({ type: 'approve', approval_id: approvalId, decision }, (ok) => {
+      choices.replaceWith(el('div', 'answered', ok ? label : 'Already answered, or it expired.'));
+    });
+  };
+  for (const [decision, text, done] of [
+    ['allow-once', 'Run once', 'Approved once.'],
+    ['allow-always', 'Always run this', 'Approved until wintermolt exits.'],
+    ['deny', "Don't run", 'Denied.'],
+  ]) {
+    const b = el('button', null, text);
+    b.addEventListener('click', () => answer(decision, done));
+    choices.appendChild(b);
+  }
+  box.appendChild(choices);
+  r.el.appendChild(box);
+  choices.querySelector('button').focus();
   stick();
 }
 
@@ -372,8 +427,7 @@ function submit() {
   setImage(null);
 
   state.running = id;
-  sendBtn.disabled = true;
-  sendBtn.textContent = 'Working';
+  sendBtn.textContent = 'Stop';
   const r = reply(id);
   r.el.classList.add('live');
   if (!text.startsWith('/')) {
@@ -400,6 +454,9 @@ input.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
     e.preventDefault();
     submit();
+  } else if (e.key === 'Escape' && state.running && !state.panel) {
+    e.preventDefault();
+    stopReply();
   } else if (e.key === 'ArrowUp' && (input.value === '' || state.recall >= 0) && state.sent.length) {
     e.preventDefault();
     state.recall = state.recall < 0 ? state.sent.length - 1 : Math.max(0, state.recall - 1);
@@ -412,7 +469,7 @@ input.addEventListener('keydown', (e) => {
     resize();
   }
 });
-sendBtn.addEventListener('click', submit);
+sendBtn.addEventListener('click', () => (state.running ? stopReply() : submit()));
 $('#new').addEventListener('click', () => { input.value = '/new'; submit(); });
 modelBtn.addEventListener('click', () => {
   input.value = '/model ';

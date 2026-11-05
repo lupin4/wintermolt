@@ -16,6 +16,7 @@ const protocol = @import("../api/protocol.zig");
 
 // Import tool implementations (core only — no forKernels, no proprietary)
 const bash_tool = @import("../tools/bash.zig");
+const control = @import("control.zig");
 const file_tool = @import("../tools/file.zig");
 const glob_tool = @import("../tools/glob.zig");
 const grep_tool = @import("../tools/grep.zig");
@@ -346,6 +347,7 @@ fn executeBash(alloc: Allocator, input_json: []const u8) ![]u8 {
             "BLOCKED: Command refused by safety check.\nCommand: {s}",
             .{command});
     }
+    if (control.approveCommand(command)) |why| return alloc.dupe(u8, why);
 
     return bash_tool.execute(alloc, command);
 }
@@ -605,6 +607,8 @@ fn executeSchedule(alloc: Allocator, input_json: []const u8) ![]u8 {
             return alloc.dupe(u8, "Error: 'add' requires 'schedule_value' (e.g. '5m', '09:00', '*/5 * * * *').");
         const command = sse.findJsonString(input_json, "command") orelse
             return alloc.dupe(u8, "Error: 'add' requires a 'command' field (shell command to run).");
+        // Asked now: the job runs later with nobody watching.
+        if (control.approveCommand(command)) |why| return alloc.dupe(u8, why);
 
         const job_id = sched.addJob(name, schedule_type, schedule_value, command) catch |e| {
             return std.fmt.allocPrint(alloc, "Failed to add job: {s}", .{@errorName(e)});

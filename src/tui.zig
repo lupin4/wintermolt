@@ -34,6 +34,8 @@ const zortui = @import("zortui");
 // Deliberately not fsio.zig: this file stays free of the agent's platform layer
 // (and of fsio's POSIX-only tests) so the headless tests build everywhere.
 const stdio = @import("stdio.zig");
+const control = @import("agent/control.zig");
+const fsio = @import("fsio.zig");
 const theme_pref = @import("theme_pref.zig");
 const banner = @import("banner.zig");
 
@@ -464,7 +466,7 @@ pub const Session = struct {
         };
         self.refreshInfo();
         self.transcript.add(.banner, "");
-        self.transcript.add(.info, "  Type /help for commands. Esc, Ctrl+C or /quit exits. PgUp/PgDn or the mouse wheel scroll.");
+        self.transcript.add(.info, "  Type /help for commands. Esc stops a reply; with none running, Esc, Ctrl+C or /quit exits. PgUp/PgDn or the mouse wheel scroll.");
         self.transcript.add(.info, "");
         return self;
     }
@@ -524,8 +526,12 @@ pub const Session = struct {
             }
         }.name;
 
-        if (zortui.matchKey(k, "ctrl+c") or is(k, "escape")) {
+        if (zortui.matchKey(k, "ctrl+c")) {
+            // Quitting mid-reply stops it, so the exit does not wait for it.
+            if (self.busy) control.requestStop();
             self.quit_requested = true;
+        } else if (is(k, "escape")) {
+            if (self.busy) self.stop() else self.quit_requested = true;
         } else if (zortui.matchKey(k, "ctrl+l")) {
             self.redraw_requested = true;
         } else if (is(k, "enter")) {
@@ -573,7 +579,21 @@ pub const Session = struct {
             return;
         }
         if (self.busy) {
-            self.transcript.add(.info, "(still working on the previous request; wait for it to finish)");
+            if (std.mem.eql(u8, line, "/stop")) {
+                self.stop();
+            } else if (control.isAsking()) {
+                const d = control.parseAnswer(line) orelse {
+                    self.transcript.add(.info, "(answer y, a or n)");
+                    self.editor.clear();
+                    return;
+                };
+                self.transcript.add(.user, line);
+                _ = control.answerPending(d);
+            } else {
+                self.transcript.add(.info, "(still working on the previous request; Esc or /stop stops it)");
+                return;
+            }
+            self.editor.clear();
             return;
         }
         // On this thread, not the worker's: it changes how the screen is drawn,
@@ -603,11 +623,29 @@ pub const Session = struct {
         self.finished.store(false, .release);
         self.job_line = line;
         self.busy = true;
+        control.beginRun();
         self.worker = std.Thread.spawn(.{}, workerMain, .{self}) catch |e| {
+            control.endRun();
             self.busy = false;
             self.job_line = null;
             return e;
         };
+    }
+
+    fn stop(self: *Session) void {
+        control.requestStop();
+        self.transcript.add(.info, "(stopping…)");
+    }
+
+    /// Asks before a command runs (agent/control.zig): the question lands in
+    /// the transcript, and the next line typed (y, a or n) answers it.
+    pub fn asker(self: *Session) control.Asker {
+        return .{ .ctx = self, .post = postQuestion };
+    }
+
+    /// The worker's thread: through stderr, which the sink puts in the transcript.
+    fn postQuestion(_: *anyopaque, _: []const u8, command: []const u8) void {
+        control.writeQuestion(stdio.stderr(), command) catch {};
     }
 
     fn workerMain(self: *Session) void {
@@ -628,6 +666,7 @@ pub const Session = struct {
         if (self.job_line) |l| self.gpa.free(l);
         self.job_line = null;
         self.busy = false;
+        control.endRun();
         self.refreshInfo();
         return true;
     }
@@ -711,7 +750,7 @@ pub const Session = struct {
         const items = try alloc.alloc(zortui.widgets.StatusItem, 3);
         items[0] = .{ .key = "Enter", .label = "send" };
         items[1] = .{ .key = "↑↓ PgUp/PgDn", .label = "scroll" };
-        items[2] = .{ .key = "Esc", .label = "quit" };
+        items[2] = .{ .key = "Esc", .label = if (self.busy) "stop" else "quit" };
         const theme = ui.theme();
         const right = try alloc.alloc(zortui.widgets.StatusItem, 2);
         right[0] = .{ .label = try ui.fmt("{s} · {s}", .{ self.backend, self.model }) };
@@ -867,7 +906,7 @@ pub const Session = struct {
         try p.textInput(.{
             .value = bytes[from..],
             .cursor = zortui.unicode.stringWidth(bytes[from..self.editor.cursor]),
-            .placeholder = if (self.busy) "working… (Esc or Ctrl+C exits)" else "Type a message, or /help",
+            .placeholder = if (control.isAsking()) "y once · a always · n no" else if (self.busy) "working… (Esc stops, Ctrl+C quits)" else "Type a message, or /help",
             .focused = true,
         }, "input");
     }
@@ -1507,4 +1546,134 @@ test "theme persistence round trip in a temp ~/.wintermolt/.env" {
     const appended = try theme_pref.setInEnvText(gpa, "A=1", "light");
     defer gpa.free(appended);
     try testing.expectEqualStrings("A=1\nWINTERMOLT_THEME=light\n", appended);
+}
+
+/// A reply that runs until it is stopped (or five seconds pass).
+const SlowAgent = struct {
+    fn runner(self: *SlowAgent) Runner {
+        return .{ .ctx = self, .run = run, .info = FakeAgent.info };
+    }
+    fn run(_: *anyopaque, _: []const u8, _: *Inbox) void {
+        var i: usize = 0;
+        while (!control.stopRequested() and i < 500) : (i += 1) fsio.sleepNs(10 * std.time.ns_per_ms);
+        stdio.stdout().writeAll(if (control.stopRequested()) "slow: stopped\n" else "slow: finished\n") catch {};
+    }
+};
+
+fn transcriptHas(session: *Session, text: []const u8) bool {
+    for (session.transcript.lines.items) |l| if (std.mem.indexOf(u8, l.text, text) != null) return true;
+    return false;
+}
+
+test "Esc while a reply runs stops it instead of quitting; Esc when idle quits" {
+    var slow: SlowAgent = .{};
+    var session = Session.init(testing.allocator, slow.runner(), "0.5.0");
+    defer session.deinit();
+    session.installSink();
+    defer session.uninstallSink();
+
+    typeText(&session, "think for a long time");
+    session.handleEvent(keyNamed("enter"));
+    try testing.expect(session.busy);
+    session.handleEvent(keyNamed("escape"));
+    try testing.expect(!session.quit_requested);
+    try testing.expect(session.waitIdle(50_000_000));
+    try testing.expect(transcriptHas(&session, "slow: stopped"));
+
+    session.handleEvent(keyNamed("escape"));
+    try testing.expect(session.quit_requested);
+}
+
+test "/stop typed while a reply runs stops it, and is not sent anywhere" {
+    var slow: SlowAgent = .{};
+    var session = Session.init(testing.allocator, slow.runner(), "0.5.0");
+    defer session.deinit();
+    session.installSink();
+    defer session.uninstallSink();
+
+    typeText(&session, "go");
+    session.handleEvent(keyNamed("enter"));
+    typeText(&session, "/stop");
+    session.handleEvent(keyNamed("enter"));
+    try testing.expectEqualStrings("", session.editor.text());
+    try testing.expect(session.waitIdle(50_000_000));
+    try testing.expect(transcriptHas(&session, "slow: stopped"));
+}
+
+test "a new reply is not stopped by an earlier Esc" {
+    var slow: SlowAgent = .{};
+    var session = Session.init(testing.allocator, slow.runner(), "0.5.0");
+    defer session.deinit();
+    session.installSink();
+    defer session.uninstallSink();
+    control.requestStop(); // left over from a reply that already ended
+    typeText(&session, "go");
+    session.handleEvent(keyNamed("enter"));
+    try testing.expect(!control.stopRequested());
+    control.requestStop();
+    try testing.expect(session.waitIdle(50_000_000));
+}
+
+/// A reply that wants to run one command, asking the way the bash tool does.
+const AskingAgent = struct {
+    fn runner(self: *AskingAgent) Runner {
+        return .{ .ctx = self, .run = run, .info = FakeAgent.info };
+    }
+    fn run(_: *anyopaque, _: []const u8, _: *Inbox) void {
+        const out = stdio.stdout();
+        if (control.check(.ask, "echo from-the-model")) |why| out.print("{s}\n", .{why}) catch {} else out.writeAll("ran it\n") catch {};
+    }
+};
+
+fn waitAsking() !void {
+    var i: usize = 0;
+    while (!control.isAsking()) : (i += 1) {
+        if (i > 5000) return error.NeverAsked;
+        fsio.sleepNs(1 * std.time.ns_per_ms);
+    }
+}
+
+test "a command waiting for approval: the question shows, and y runs it" {
+    var asking: AskingAgent = .{};
+    var session = Session.init(testing.allocator, asking.runner(), "0.5.0");
+    defer session.deinit();
+    session.installSink();
+    defer session.uninstallSink();
+    control.setAsker(session.asker());
+    defer control.setAsker(null);
+
+    typeText(&session, "clean up");
+    session.handleEvent(keyNamed("enter"));
+    try waitAsking();
+    _ = session.pump();
+    try testing.expect(transcriptHas(&session, "echo from-the-model"));
+
+    // Not an answer: asked again, the command still waits.
+    typeText(&session, "maybe");
+    session.handleEvent(keyNamed("enter"));
+    try testing.expect(control.isAsking());
+
+    typeText(&session, "y");
+    session.handleEvent(keyNamed("enter"));
+    try testing.expect(session.waitIdle(50_000_000));
+    try testing.expect(transcriptHas(&session, "ran it"));
+}
+
+test "a command waiting for approval: n means it does not run" {
+    var asking: AskingAgent = .{};
+    var session = Session.init(testing.allocator, asking.runner(), "0.5.0");
+    defer session.deinit();
+    session.installSink();
+    defer session.uninstallSink();
+    control.setAsker(session.asker());
+    defer control.setAsker(null);
+
+    typeText(&session, "clean up");
+    session.handleEvent(keyNamed("enter"));
+    try waitAsking();
+    typeText(&session, "n");
+    session.handleEvent(keyNamed("enter"));
+    try testing.expect(session.waitIdle(50_000_000));
+    try testing.expect(transcriptHas(&session, "Not run: the user denied"));
+    try testing.expect(!transcriptHas(&session, "ran it"));
 }

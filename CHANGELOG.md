@@ -47,6 +47,24 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Stop a reply.** Esc in the full-screen view and on the web page (whose
+  Send button becomes Stop), Ctrl+C in the plain REPL and `-e`, `/stop` in
+  the full-screen view and in chat. The model request is dropped, a running
+  shell command is killed with everything it started, and tools not yet run
+  are skipped. Before, the only way out was to quit.
+- **Approve shell commands before they run:** `WINTERMOLT_BASH_APPROVAL=ask`.
+  Each command from `bash`, a `schedule` job being added, or a skill waits
+  for a yes: `y` / `a` / `n` in the terminal, buttons on the web page,
+  OpenClaw's `/approve <id> allow-once|allow-always|deny` in chat from
+  someone in `WINTERMOLT_CHAT_APPROVERS`. "Always" covers that exact
+  command until wintermolt exits. No answer in 30 minutes, or nobody to ask
+  (`--gateway`, `--mcp-server`, `-e` with no input), is a no. Off by
+  default; any value but `off` asks, so a typo does not run everything.
+- **`--chat` keeps reading while it answers.** Messages that arrive during a
+  reply wait in a queue (20 at most) and are answered in order; before, one
+  slow reply held every platform. `/stop`, `/new`, `/reset`, `/status`,
+  `/help` and `/approve` are answered by wintermolt rather than sent to the
+  model.
 - **`--web` works: a chat page served by the binary itself.** It spawned a
   TypeScript sidecar that is not in the repository, so it never started.
   Now wintermolt serves the page and its WebSocket directly (no Node), on

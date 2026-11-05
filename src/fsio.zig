@@ -369,9 +369,18 @@ pub fn lineReader(file: File, gpa: std.mem.Allocator, buffer: []u8) LineReader {
     return .{ .file = file, .gpa = gpa, .buf = buffer };
 }
 
+/// `name` in a directory of this run's own. A fixed name in the cwd was shared
+/// by every copy of this binary running at once, and one deleted another's file.
+fn testPath(buf: []u8, tmp: *const std.testing.TmpDir, name: []const u8) []const u8 {
+    return std.fmt.bufPrint(buf, ".zig-cache/tmp/{s}/{s}", .{ &tmp.sub_path, name }) catch unreachable;
+}
+
 test "LineReader: splits, keeps a newline-less tail, and spills a long line" {
     const gpa = std.testing.allocator;
-    const path = "iocompat_linereader_test.txt";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [128]u8 = undefined;
+    const path = testPath(&path_buf, &tmp, "linereader.txt");
 
     // The third line is deliberately longer than the 16-byte buffer below, so
     // the overflow path is exercised rather than merely present.
@@ -402,9 +411,12 @@ test "LineReader: splits, keeps a newline-less tail, and spills a long line" {
 
 test "LineReader: empty file, and a file that is only newlines" {
     const gpa = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [128]u8 = undefined;
 
     {
-        const path = "iocompat_linereader_empty.txt";
+        const path = testPath(&path_buf, &tmp, "empty.txt");
         const f = try createFile(path, .{});
         close(f);
         defer deleteFile(path) catch {};
@@ -416,7 +428,7 @@ test "LineReader: empty file, and a file that is only newlines" {
         try std.testing.expect((try lr.next()) == null);
     }
     {
-        const path = "iocompat_linereader_blanks.txt";
+        const path = testPath(&path_buf, &tmp, "blanks.txt");
         const f = try createFile(path, .{});
         try writeAll(f, "\n\n\n");
         close(f);
@@ -838,6 +850,27 @@ pub const RunResult = struct {
     }
 };
 
+fn watchChild(id: std.process.Child.Id, job: ?*anyopaque, done: *std.atomic.Value(bool), cancelled: *const fn () bool) void {
+    while (!done.load(.acquire)) {
+        if (cancelled()) return killTree(id, job);
+        sleepNs(100 * std.time.ns_per_ms);
+    }
+}
+
+/// End a command and whatever it started. Windows: its job. POSIX: the
+/// shell's children (pkill -P), then the shell; a deeper descendant that
+/// detached from both is not reached.
+fn killTree(id: std.process.Child.Id, job: ?*anyopaque) void {
+    if (comptime @import("builtin").os.tag == .windows) {
+        if (job) |j| @import("win32.zig").killJob(j) else @import("win32.zig").killProcess(id);
+    } else {
+        var buf: [16]u8 = undefined;
+        const pid = std.fmt.bufPrint(&buf, "{d}", .{id}) catch return;
+        if (runCapture(std.heap.c_allocator, &.{ "pkill", "-KILL", "-P", pid }, 4096, null)) |r| r.deinit(std.heap.c_allocator) else |_| {}
+        _ = std.c.kill(id, std.c.SIG.KILL);
+    }
+}
+
 /// Run a command to completion, capturing stdout and stderr SEPARATELY and
 /// reporting how it terminated. Caller owns the result (see RunResult.deinit).
 ///
@@ -851,6 +884,14 @@ pub const RunResult = struct {
 /// does not have. Two temp files, one per stream, so interleaving cannot merge
 /// them the way 2>&1 would.
 pub fn runCapture(gpa: std.mem.Allocator, argv: []const []const u8, max: usize, env: ?*const EnvMap) !RunResult {
+    return runCaptureCancelable(gpa, argv, max, env, null);
+}
+
+/// runCapture, but once `cancelled` returns true (checked every 100 ms) the
+/// command is killed with everything it started, and the call returns what it
+/// had written. The bash tool passes control.stopRequested, so /stop ends a
+/// running command instead of waiting for it.
+pub fn runCaptureCancelable(gpa: std.mem.Allocator, argv: []const []const u8, max: usize, env: ?*const EnvMap, cancelled: ?*const fn () bool) !RunResult {
     if (zig16) {
         const seq = capture_seq.fetchAdd(1, .monotonic);
         const out_name = try std.fmt.allocPrint(gpa, ".wm-run-{x}-{d}.out", .{ @intFromPtr(argv.ptr), seq });
@@ -874,13 +915,28 @@ pub fn runCapture(gpa: std.mem.Allocator, argv: []const []const u8, max: usize, 
             var threaded: std.Io.Threaded = .init(gpa, .{ .environ = processEnviron() });
             defer threaded.deinit();
             const tio = threaded.io();
+            const windows = @import("builtin").os.tag == .windows;
             var child = try std.process.spawn(tio, .{
                 .argv = argv,
                 .stdout = .{ .file = out_file },
                 .stderr = .{ .file = err_file },
                 .environ_map = env,
+                // Windows: suspended until it is in a job of its own, so
+                // nothing it starts can escape the kill.
+                .start_suspended = windows and cancelled != null,
             });
-            term = try child.wait(tio);
+            const job: ?*anyopaque = if (comptime windows) (if (cancelled != null) @import("win32.zig").runInOwnJob(child.id.?, child.thread_handle) else null) else null;
+            defer if (comptime windows) if (job) |j| @import("win32.zig").closeJob(j);
+            var done = std.atomic.Value(bool).init(false);
+            const watcher: ?std.Thread = if (cancelled) |c|
+                std.Thread.spawn(.{}, watchChild, .{ child.id.?, job, &done, c }) catch null
+            else
+                null;
+            const waited = child.wait(tio);
+            // shortcut: between wait reaping the child and this store, a POSIX kill could reach a reused pid; the window is a few instructions.
+            done.store(true, .release);
+            if (watcher) |w| w.join();
+            term = try waited;
         }
 
         const of = try openFile(out_name, .{});

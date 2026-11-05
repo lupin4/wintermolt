@@ -36,7 +36,7 @@ extern fn curl_slist_append(list: ?*CurlSlist, string: [*:0]const u8) ?*CurlSlis
 extern fn curl_slist_free_all(list: *CurlSlist) void;
 extern fn curl_easy_strerror(code: CurlCode) [*:0]const u8;
 
-const CurlCode = enum(c_int) { ok = 0, _ };
+const CurlCode = enum(c_int) { ok = 0, aborted_by_callback = 42, _ };
 
 const CURLOPT_URL: c_int = 10002;
 const CURLOPT_HTTPHEADER: c_int = 10023;
@@ -149,7 +149,8 @@ pub const DeepSeekClient = struct {
             if (result != .ok) {
                 const err_msg = curl_easy_strerror(result);
                 const stderr = stdio.stderr();
-                stderr.print("\n[{s} curl error] {s}\n", .{ self.label, err_msg }) catch {};
+                // 42: a /stop (curl_timeouts.zig), not a failure.
+                if (result != .aborted_by_callback) stderr.print("\n[{s} curl error] {s}\n", .{ self.label, err_msg }) catch {};
                 return error.CurlRequestFailed;
             }
 
