@@ -51,7 +51,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Send button becomes Stop), Ctrl+C in the plain REPL and `-e`, `/stop` in
   the full-screen view and in chat. The model request is dropped, a running
   shell command is killed with everything it started, and tools not yet run
-  are skipped. Before, the only way out was to quit.
+  are skipped. Before, the only way out was to quit. On macOS and Linux the
+  command runs in a process group of its own, which is how a stop reaches
+  all of it; so a command that prompts on the terminal (`sudo`, `ssh`, git
+  asking for credentials) waits, without prompting, until it is stopped.
 - **Approve shell commands before they run:** `WINTERMOLT_BASH_APPROVAL=ask`.
   Each command from `bash`, a `schedule` job being added, or a skill waits
   for a yes: `y` / `a` / `n` in the terminal, buttons on the web page,

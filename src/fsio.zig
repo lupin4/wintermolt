@@ -857,17 +857,15 @@ fn watchChild(id: std.process.Child.Id, job: ?*anyopaque, done: *std.atomic.Valu
     }
 }
 
-/// End a command and whatever it started. Windows: its job. POSIX: the
-/// shell's children (pkill -P), then the shell; a deeper descendant that
-/// detached from both is not reached.
+/// End a command and whatever it started. Windows: its job. POSIX: its
+/// process group (runCaptureCancelable starts it in a new one), which holds
+/// every descendant at any depth; one that left the group (setsid, a
+/// job-control shell's background job) is not reached.
 fn killTree(id: std.process.Child.Id, job: ?*anyopaque) void {
     if (comptime @import("builtin").os.tag == .windows) {
         if (job) |j| @import("win32.zig").killJob(j) else @import("win32.zig").killProcess(id);
     } else {
-        var buf: [16]u8 = undefined;
-        const pid = std.fmt.bufPrint(&buf, "{d}", .{id}) catch return;
-        if (runCapture(std.heap.c_allocator, &.{ "pkill", "-KILL", "-P", pid }, 4096, null)) |r| r.deinit(std.heap.c_allocator) else |_| {}
-        _ = std.c.kill(id, std.c.SIG.KILL);
+        _ = std.c.kill(-id, std.c.SIG.KILL);
     }
 }
 
@@ -924,6 +922,10 @@ pub fn runCaptureCancelable(gpa: std.mem.Allocator, argv: []const []const u8, ma
                 // Windows: suspended until it is in a job of its own, so
                 // nothing it starts can escape the kill.
                 .start_suspended = windows and cancelled != null,
+                // POSIX: a process group of its own, so a stop can kill all of
+                // it. The cost: it leaves the terminal's foreground group, so a
+                // command that prompts on the tty (sudo, ssh) waits until stopped.
+                .pgid = if (!windows and cancelled != null) 0 else null,
             });
             const job: ?*anyopaque = if (comptime windows) (if (cancelled != null) @import("win32.zig").runInOwnJob(child.id.?, child.thread_handle) else null) else null;
             defer if (comptime windows) if (job) |j| @import("win32.zig").closeJob(j);
@@ -933,7 +935,7 @@ pub fn runCaptureCancelable(gpa: std.mem.Allocator, argv: []const []const u8, ma
             else
                 null;
             const waited = child.wait(tio);
-            // shortcut: between wait reaping the child and this store, a POSIX kill could reach a reused pid; the window is a few instructions.
+            // shortcut: between wait reaping the child and this store, a POSIX kill(-id) could reach a new group that reused the id once every member is gone; the window is a few instructions.
             done.store(true, .release);
             if (watcher) |w| w.join();
             term = try waited;

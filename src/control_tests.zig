@@ -217,6 +217,56 @@ test "stop kills a bash command that is still running" {
     control.beginRun();
 }
 
+/// Stop once the innermost shell has written its pid, so the kill meets the whole tree.
+fn stopWhenWritten(path: []const u8) void {
+    var waited: usize = 0;
+    while (waited < 100) : (waited += 1) {
+        if (fsio.openFile(path, .{})) |f| {
+            fsio.close(f);
+            break;
+        } else |_| fsio.sleepNs(50 * std.time.ns_per_ms);
+    }
+    fsio.sleepNs(100 * std.time.ns_per_ms);
+    control.requestStop();
+}
+
+test "stop kills a command's grandchildren too, not only the shell's children (POSIX)" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest; // the job object; covered above
+    control.beginRun();
+    defer control.beginRun();
+    var name_buf: [64]u8 = undefined;
+    const pid_file = try std.fmt.bufPrint(&name_buf, ".wm-deep-{d}.pid", .{std.c.getpid()});
+    defer fsio.deleteFile(pid_file) catch {};
+    // `; true` after each level keeps the shells from exec'ing the next one, so
+    // the tree is really three deep. The innermost shell writes its own pid.
+    var cmd_buf: [192]u8 = undefined;
+    const cmd = try std.fmt.bufPrint(&cmd_buf, "sh -c 'sh -c \"echo \\$\\$ > {s}; sleep 30; true\"; true'; true", .{pid_file});
+    const t = try std.Thread.spawn(.{}, stopWhenWritten, .{pid_file});
+    defer t.join();
+    const out = try bash.execute(testing.allocator, cmd);
+    defer testing.allocator.free(out);
+    try testing.expect(std.mem.indexOf(u8, out, "[stopped by the user]") != null);
+
+    const f = try fsio.openFile(pid_file, .{});
+    const text = fsio.readToEndAlloc(f, testing.allocator, 64) catch |e| {
+        fsio.close(f);
+        return e;
+    };
+    fsio.close(f);
+    defer testing.allocator.free(text);
+    const inner: std.c.pid_t = try std.fmt.parseInt(std.c.pid_t, std.mem.trim(u8, text, " \r\n"), 10);
+    try testing.expect(inner > 1);
+    // Dead once its new parent has reaped it; give that a moment.
+    var alive = true;
+    var polls: usize = 0;
+    while (alive and polls < 40) : (polls += 1) {
+        alive = std.c.kill(inner, @enumFromInt(0)) == 0;
+        if (alive) fsio.sleepNs(50 * std.time.ns_per_ms);
+    }
+    if (alive) _ = std.c.kill(inner, std.c.SIG.KILL); // do not leave it behind
+    try testing.expectEqual(false, alive);
+}
+
 test "a bash command nobody stops runs to the end as before" {
     control.beginRun();
     const out = try bash.execute(testing.allocator, "echo still-works");
