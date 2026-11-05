@@ -769,7 +769,7 @@ wintermolt (one native binary, 1.6–14 MB)
 | Variable | Default | Description |
 |:---------|:--------|:------------|
 | `WINTERMOLT_OLLAMA_URL` | `http://localhost:11434` | Ollama base URL |
-| `WINTERMOLT_OLLAMA_CTX` | `4096` | Context window cap (prevents OOM on small devices) |
+| `WINTERMOLT_OLLAMA_CTX` | `8192` | Context window cap (prevents OOM on small devices) |
 | `WINTERMOLT_OLLAMA_KEEP_ALIVE` | `5m` (`30m` once `/listen` is used) | Model unload timer (`0` = unload after each response) |
 | `WINTERMOLT_BACKEND` | `ollama` | Backend a run starts on (`ollama`, `claude`, `openai`, `deepseek`, `qwen`, `gemini`, `kernel`, `forai`); a backend that cannot be built exits 1. `/model` and `wintermolt.json` routing also choose one — see `docs/BACKENDS.md` |
 | `WINTERMOLT_MODEL` | `qwen3:0.6b` | Default model |

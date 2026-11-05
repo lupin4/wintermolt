@@ -1240,57 +1240,26 @@ fn configureKey(
         return;
     }
 
-    var clearing = false;
-    if (std.mem.eql(u8, value, "clear") or std.mem.eql(u8, value, "remove") or std.mem.eql(u8, value, "delete")) {
-        clearing = true;
-        try w.print("  \x1b[33mCleared {s}\x1b[0m\n", .{env_key});
-    } else {
+    const clearing = std.mem.eql(u8, value, "clear") or std.mem.eql(u8, value, "remove") or std.mem.eql(u8, value, "delete");
+    if (!clearing) {
         if (hint) |h| {
             if (!std.mem.startsWith(u8, value, h)) {
                 try w.print("  \x1b[33m⚠ Expected prefix \"{s}\". Saving anyway.\x1b[0m\n", .{h});
             }
         }
-        try w.print("  \x1b[32m✓ Saved {s}\x1b[0m (restart to take effect)\n", .{env_key});
     }
 
-    // Rewrite .env file
     const home = compat.getenv("HOME") orelse return;
-    var path_buf: [512]u8 = undefined;
-    const env_path = std.fmt.bufPrint(&path_buf, "{s}/.wintermolt/.env", .{home}) catch return;
-
-    var all_keys = setup.loadExistingEnv(alloc);
-
+    const env_path = try std.fmt.allocPrint(alloc, "{s}/.wintermolt/.env", .{home});
+    setup.setEnvKey(alloc, fsio.io(), fsio.cwd(), env_path, env_key, if (clearing) null else value) catch |e| {
+        try w.print("  \x1b[31mCould not save {s}: {s}\x1b[0m\n\n", .{ env_path, @errorName(e) });
+        return;
+    };
     if (clearing) {
-        _ = all_keys.remove(env_key);
+        try w.print("  \x1b[33mCleared {s}\x1b[0m\n\n", .{env_key});
     } else {
-        all_keys.put(env_key, value) catch {};
+        try w.print("  \x1b[32m✓ Saved {s}\x1b[0m (restart to take effect)\n\n", .{env_key});
     }
-
-    // Write updated file
-    var content_buf: [8192]u8 = undefined;
-    var stream: std.Io.Writer = .fixed(&content_buf);
-    const sw = &stream;
-
-    try sw.writeAll("# Wintermolt configuration\n");
-    try sw.writeAll("# Edit manually or use /keys command to reconfigure.\n\n");
-    try sw.print("WINTERMOLT_CONFIG_VERSION={d}\n\n", .{config_mod.CONFIG_VERSION});
-
-    var it = all_keys.iterator();
-    while (it.next()) |kv| {
-        if (std.mem.eql(u8, kv.key_ptr.*, "WINTERMOLT_CONFIG_VERSION")) continue;
-        try sw.print("{s}=\"{s}\"\n", .{ kv.key_ptr.*, kv.value_ptr.* });
-    }
-
-    // Ensure directory exists
-    var dir_buf: [512]u8 = undefined;
-    const dir_path = std.fmt.bufPrint(&dir_buf, "{s}/.wintermolt", .{home}) catch return;
-    fsio.makePath(dir_path) catch {};
-
-    const file = fsio.createFile(env_path, .{ .truncate = true }) catch return;
-    defer fsio.close(file);
-    fsio.writeAll(file, stream.buffered()) catch {};
-
-    try w.writeByte('\n');
 }
 
 fn handleLook(agent: *loop_mod.AgentLoop, alloc: std.mem.Allocator, w: anytype, _stderr: anytype, custom_prompt: ?[]const u8) !void {

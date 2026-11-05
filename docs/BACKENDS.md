@@ -96,7 +96,7 @@ WINTERMOLT_BACKEND=ollama                      # ollama (default), claude, opena
 
 # Ollama (default)
 WINTERMOLT_OLLAMA_URL=http://localhost:11434   # base URL
-WINTERMOLT_OLLAMA_CTX=4096                     # context window cap
+WINTERMOLT_OLLAMA_CTX=8192                     # context window cap (8192 by default)
 WINTERMOLT_OLLAMA_KEEP_ALIVE=5m                # unload timer (0 = unload immediately; 30m once /listen is used)
 WINTERMOLT_MODEL=qwen3:8b                      # model tag
 

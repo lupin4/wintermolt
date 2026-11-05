@@ -148,6 +148,23 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **`--keys` no longer erases settings you added to `.env` by hand.** It
+  rewrote `~/.wintermolt/.env` with only the keys it asks about, so a line
+  such as `WINTERMOLT_STT_PROVIDER=deepgram`, the `/theme` choice, or a
+  comment was lost on every re-run. Now only the wizard's own keys change.
+  Each is replaced where it was, or removed when you clear it, and every
+  other line is kept exactly.
+- **`/keys` changes only the key you set or clear.** It rebuilt the whole
+  file, dropping comments, reordering lines and quoting every value. It
+  also said "Saved" before writing, and said nothing when the write failed.
+- **Keys already in `.env` stay intact when `--keys` or `/keys` saves.**
+  The values read from the file pointed at memory that was reused
+  straight away. `--keys` could offer a kept key as blanks and save that,
+  and `/keys` could write the other keys back damaged. Files over 8 KB are
+  also read in full now.
+- **`WINTERMOLT_OLLAMA_CTX` is documented as 8192**, the default the code
+  has used since the small-model fix; the README, docs/BACKENDS.md and
+  config.zig still said 4096.
 - **Saved conversations have titles.** Nothing ever set one, so every
   conversation was untitled. A conversation is now named by the first line
   of its first message, at most 80 bytes.

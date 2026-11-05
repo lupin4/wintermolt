@@ -224,3 +224,113 @@ test "loadDotEnv: a key only in .env loads and reaches a child; the real environ
     defer gpa.free(wins);
     try testing.expectEqualStrings("from-shell", wins);
 }
+
+// --keys / --setup rewrote ~/.wintermolt/.env with only the keys it asks about,
+// so a setting added by hand (WINTERMOLT_STT_PROVIDER, the /theme line, a
+// comment) was lost on every re-run. saveEnv keeps every line it did not ask
+// about, byte for byte.
+
+const setup = @import("setup.zig");
+
+test "setup.saveEnv: lines the wizard does not ask about survive a re-run; its own keys are replaced or removed" {
+    const gpa = testing.allocator;
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = "home/.wintermolt/.env";
+
+    // Hand-added lines, a wizard key in export form, a wizard key the user no
+    // longer chose (WINTERMOLT_TIER), and a duplicated wizard key.
+    const existing = "# my own note\r\nWINTERMOLT_STT_PROVIDER=deepgram\r\nexport DEEPGRAM_API_KEY='old-dummy'\r\nWINTERMOLT_TIER=opus\r\n" ++
+        "WINTERMOLT_CONFIG_VERSION=1\r\nWINTERMOLT_THEME=nord\r\nDEEPGRAM_API_KEY=older-dummy\r\n";
+    try tmp.dir.createDirPath(io, "home/.wintermolt");
+    try tmp.dir.writeFile(io, .{ .sub_path = path, .data = existing });
+
+    const keys = [_]setup.KeyValue{
+        .{ .key = "DEEPGRAM_API_KEY", .value = "new-dummy" },
+        .{ .key = "ANTHROPIC_API_KEY", .value = "dummy-anthropic" },
+    };
+    try setup.saveEnv(gpa, io, tmp.dir, path, &keys);
+
+    const text = try tmp.dir.readFileAlloc(io, path, gpa, .limited(1 << 16));
+    defer gpa.free(text);
+    const want = try std.fmt.allocPrint(gpa, "# my own note\r\nWINTERMOLT_STT_PROVIDER=deepgram\r\nDEEPGRAM_API_KEY=new-dummy\r\n" ++
+        "WINTERMOLT_CONFIG_VERSION={d}\r\nWINTERMOLT_THEME=nord\r\nANTHROPIC_API_KEY=dummy-anthropic\r\n", .{config.CONFIG_VERSION});
+    defer gpa.free(want);
+    try testing.expectEqualStrings(want, text);
+}
+
+test "setup.saveEnv: with no .env yet it writes the header, the version and the keys" {
+    const gpa = testing.allocator;
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = "home/.wintermolt/.env";
+
+    const keys = [_]setup.KeyValue{.{ .key = "DEEPGRAM_API_KEY", .value = "new-dummy" }};
+    try setup.saveEnv(gpa, io, tmp.dir, path, &keys);
+
+    const text = try tmp.dir.readFileAlloc(io, path, gpa, .limited(1 << 16));
+    defer gpa.free(text);
+    const tail = try std.fmt.allocPrint(gpa, "\nDEEPGRAM_API_KEY=new-dummy\nWINTERMOLT_CONFIG_VERSION={d}\n", .{config.CONFIG_VERSION});
+    defer gpa.free(tail);
+    try testing.expect(std.mem.startsWith(u8, text, "# Wintermolt configuration"));
+    try testing.expect(std.mem.endsWith(u8, text, tail));
+}
+
+/// Overwrite the stack below the caller, where a returned function's locals were.
+noinline fn clobberStack() void {
+    var junk: [16 * 1024]u8 = undefined;
+    @memset(&junk, ' ');
+    std.mem.doNotOptimizeAway(&junk);
+}
+
+// loadExistingEnv's values pointed into its own stack buffer, so by the time
+// --keys offered them as defaults (or /keys wrote them back) they were
+// whatever the stack held next: a kept Deepgram key came back as 20 spaces.
+test "setup.loadExistingEnv: values outlive the call that read them" {
+    const gpa = testing.allocator;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    defer arena.deinit();
+
+    const home = try std.fmt.allocPrint(gpa, ".zig-cache/tmp/{s}", .{&tmp.sub_path});
+    defer gpa.free(home);
+    const home_z = try gpa.dupeZ(u8, home);
+    defer gpa.free(home_z);
+    try tmp.dir.createDirPath(testing.io, ".wintermolt");
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = ".wintermolt/.env", .data = "# note\nDEEPGRAM_API_KEY=dummy-deepgram-value\n" });
+
+    const prev_home: ?[:0]u8 = if (compat.getenv("HOME")) |h| try gpa.dupeZ(u8, h) else null;
+    defer if (prev_home) |h| {
+        _ = libc_setenv("HOME", h.ptr, 1);
+        gpa.free(h);
+    };
+    try testing.expectEqual(@as(c_int, 0), libc_setenv("HOME", home_z.ptr, 1));
+
+    var existing = @call(.never_inline, setup.loadExistingEnv, .{arena.allocator()});
+    clobberStack();
+    try testing.expectEqualStrings("dummy-deepgram-value", existing.get("DEEPGRAM_API_KEY") orelse return error.KeyNotLoaded);
+}
+
+// /keys rebuilt the whole .env from a map: comments gone, order shuffled,
+// every value re-quoted. setEnvKey changes one key and keeps the rest.
+test "setup.setEnvKey: sets one key in place, clears another, keeps comments and every other line" {
+    const gpa = testing.allocator;
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = "home/.wintermolt/.env";
+    try tmp.dir.createDirPath(io, "home/.wintermolt");
+    try tmp.dir.writeFile(io, .{ .sub_path = path, .data = "# my note\r\nDEEPGRAM_API_KEY=keep-dummy\r\nOPENAI_API_KEY=\"old-dummy\"\r\nWINTERMOLT_THEME=nord\r\n" });
+
+    try setup.setEnvKey(gpa, io, tmp.dir, path, "OPENAI_API_KEY", "new-dummy");
+    try setup.setEnvKey(gpa, io, tmp.dir, path, "DEEPGRAM_API_KEY", null);
+
+    const text = try tmp.dir.readFileAlloc(io, path, gpa, .limited(1 << 16));
+    defer gpa.free(text);
+    const want = try std.fmt.allocPrint(gpa, "# my note\r\nOPENAI_API_KEY=new-dummy\r\nWINTERMOLT_THEME=nord\r\nWINTERMOLT_CONFIG_VERSION={d}\r\n", .{config.CONFIG_VERSION});
+    defer gpa.free(want);
+    try testing.expectEqualStrings(want, text);
+}
