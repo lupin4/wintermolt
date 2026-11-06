@@ -173,6 +173,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `qwen3:8b`, is often not pulled yet, and the error was
   `[ollama HTTP 404] Request failed`. It now prints Ollama's own message:
   `[ollama HTTP 404] model 'qwen3:8b' not found`.
+- **When Ollama rejects a request that declares tools, its reason is shown.**
+  wintermolt retries without the tools, as before, but it used to tell you to
+  run curl to find out why. Now Ollama's message prints first, e.g.
+  `[ollama HTTP 400] Value looks like object, but can't find closing '}' symbol`.
 - **`--keys` no longer erases settings you added to `.env` by hand.** It
   rewrote `~/.wintermolt/.env` with only the keys it asks about, so a line
   such as `WINTERMOLT_STT_PROVIDER=deepgram`, the `/theme` choice, or a

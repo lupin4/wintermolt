@@ -96,74 +96,6 @@ pub const OllamaClient = struct {
         t.detach();
     }
 
-    /// Lightweight one-shot completion via /api/generate (stream:false).
-    /// Used for quick safety checks — returns the response text or error.
-    /// Short timeout (default 5s) — if Ollama is slow or down, caller should fail open.
-    pub fn quickCheck(self: *const OllamaClient, prompt: []const u8, model_override: ?[]const u8, timeout_secs: u32) ![]u8 {
-        const handle = curl_easy_init() orelse return error.CurlInitFailed;
-        curl_tls.configure(handle);
-        defer curl_easy_cleanup(handle);
-
-        const use_model = model_override orelse self.model;
-
-        // Build JSON body: {"model":"...","prompt":"...","stream":false}
-        var body_buf: std.Io.Writer.Allocating = .init(self.alloc);
-        defer body_buf.deinit();
-        const bw = &body_buf.writer;
-        try bw.writeAll("{\"model\":\"");
-        try writeJsonStr(bw, use_model);
-        try bw.writeAll("\",\"prompt\":\"");
-        try writeJsonStr(bw, prompt);
-        try bw.print("\",\"stream\":false,\"keep_alive\":\"{s}\",\"options\":{{\"num_ctx\":{d}}}}}", .{ self.keep_alive, self.num_ctx });
-        const body = try body_buf.toOwnedSlice();
-        defer self.alloc.free(body);
-
-        // Build URL: {base_url}/api/generate
-        const url = try std.fmt.allocPrint(self.alloc, "{s}/api/generate", .{self.base_url});
-        defer self.alloc.free(url);
-        const url_z = try self.alloc.dupeZ(u8, url);
-        defer self.alloc.free(url_z);
-        _ = curl_easy_setopt(handle, CURLOPT_URL, url_z.ptr);
-
-        // Headers
-        var headers: ?*CurlSlist = null;
-        defer if (headers) |h| curl_slist_free_all(h);
-        headers = curl_slist_append(headers, "Content-Type: application/json");
-        _ = curl_easy_setopt(handle, CURLOPT_HTTPHEADER, headers);
-
-        // POST body
-        _ = curl_easy_setopt(handle, CURLOPT_POST, @as(c_long, 1));
-        const body_z = try self.alloc.dupeZ(u8, body);
-        defer self.alloc.free(body_z);
-        _ = curl_easy_setopt(handle, CURLOPT_POSTFIELDS, body_z.ptr);
-        _ = curl_easy_setopt(handle, CURLOPT_POSTFIELDSIZE, @as(c_long, @intCast(body.len)));
-
-        // Response collector
-        var collector = QuickCheckCollector.init(self.alloc);
-        defer collector.deinit();
-        _ = curl_easy_setopt(handle, CURLOPT_WRITEFUNCTION, &quickCheckWriteCb);
-        _ = curl_easy_setopt(handle, CURLOPT_WRITEDATA, &collector);
-
-        // Short timeouts for safety checks
-        _ = curl_easy_setopt(handle, CURLOPT_CONNECTTIMEOUT, @as(c_long, 2));
-        _ = curl_easy_setopt(handle, CURLOPT_TIMEOUT, @as(c_long, @intCast(timeout_secs)));
-
-        // Perform
-        const result = curl_easy_perform(handle);
-        if (result != .ok) return error.CurlRequestFailed;
-
-        var http_code: c_long = 0;
-        _ = curl_easy_getinfo(handle, CURLINFO_RESPONSE_CODE, &http_code);
-        if (http_code != 200) return error.HttpError;
-
-        // Parse "response" field from JSON
-        const resp_data = collector.buf.written();
-        if (sse.findJsonString(resp_data, "response")) |response_text| {
-            return self.alloc.dupe(u8, response_text);
-        }
-        return error.MalformedResponse;
-    }
-
     /// Send a streaming chat request to Ollama with tool_use support.
     pub fn sendMessage(
         self: *const OllamaClient,
@@ -238,11 +170,9 @@ pub const OllamaClient = struct {
             // but can't find closing '}' symbol". Blaming the model sent
             // everyone looking at model capability, which was never the issue.
             const stderr = stdio.stderr();
-            stderr.print("[ollama] HTTP 400 with tools declared — retrying without them.\n", .{}) catch {};
-            stderr.print("[ollama] This is NOT proof the model lacks tool support. A 400 is\n", .{}) catch {};
-            stderr.print("[ollama] usually a malformed request on our side; Ollama's response\n", .{}) catch {};
-            stderr.print("[ollama] body says which. To read it:\n", .{}) catch {};
-            stderr.print("[ollama]   curl -s http://localhost:11434/api/chat -d @request.json\n", .{}) catch {};
+            stderr.print("[ollama HTTP 400] {s}\n", .{parser.httpErrorText()}) catch {};
+            stderr.print("[ollama] Retrying without tools. A 400 is usually a malformed request\n", .{}) catch {};
+            stderr.print("[ollama] on our side, not proof the model lacks tool support.\n", .{}) catch {};
             return self.sendMessageNoTools(system_prompt, messages, text_cb);
         }
         if (http_code != 200) {
@@ -513,31 +443,6 @@ fn writeCallback(
 ) callconv(.c) usize {
     const total = size * nmemb;
     userdata.feed(ptr[0..total]) catch return 0;
-    return total;
-}
-
-/// Response collector for quickCheck — wraps ArrayList + allocator for curl callback.
-const QuickCheckCollector = struct {
-    buf: ArrayList(u8),
-    alloc: Allocator,
-
-    fn init(alloc: Allocator) QuickCheckCollector {
-        return .{ .buf = .{}, .alloc = alloc };
-    }
-    fn deinit(self: *QuickCheckCollector) void {
-        self.buf.deinit();
-    }
-};
-
-/// curl write callback for quickCheck (non-streaming, collects into buffer).
-fn quickCheckWriteCb(
-    ptr: [*]const u8,
-    size: usize,
-    nmemb: usize,
-    userdata: *QuickCheckCollector,
-) callconv(.c) usize {
-    const total = size * nmemb;
-    userdata.buf.appendSlice(userdata.alloc, ptr[0..total]) catch return 0;
     return total;
 }
 
