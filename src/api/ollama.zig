@@ -170,7 +170,8 @@ pub const OllamaClient = struct {
             // but can't find closing '}' symbol". Blaming the model sent
             // everyone looking at model capability, which was never the issue.
             const stderr = stdio.stderr();
-            stderr.print("[ollama HTTP 400] {s}\n", .{parser.httpErrorText()}) catch {};
+            const why = parser.httpErrorText();
+            stderr.print("[ollama HTTP 400] {s}\n", .{if (why.len > 0) why else "Request failed"}) catch {};
             stderr.print("[ollama] Retrying without tools. A 400 is usually a malformed request\n", .{}) catch {};
             stderr.print("[ollama] on our side, not proof the model lacks tool support.\n", .{}) catch {};
             return self.sendMessageNoTools(system_prompt, messages, text_cb);
