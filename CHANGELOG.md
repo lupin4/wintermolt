@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-11-07
+
 ### Security
 
 - **`--chat` admits nobody until you allow them**, with OpenClaw's rules and
