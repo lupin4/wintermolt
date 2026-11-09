@@ -24,6 +24,8 @@
 //   WINTERMOLT_OLLAMA_CTX    — Optional. Context window cap (default: 8192). Prevents OOM.
 //   WINTERMOLT_OLLAMA_KEEP_ALIVE — Optional. Model unload timer (default: "5m", "30m" once
 //                              /listen is used). "0" unloads immediately.
+//   WINTERMOLT_OLLAMA_THINK  — Optional. "0" turns thinking off, "1" on (default: unset, Ollama
+//                              decides). Read per client by api/ollama.zig
 //   WINTERMOLT_VISION_MODEL  — Optional. A request carrying an image goes to this model (default: the main model)
 //   WINTERMOLT_VISION_BACKEND — Optional. Vision routing: "ollama" (default) or "openai"
 //   OPENAI_API_KEY           — Optional. Enables OpenAI backend (/model openai)

@@ -15,6 +15,7 @@
 const std = @import("std");
 const curl_tls = @import("../curl_tls.zig");
 const curl_timeouts = @import("curl_timeouts.zig");
+const compat = @import("../compat.zig");
 const stdio = @import("../stdio.zig");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
@@ -51,6 +52,16 @@ const CURLOPT_TIMEOUT: c_int = 13;
 const CURLOPT_CONNECTTIMEOUT: c_int = 78;
 const CURLINFO_RESPONSE_CODE: c_int = 0x200002;
 
+/// WINTERMOLT_OLLAMA_THINK: whether a model that can think does. null, when it
+/// is unset or not one of these words, sends nothing and Ollama decides (it
+/// thinks with any model that can).
+pub fn parseThink(raw: ?[]const u8) ?bool {
+    const text = std.mem.trim(u8, raw orelse return null, " \t\r\n");
+    for ([_][]const u8{ "0", "false", "off" }) |w| if (std.ascii.eqlIgnoreCase(text, w)) return false;
+    for ([_][]const u8{ "1", "true", "on" }) |w| if (std.ascii.eqlIgnoreCase(text, w)) return true;
+    return null;
+}
+
 // ---------------------------------------------------------------------------
 // OllamaClient
 // ---------------------------------------------------------------------------
@@ -61,6 +72,7 @@ pub const OllamaClient = struct {
     model: []const u8, // "llava", "llama3", etc.
     num_ctx: u32, // Context window cap — prevents OOM on constrained devices
     keep_alive: []const u8, // Model unload timer — "5m", "0" = unload immediately
+    think: ?bool = null,
 
     pub fn init(alloc: Allocator, base_url: []const u8, model: []const u8) OllamaClient {
         return .{
@@ -69,6 +81,7 @@ pub const OllamaClient = struct {
             .model = model,
             .num_ctx = 4096,
             .keep_alive = "5m",
+            .think = parseThink(compat.getenv("WINTERMOLT_OLLAMA_THINK")),
         };
     }
 
@@ -79,6 +92,7 @@ pub const OllamaClient = struct {
             .model = model,
             .num_ctx = num_ctx,
             .keep_alive = keep_alive,
+            .think = parseThink(compat.getenv("WINTERMOLT_OLLAMA_THINK")),
         };
     }
 
@@ -234,7 +248,9 @@ pub const OllamaClient = struct {
 
         try w.writeAll("{\"model\":\"");
         try writeJsonStr(w, self.model);
-        try w.print("\",\"stream\":true,\"keep_alive\":\"{s}\",\"options\":{{\"num_ctx\":{d}}},\"messages\":[", .{ self.keep_alive, self.num_ctx });
+        try w.print("\",\"stream\":true,\"keep_alive\":\"{s}\",\"options\":{{\"num_ctx\":{d}}}", .{ self.keep_alive, self.num_ctx });
+        if (self.think) |t| try w.writeAll(if (t) ",\"think\":true" else ",\"think\":false");
+        try w.writeAll(",\"messages\":[");
 
         var first = true;
 
@@ -555,4 +571,27 @@ test "http error: Ollama's own message is kept, with or without a newline" {
     var empty = ndjson.NdjsonParser.init(alloc, null);
     defer empty.deinit();
     try std.testing.expectEqualStrings("", empty.httpErrorText());
+}
+
+test "WINTERMOLT_OLLAMA_THINK: 0/false/off and 1/true/on; anything else leaves it to Ollama" {
+    try std.testing.expectEqual(@as(?bool, null), parseThink(null));
+    try std.testing.expectEqual(@as(?bool, null), parseThink(""));
+    try std.testing.expectEqual(@as(?bool, null), parseThink("maybe"));
+    for ([_][]const u8{ "0", "false", " OFF\r\n" }) |s| try std.testing.expectEqual(@as(?bool, false), parseThink(s));
+    for ([_][]const u8{ "1", "true", "On" }) |s| try std.testing.expectEqual(@as(?bool, true), parseThink(s));
+}
+
+// With thinking on, Ollama's default for qwen3, qwen3:0.6b ends a reply with
+// the "/think" switch it was trained on. "think":false stops it.
+test "ollama request: think is sent only when set" {
+    const alloc = std.testing.allocator;
+    var client = OllamaClient.init(alloc, "http://127.0.0.1:9", "m");
+    client.think = null;
+    const unset = try client.serializeRequest("", &.{}, &.{});
+    defer alloc.free(unset);
+    try std.testing.expect(std.mem.indexOf(u8, unset, "\"think\"") == null);
+    client.think = false;
+    const off = try client.serializeRequest("", &.{}, &.{});
+    defer alloc.free(off);
+    try std.testing.expect(std.mem.indexOf(u8, off, ",\"think\":false,") != null);
 }

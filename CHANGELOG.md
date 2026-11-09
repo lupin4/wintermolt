@@ -6,6 +6,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **`WINTERMOLT_OLLAMA_THINK`** turns thinking off (`0`) or on (`1`) for an
+  Ollama model that can think, such as qwen3 or gemma4. Unset, Ollama
+  decides, and it thinks with any model that can. Off is faster, and it stops
+  qwen3:0.6b ending a reply with `/think`, the switch it was trained on. `0`
+  is harmless with any model; `1` with one that cannot think fails with
+  Ollama's `does not support thinking`.
+
 ## [0.7.0] — 2026-11-07
 
 ### Security
