@@ -297,6 +297,9 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
+        // As the exe does: compat.getenv is libc's getenv off Windows, and only
+        // macOS links libc without being asked.
+        .link_libc = true,
     });
     // Same module the exe gets: without it `@import("llama_c")` fails to resolve
     // under `zig build test`. NOTE: this test module still links none of the
