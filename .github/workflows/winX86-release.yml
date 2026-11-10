@@ -1,0 +1,86 @@
+name: Wintermolt winX86 release binary
+
+# Builds the binary published as prebuilt/wintermolt-windows-x86_64.exe
+# natively on a Windows runner, the way the winX86 machine does. It uses MSYS2
+# UCRT64 for libcurl and sqlite3: the runner ships it at C:\msys64, the path
+# build.zig links from. The build uses -Dcpu=x86_64_v3 and is stripped like
+# the other releases. It never uses -Dtarget=. The dep kernels are the
+# committed prebuilt/winX86/lib archives.
+#
+# The binary is uploaded as an artifact only, as in linX86-release.yml.
+# Attaching it to a release stays a manual step, after review.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Commit, branch or tag to build (a tag builds that release)
+        default: main
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          release: false # the runner's own C:\msys64, where build.zig looks
+          update: false
+          # gcc brings libucrtbase.a and lib/gcc, which build.zig links from.
+          install: >-
+            mingw-w64-ucrt-x86_64-curl
+            mingw-w64-ucrt-x86_64-sqlite3
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-pkgconf
+
+      - name: Put MSYS2 UCRT64 on PATH
+        run: |
+          echo 'C:\msys64\ucrt64\bin' >> "$GITHUB_PATH"
+          git config --global core.autocrlf false
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Build
+        run: zig build -Doptimize=ReleaseFast -Dcpu=x86_64_v3 -Dstrip=true
+
+      - name: Test
+        run: zig build test --summary all
+
+      - name: Check the binary
+        run: |
+          set -eu
+          B=zig-out/bin/wintermolt.exe
+          ls -l "$B"
+          "$B" --version
+
+          zmm=$(objdump -d "$B" | grep -c zmm || true)
+          echo "zmm (AVX-512) instructions: $zmm"
+          [ "$zmm" -eq 0 ]
+          echo "ymm (AVX2) instructions: $(objdump -d "$B" | grep -c ymm || true)"
+
+          # Windows system DLLs only: an MSYS2 lib*.dll would not exist on the
+          # user's machine.
+          objdump -p "$B" | grep 'DLL Name'
+          if objdump -p "$B" | grep -iE 'DLL Name: lib'; then exit 1; fi
+
+          printf '/stats\n/quit\n' | "$B"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wintermolt-windows-x86_64
+          path: zig-out/bin/wintermolt.exe
+          retention-days: 14
