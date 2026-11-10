@@ -202,19 +202,48 @@ an arm64 binary that would not start on JetPack 6 (#2). The container is
 native on an aarch64 host — no emulation:
 
 ```bash
-docker run --rm -v "$PWD":/w -v "$(dirname "$(dirname "$(readlink -f "$(which zig)")")")":/zig:ro \
-  -w /w ubuntu:22.04 bash -c '
+docker run --rm -v "$PWD":/w -v "$(dirname "$(readlink -f "$(which zig)")")":/zig:ro \
+  -w /w -e OWNER="$(id -u):$(id -g)" ubuntu:22.04 bash -c '
     apt-get update -qq && apt-get install -y -qq libcurl4-openssl-dev libsqlite3-dev
     HOME=/tmp/zh /zig/zig build -Doptimize=ReleaseFast -Dcpu=baseline -Dstrip=true \
-      --cache-dir /tmp/zc --global-cache-dir /tmp/zg --prefix /tmp/out'
+      --cache-dir /tmp/zc --global-cache-dir /tmp/zg --prefix /tmp/out
+    cp /tmp/out/bin/wintermolt prebuilt/wintermolt-linux-arm64
+    chown "$OWNER" prebuilt/wintermolt-linux-arm64'
 ```
+
+Three things in that command are easy to get wrong, and each one did go wrong:
+
+- **One `dirname`, not two.** The mount has to be the directory holding both
+  the `zig` binary and `lib/`, because Zig finds its standard library relative
+  to its own executable. zigup puts the binary at
+  `~/.local/share/zigup/<ver>/files/zig`, so that directory is `files`. Mount
+  one level higher and the build dies with `/zig/zig: No such file or
+  directory` — before Zig runs at all, so there is no stdlib error to hint at
+  the cause.
+- **Copy the binary out.** `--prefix /tmp/out` writes inside the container, and
+  `--rm` then deletes it. Without the `cp` the build succeeds and leaves
+  nothing behind.
+- **`chown` what you copied.** Docker runs as root, so anything written into
+  the repo lands root-owned and will not delete without `sudo`. The caches stay
+  under `/tmp` for the same reason; only the one copied file needs an owner.
+  Running the whole container as `--user` instead does not work here, because
+  `apt-get install` needs root.
 
 Then verify the floor before publishing — the highest version here must be the
 one the platform table claims:
 
 ```bash
 objdump -T prebuilt/wintermolt-linux-arm64 | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1
+objdump -T prebuilt/wintermolt-linux-arm64 | grep -c arc4random_buf    # must be 0
 ```
+
+A 2.35 container yielding a 2.34 floor is correct, not a mistake to go fix: the
+floor is the highest version the binary actually *binds*, not the container's
+own glibc, and nothing in this build references a symbol versioned above 2.34.
+That is why the second check matters. `arc4random_buf` is the symbol that would
+raise the floor, so its absence is positive evidence the container did its job
+— a floor that merely looks right can also come from a host build that happened
+not to bind anything newer yet.
 
 The macOS binary's minimum is likewise the macOS of the machine that built it.
 Zig takes it from the host and ignores `MACOSX_DEPLOYMENT_TARGET` (#5). Check
