@@ -67,9 +67,14 @@ jobs:
           ls -l "$B"
           "$B" --version
 
+          # The exe links MSYS2's static libcrypto.a, whose AVX-512 code OpenSSL
+          # runs only after its CPUID checks. So the exe's zmm count must match
+          # libcrypto's own. One more is ours, and above the x86_64_v3 floor.
+          # This is winX86's check from a3cbf94.
           zmm=$(objdump -d "$B" | grep -c zmm || true)
-          echo "zmm (AVX-512) instructions: $zmm"
-          [ "$zmm" -eq 0 ]
+          ssl=$(objdump -d C:/msys64/ucrt64/lib/libcrypto.a | grep -c zmm || true)
+          echo "zmm (AVX-512) instructions: $zmm; libcrypto.a alone: $ssl"
+          [ "$zmm" -eq "$ssl" ]
           echo "ymm (AVX2) instructions: $(objdump -d "$B" | grep -c ymm || true)"
 
           # Windows system DLLs only: an MSYS2 lib*.dll would not exist on the
