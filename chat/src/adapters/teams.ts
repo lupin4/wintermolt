@@ -57,6 +57,9 @@ export function createAdapter(): ChatAdapter {
             channel: body.conversation?.id ?? 'unknown',
             text: body.text,
             threadId: body.conversation?.id ?? undefined,
+            chatType: body.conversation?.conversationType === 'personal' ? 'direct' : 'group',
+            mentioned: (body.entities ?? []).some((e: any) =>
+              e.type === 'mention' && e.mentioned?.id === body.recipient?.id),
           });
         }
 

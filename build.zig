@@ -297,6 +297,9 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
+        // As the exe does: compat.getenv is libc's getenv off Windows, and only
+        // macOS links libc without being asked.
+        .link_libc = true,
     });
     // Same module the exe gets: without it `@import("llama_c")` fails to resolve
     // under `zig build test`. NOTE: this test module still links none of the
@@ -406,8 +409,9 @@ pub fn build(b: *std.Build) void {
     });
     test_step.dependOn(&b.addRunArtifact(banner_test).step);
 
-    // Skill manifests, and `skills use` handing a skill's role prompt to the
-    // model. Its own root for the same reason; libc for fsio and bash.zig.
+    // Skill manifests, `skills use` handing a skill's role prompt to the
+    // model, and the workspace files and SKILL.md skills in the prompt. Its own root for the same
+    // reason; libc for fsio and bash.zig.
     const skill_loader_test = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/skill_loader_tests.zig"),
@@ -417,6 +421,60 @@ pub fn build(b: *std.Build) void {
         }),
     });
     test_step.dependOn(&b.addRunArtifact(skill_loader_test).step);
+
+    // Images the agent takes or is handed: type sniffing and the camera tool's
+    // `view`. Its own root for the same reason; libc for fsio.
+    const camera_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/camera_tests.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+    });
+    test_step.dependOn(&b.addRunArtifact(camera_test).step);
+
+    // Voice: picking a speech provider, building its request or command line
+    // (the text is model output), and reading a transcript back. Its own root
+    // for the same reason; libc for getenv.
+    const voice_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/voice_tests.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+    });
+    test_step.dependOn(&b.addRunArtifact(voice_test).step);
+
+    // --chat: who may reach the agent (the policy decision, and the pairing
+    // store on an in-memory database) and how a sidecar line is read. Its own
+    // root for the same reason; libc and sqlite3 for the store.
+    const chat_access_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/chat_tests.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+    });
+    chat_access_test.root_module.linkSystemLibrary("sqlite3", .{});
+    test_step.dependOn(&b.addRunArtifact(chat_access_test).step);
+
+    // --web: who may open the socket (token, Origin), and the page and the
+    // socket over a real connection on a free port. Its own root for the same
+    // reason; libc for fsio.
+    const web_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/web_tests.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+    });
+    // The gateway stamps its replies with forTime's clock.
+    addPrebuiltArchive(web_test.root_module, b, "fortime", short_target);
+    test_step.dependOn(&b.addRunArtifact(web_test).step);
 
     // The environment, end to end: a value setenv puts there at runtime (every
     // ~/.wintermolt/.env key does) must reach getenv and each child spawned
@@ -433,6 +491,23 @@ pub fn build(b: *std.Build) void {
     const run_env_tests = b.addRunArtifact(env_tests);
     test_step.dependOn(&run_env_tests.step);
     b.step("test-env", "Run the environment tests (setenv, .env, child processes)").dependOn(&run_env_tests.step);
+
+    // Stopping a run and asking before a command runs (agent/control.zig), and
+    // the bash tool killing its command on a stop. Its own root for the same
+    // reason; forTime for the clock the stop test times itself with. Also
+    // runnable alone as `zig build test-control`.
+    const control_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/control_tests.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+    });
+    addPrebuiltArchive(control_tests.root_module, b, "fortime", short_target);
+    const run_control_tests = b.addRunArtifact(control_tests);
+    test_step.dependOn(&run_control_tests.step);
+    b.step("test-control", "Run the stop and command-approval tests").dependOn(&run_control_tests.step);
 
     // `-e` end to end, on the real binary: a request no backend answers must
     // fail the process, or a script cannot tell it from an answer. The
@@ -471,6 +546,38 @@ pub fn build(b: *std.Build) void {
     cli_no_fallback.expectExitCode(1);
     test_step.dependOn(&cli_no_fallback.step);
     test_cli.dependOn(&cli_no_fallback.step);
+
+    // WINTERMOLT_BACKEND is an explicit request: a backend that cannot be built
+    // must fail the run before the first request, not quietly answer from
+    // Ollama. A mistyped name and a cloud backend with no key are the two ways
+    // to get there; the environment is emptied, so `openai` has no key to find.
+    const cli_bad_backend_name = b.addRunArtifact(exe);
+    cli_bad_backend_name.setName("run wintermolt -e with WINTERMOLT_BACKEND=opnai");
+    cli_bad_backend_name.addArgs(&.{ "-e", "hi" });
+    cli_bad_backend_name.clearEnvironment();
+    if (b.graph.environ_map.get("SystemRoot")) |root| {
+        cli_bad_backend_name.setEnvironmentVariable("SystemRoot", root);
+    }
+    cli_bad_backend_name.setEnvironmentVariable("WINTERMOLT_BACKEND", "opnai");
+    cli_bad_backend_name.setEnvironmentVariable("WINTERMOLT_NO_HISTORY", "1");
+    cli_bad_backend_name.addCheck(.{ .expect_stderr_match = "[backend] Unknown: opnai" });
+    cli_bad_backend_name.expectExitCode(1);
+    test_step.dependOn(&cli_bad_backend_name.step);
+    test_cli.dependOn(&cli_bad_backend_name.step);
+
+    const cli_backend_without_key = b.addRunArtifact(exe);
+    cli_backend_without_key.setName("run wintermolt -e with WINTERMOLT_BACKEND=openai and no key");
+    cli_backend_without_key.addArgs(&.{ "-e", "hi" });
+    cli_backend_without_key.clearEnvironment();
+    if (b.graph.environ_map.get("SystemRoot")) |root| {
+        cli_backend_without_key.setEnvironmentVariable("SystemRoot", root);
+    }
+    cli_backend_without_key.setEnvironmentVariable("WINTERMOLT_BACKEND", "openai");
+    cli_backend_without_key.setEnvironmentVariable("WINTERMOLT_NO_HISTORY", "1");
+    cli_backend_without_key.addCheck(.{ .expect_stderr_match = "OPENAI_API_KEY not set" });
+    cli_backend_without_key.expectExitCode(1);
+    test_step.dependOn(&cli_backend_without_key.step);
+    test_cli.dependOn(&cli_backend_without_key.step);
 }
 
 fn getShortTargetName(t: std.Target) []const u8 {

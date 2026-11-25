@@ -4,7 +4,14 @@
 //
 // Reads configuration from environment variables:
 //   WINTERMOLT_MODEL         — Optional. Model ID (default: qwen3:8b via Ollama)
+//   WINTERMOLT_BACKEND       — Optional. Backend a run starts on: ollama (default),
+//                              claude, openai, deepseek, qwen, gemini, kernel, forai.
+//                              AgentLoop.init builds it, so every mode follows it
 //   WINTERMOLT_TOKENS        — Optional. Max response tokens (default: 8192)
+//   WINTERMOLT_MAX_ITERATIONS — Optional. Tool-loop iterations per turn before the agent
+//                              gives up (default: 25). Raise it for long multi-step tasks
+//                              (e.g. one fix per file across a repo); each iteration is one
+//                              model request plus its tool calls
 //   WINTERMOLT_NO_HISTORY    — Optional. Set to "1" to disable SQLite history
 //   WINTERMOLT_NO_FALLBACK   — Optional. Set to "1": a failed request fails (no Ollama/OpenAI retry)
 //   WINTERMOLT_NO_TOOLS      — Optional. Set to "1": send no tool definitions (models without
@@ -14,9 +21,12 @@
 //                              api/curl_timeouts.zig
 //   WINTERMOLT_OLLAMA_URL    — Optional. Ollama base URL (default: http://localhost:11434)
 //   WINTERMOLT_OLLAMA_MODEL  — Optional. Ollama model (default: qwen3:8b)
-//   WINTERMOLT_OLLAMA_CTX    — Optional. Context window cap (default: 4096). Prevents OOM.
-//   WINTERMOLT_OLLAMA_KEEP_ALIVE — Optional. Model unload timer (default: "5m"). "0" unloads immediately.
-//   WINTERMOLT_VISION_MODEL  — Optional. Vision model for /look (default: llava)
+//   WINTERMOLT_OLLAMA_CTX    — Optional. Context window cap (default: 8192). Prevents OOM.
+//   WINTERMOLT_OLLAMA_KEEP_ALIVE — Optional. Model unload timer (default: "5m", "30m" once
+//                              /listen is used). "0" unloads immediately.
+//   WINTERMOLT_OLLAMA_THINK  — Optional. "0" turns thinking off, "1" on (default: unset, Ollama
+//                              decides). Read per client by api/ollama.zig
+//   WINTERMOLT_VISION_MODEL  — Optional. A request carrying an image goes to this model (default: the main model)
 //   WINTERMOLT_VISION_BACKEND — Optional. Vision routing: "ollama" (default) or "openai"
 //   OPENAI_API_KEY           — Optional. Enables OpenAI backend (/model openai)
 //   WINTERMOLT_OPENAI_MODEL  — Optional. OpenAI model (default: "gpt-4o-mini")
@@ -27,7 +37,12 @@
 //   WINTERMOLT_QWEN_MODEL    — Optional. Qwen model (default: "qwen-plus")
 //   GOOGLE_GEMINI_API_KEY    — Optional. Enables Gemini backend (/model gemini)
 //   WINTERMOLT_GEMINI_MODEL  — Optional. Gemini model (default: "gemini-2.0-flash")
-//   WINTERMOLT_WEB_PORT      — Optional. Web UI port (default: 3000)
+//   WINTERMOLT_WEB_PORT      — Optional. Web UI port (default: 3000; PORT wins)
+//   WINTERMOLT_WEB_HOST      — Optional. Web UI listen address (default: 127.0.0.1)
+//   WINTERMOLT_WEB_TOKEN     — Optional. Fixed web UI token, 16+ chars (default: random)
+//   WINTERMOLT_GATEWAY_PORT  — Optional. --gateway port (default: 8080)
+//   WINTERMOLT_GATEWAY_HOST  — Optional. --gateway listen address (default: 127.0.0.1)
+//   WINTERMOLT_GATEWAY_KEY   — Optional. Fixed --gateway API key, 16+ chars (default: random)
 //   PINECONE_API_KEY         — Optional. Enables RAG semantic search.
 //   PINECONE_HOST            — Required if API key set. Index host URL.
 //   PINECONE_INDEX           — Optional. Index name (default: "wintermolt")
@@ -80,9 +95,15 @@
 //   GOOGLE_CLIENT_SECRET     — OAuth2 client secret
 //   GOOGLE_REFRESH_TOKEN     — OAuth2 refresh token (offline access)
 //
-// TTS / Voice synthesis:
-//   WINTERMOLT_TTS_PROVIDER  — Optional. TTS provider: "openai", "elevenlabs", "edge" (default: off)
-//   WINTERMOLT_TTS_VOICE     — Optional. Voice name (default: "alloy" for OpenAI)
+// Voice (/tts, /listen, the text_to_speech tool):
+//   WINTERMOLT_TTS_PROVIDER  — Optional. "deepgram", "openai", "elevenlabs", "piper", "edge" or "system"
+//                              (default: the first whose key is set, else "system", the computer's own voice)
+//   WINTERMOLT_TTS_VOICE     — Optional. Voice name (default: each provider's own, e.g. Deepgram's thalia)
+//   DEEPGRAM_API_KEY         — Optional. Deepgram: Aura-2 speech, and nova-3 transcription
+//   WINTERMOLT_STT_PROVIDER  — Optional. "whisper" or "deepgram" (default: whisper.cpp when a model is found)
+//   WINTERMOLT_WHISPER_MODEL — Optional. ggml model path (default: the first ggml-*.bin in ~/.wintermolt/models)
+//   WINTERMOLT_MIC           — Optional. Microphone for /listen (default: the first DirectShow audio device,
+//                              ":0" on macOS, PulseAudio's "default" elsewhere)
 //   ELEVENLABS_API_KEY       — Optional. ElevenLabs API key
 //   ELEVENLABS_VOICE_ID      — Optional. ElevenLabs voice ID
 
@@ -91,6 +112,7 @@ const fsio = @import("../fsio.zig");
 const stdio = @import("../stdio.zig");
 const compat = @import("../compat.zig");
 const wm_config = @import("wm_config.zig");
+const tts = @import("tts.zig");
 
 /// Current config version.
 pub const CONFIG_VERSION: u32 = 1;
@@ -107,6 +129,17 @@ pub const CONFIG_VERSION: u32 = 1;
 /// the small one back sets WINTERMOLT_MODEL / WINTERMOLT_OLLAMA_MODEL, which
 /// still win over this.
 pub const default_local_model = "qwen3:8b";
+
+/// Tool-loop budget for one turn: WINTERMOLT_MAX_ITERATIONS as a positive
+/// integer, or 25 when unset, malformed, or zero. Pulled out of load() so the
+/// decision is unit-testable without the file I/O load() performs.
+pub fn parseMaxIterations(raw: ?[]const u8) u32 {
+    const text = raw orelse return default_max_iterations;
+    const parsed = std.fmt.parseInt(u32, text, 10) catch return default_max_iterations;
+    return if (parsed == 0) default_max_iterations else parsed;
+}
+
+pub const default_max_iterations: u32 = 25;
 
 /// Check config version from .env and print migration notices if needed.
 pub fn migrateConfig() void {
@@ -188,7 +221,20 @@ const libc_setenv = @extern(*const fn ([*:0]const u8, [*:0]const u8, c_int) call
 pub const Config = struct {
     api_key: []const u8,
     model: []const u8,
+    // WINTERMOLT_BACKEND: the backend a run starts on. null keeps the Ollama
+    // default. AgentLoop.init builds it, so --chat, --web, --gateway and
+    // subagent children follow the same choice; a name that cannot be built
+    // fails startup instead of falling back to Ollama.
+    backend: ?[]const u8,
+    // True when WINTERMOLT_MODEL, or wintermolt.json's cloud override, named
+    // the model: the startup backend then uses `model` as-is instead of its own
+    // variable and default. See backend above.
+    model_named: bool,
     max_tokens: u32,
+    // Tool-loop budget for one user turn: after this many model requests the loop
+    // stops with the "max iterations" warning. WINTERMOLT_MAX_ITERATIONS overrides
+    // the 25 default; a value of 0 is treated as the default so a turn always runs.
+    max_iterations: u32,
     system_prompt: []const u8,
     history_enabled: bool,
     // False: a failed request fails, instead of being retried on Ollama/OpenAI.
@@ -199,7 +245,7 @@ pub const Config = struct {
     ollama_model: []const u8,
     ollama_num_ctx: u32,
     ollama_keep_alive: []const u8,
-    vision_model: []const u8,
+    vision_model: ?[]const u8,
     vision_backend: []const u8,
     // Multi-backend support
     openai_api_key: ?[]const u8,
@@ -225,9 +271,8 @@ pub const Config = struct {
     sandbox_timeout: u32,
     sandbox_memory: []const u8,
     sandbox_network: []const u8,
-    // TTS / Voice synthesis
-    tts_provider: ?[]const u8,
-    tts_voice: []const u8,
+    // TTS / Voice synthesis (tts.zig reads its own settings; these are for redaction)
+    deepgram_api_key: ?[]const u8,
     elevenlabs_api_key: ?[]const u8,
     elevenlabs_voice_id: ?[]const u8,
     constitution_alloc: ?[]u8 = null,
@@ -256,10 +301,26 @@ pub const Config = struct {
         else
             (profile.chat_local orelse compat.getenv("WINTERMOLT_MODEL") orelse default_local_model);
 
+        // Empty is unset: `WINTERMOLT_BACKEND=` in a .env must not fail startup.
+        const backend = blk: {
+            const name = compat.getenv("WINTERMOLT_BACKEND") orelse break :blk null;
+            break :blk if (name.len > 0) name else null;
+        };
+
+        // A named model outranks the selected backend's own model variable and
+        // default, so WINTERMOLT_BACKEND only picks where a request goes. The
+        // cloud override counts as named: wintermolt.json chose that model.
+        const model_named = prefer_cloud or blk: {
+            const named = compat.getenv("WINTERMOLT_MODEL") orelse break :blk false;
+            break :blk named.len > 0;
+        };
+
         const max_tokens: u32 = blk: {
             const tokens_str = compat.getenv("WINTERMOLT_TOKENS") orelse break :blk 8192;
             break :blk std.fmt.parseInt(u32, tokens_str, 10) catch 8192;
         };
+
+        const max_iterations = parseMaxIterations(compat.getenv("WINTERMOLT_MAX_ITERATIONS"));
 
         const history_enabled = blk: {
             const no_hist = compat.getenv("WINTERMOLT_NO_HISTORY") orelse break :blk true;
@@ -292,8 +353,7 @@ pub const Config = struct {
         const ollama_keep_alive = compat.getenv("WINTERMOLT_OLLAMA_KEEP_ALIVE") orelse
             "5m";
         const vision_model = profile.vision_model orelse
-            compat.getenv("WINTERMOLT_VISION_MODEL") orelse
-            "llava";
+            compat.getenv("WINTERMOLT_VISION_MODEL");
         const vision_backend = compat.getenv("WINTERMOLT_VISION_BACKEND") orelse
             "ollama";
 
@@ -337,8 +397,7 @@ pub const Config = struct {
         const sandbox_network = compat.getenv("WINTERMOLT_SANDBOX_NETWORK") orelse "none";
 
         // TTS / Voice
-        const tts_provider = compat.getenv("WINTERMOLT_TTS_PROVIDER");
-        const tts_voice = compat.getenv("WINTERMOLT_TTS_VOICE") orelse "alloy";
+        const deepgram_api_key = compat.getenv("DEEPGRAM_API_KEY");
         const elevenlabs_api_key = compat.getenv("ELEVENLABS_API_KEY");
         const elevenlabs_voice_id = compat.getenv("ELEVENLABS_VOICE_ID");
 
@@ -351,7 +410,10 @@ pub const Config = struct {
         return .{
             .api_key = api_key,
             .model = model,
+            .backend = backend,
+            .model_named = model_named,
             .max_tokens = max_tokens,
+            .max_iterations = max_iterations,
             .system_prompt = constitution_text,
             .history_enabled = history_enabled,
             .fallback_enabled = fallback_enabled,
@@ -381,8 +443,7 @@ pub const Config = struct {
             .sandbox_timeout = sandbox_timeout,
             .sandbox_memory = sandbox_memory,
             .sandbox_network = sandbox_network,
-            .tts_provider = tts_provider,
-            .tts_voice = tts_voice,
+            .deepgram_api_key = deepgram_api_key,
             .elevenlabs_api_key = elevenlabs_api_key,
             .elevenlabs_voice_id = elevenlabs_voice_id,
             .constitution_alloc = constitution_heap,
@@ -507,10 +568,7 @@ pub fn buildCapabilities(config: *const Config, alloc: std.mem.Allocator, tool_c
     else
         try w.writeAll("\n  - Pinecone RAG: OFF (no PINECONE_API_KEY)\n");
 
-    if (config.tts_provider) |tts|
-        try w.print("\n  - TTS: {s} (voice: {s})\n", .{ tts, config.tts_voice })
-    else
-        try w.writeAll("\n  - TTS: OFF\n");
+    try w.print("\n  - TTS: {s}\n", .{@tagName(tts.providerFromEnv())});
 
     if (config.history_enabled)
         try w.writeAll("\nChat history: ON (SQLite persistent)\n")
@@ -533,3 +591,18 @@ pub const default_constitution =
     \\You can see images when the user shares them (camera capture, screenshots).
     \\Describe what you see in detail when asked.
 ;
+
+test "parseMaxIterations: unset, malformed and zero fall back to the default" {
+    try std.testing.expectEqual(default_max_iterations, parseMaxIterations(null));
+    try std.testing.expectEqual(default_max_iterations, parseMaxIterations(""));
+    try std.testing.expectEqual(default_max_iterations, parseMaxIterations("abc"));
+    try std.testing.expectEqual(default_max_iterations, parseMaxIterations("-3"));
+    try std.testing.expectEqual(default_max_iterations, parseMaxIterations("0"));
+    try std.testing.expectEqual(default_max_iterations, parseMaxIterations("1.5"));
+}
+
+test "parseMaxIterations: a positive integer is honoured verbatim" {
+    try std.testing.expectEqual(@as(u32, 1), parseMaxIterations("1"));
+    try std.testing.expectEqual(@as(u32, 80), parseMaxIterations("80"));
+    try std.testing.expectEqual(@as(u32, 4294967295), parseMaxIterations("4294967295"));
+}

@@ -44,6 +44,8 @@ extern fn curl_easy_strerror(code: CurlCode) [*:0]const u8;
 
 const CurlCode = enum(c_int) {
     ok = 0,
+    /// curl_timeouts.zig's progress callback: a /stop, not a failure.
+    aborted_by_callback = 42,
     _,
 };
 
@@ -162,7 +164,7 @@ pub const Client = struct {
                 // curl-level failure (network, DNS, etc.) — not retryable
                 const err_msg = curl_easy_strerror(result);
                 const stderr = stdio.stderr();
-                stderr.print("\n[curl error] {s}\n", .{err_msg}) catch {};
+                if (result != .aborted_by_callback) stderr.print("\n[curl error] {s}\n", .{err_msg}) catch {};
                 return error.CurlRequestFailed;
             }
 
@@ -199,6 +201,16 @@ pub const Client = struct {
             // chain can prioritize local models (zero rate limits)
             if (http_code == 429) return error.RateLimited;
 
+            return error.HttpError;
+        }
+
+        // An error event inside a 200 means the request failed even though the
+        // status said otherwise; the partial response would read as an answer.
+        if (parser.stream_failed) {
+            const stderr = stdio.stderr();
+            stderr.print("\n[claude] stream error: {s}\n", .{
+                parser.stream_error orelse "provider reported an error event",
+            }) catch {};
             return error.HttpError;
         }
 

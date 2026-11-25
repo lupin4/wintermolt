@@ -58,16 +58,22 @@ export function createAdapter(): ChatAdapter {
 
           if (msg.msg === 'changed' && msg.collection === 'stream-room-messages') {
             for (const event of msg.fields?.args ?? []) {
-              if (event.u?._id === USER_ID) continue;
+              if (!event.u?._id || event.u._id === USER_ID) continue;
 
+              // A DM's room ID is its two members' user IDs joined, so it
+              // holds ours and is exactly twice as long.
+              const rid = String(event.rid ?? '');
+              const direct = rid.length === USER_ID.length * 2 && rid.includes(USER_ID);
               sendToAgent({
                 type: 'message',
                 platform: 'rocketchat',
-                from: event.u?._id ?? 'unknown',
+                from: event.u._id,
                 fromName: event.u?.username ?? undefined,
                 channel: event.rid,
                 text: event.msg ?? '',
                 threadId: event.tmid ?? undefined,
+                chatType: direct ? 'direct' : 'group',
+                mentioned: (event.mentions ?? []).some((m: any) => m._id === USER_ID),
               });
             }
           }

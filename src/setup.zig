@@ -12,9 +12,29 @@ const std = @import("std");
 const compat = @import("compat.zig");
 const stdio = @import("stdio.zig");
 const fsio = @import("fsio.zig");
+const config_mod = @import("agent/config.zig");
+
+pub const ApiKey = struct { key: []const u8, label: []const u8, hint: ?[]const u8 };
+
+/// The keys /keys sets and the web UI's Keys panel shows (set or not, never the value).
+pub const api_keys = [_]ApiKey{
+    .{ .key = "ANTHROPIC_API_KEY", .label = "Anthropic (Claude)", .hint = "sk-ant-" },
+    .{ .key = "OPENAI_API_KEY", .label = "OpenAI (GPT + TTS)", .hint = "sk-" },
+    .{ .key = "GOOGLE_GEMINI_API_KEY", .label = "Google Gemini", .hint = "AIza" },
+    .{ .key = "DEEPSEEK_API_KEY", .label = "DeepSeek", .hint = "sk-" },
+    .{ .key = "QWEN_API_KEY", .label = "Qwen", .hint = null },
+    .{ .key = "PINECONE_API_KEY", .label = "Pinecone (RAG)", .hint = null },
+    .{ .key = "PINECONE_HOST", .label = "Pinecone Host URL", .hint = "https://" },
+    .{ .key = "ELEVENLABS_API_KEY", .label = "ElevenLabs (voice)", .hint = null },
+    .{ .key = "DEEPGRAM_API_KEY", .label = "Deepgram (voice in and out)", .hint = null },
+    .{ .key = "DISCORD_BOT_TOKEN", .label = "Discord Bot", .hint = null },
+    .{ .key = "TELEGRAM_BOT_TOKEN", .label = "Telegram Bot", .hint = null },
+    .{ .key = "SLACK_BOT_TOKEN", .label = "Slack Bot", .hint = "xoxb-" },
+    .{ .key = "SLACK_APP_TOKEN", .label = "Slack App", .hint = "xapp-" },
+};
 
 /// Key-value pair for .env file generation
-const KeyValue = struct {
+pub const KeyValue = struct {
     key: []const u8,
     value: []const u8,
 };
@@ -128,9 +148,16 @@ pub fn runSetup(alloc: std.mem.Allocator, force: bool) !void {
         }
     }
 
+    // ─── Voice ──────────────────────────────
+    try stdout.writeAll("\n \x1b[1;33m─── Voice (press Enter to skip) ────────────\x1b[0m\n");
+    try stdout.writeAll(" \x1b[90mYour own key, from console.deepgram.com. It speaks the replies, and hears /listen\x1b[0m\n");
+    try stdout.writeAll(" \x1b[90mwhen no local whisper.cpp model is installed (or WINTERMOLT_STT_PROVIDER=deepgram).\x1b[0m\n");
+    const deepgram_key = try promptKey(stdin, stdout, &line_buf, " \x1b[1m5.\x1b[0m Deepgram API Key (voice in and out)", null, existing.get("DEEPGRAM_API_KEY"), false);
+    if (deepgram_key) |key| try keys.append(alloc, .{ .key = "DEEPGRAM_API_KEY", .value = key });
+
     // ─── Model Selection ────────────────────
     try stdout.writeAll("\n \x1b[1;33m─── Model Selection ────────────────────────\x1b[0m\n");
-    try stdout.writeAll(" \x1b[1m5.\x1b[0m Default model tier (Ollama local):\n");
+    try stdout.writeAll(" \x1b[1m6.\x1b[0m Default model tier (Ollama local):\n");
     try stdout.writeAll("    \x1b[90m[1]\x1b[0m Sonnet — qwen3:0.6b (balanced, default)\n");
     try stdout.writeAll("    \x1b[90m[2]\x1b[0m Haiku  — qwen3:0.6b (fast, lightweight)\n");
     try stdout.writeAll("    \x1b[90m[3]\x1b[0m Opus   — qwen3:8b (most capable)\n");
@@ -148,22 +175,22 @@ pub fn runSetup(alloc: std.mem.Allocator, force: bool) !void {
     // ─── Chat Platforms ─────────────────────
     try stdout.writeAll("\n \x1b[1;33m─── Chat Platforms (press Enter to skip) ───\x1b[0m\n");
 
-    const discord_token = try promptKey(stdin, stdout, &line_buf, " \x1b[1m6.\x1b[0m Discord Bot Token", null, existing.get("DISCORD_BOT_TOKEN"), false);
+    const discord_token = try promptKey(stdin, stdout, &line_buf, " \x1b[1m7.\x1b[0m Discord Bot Token", null, existing.get("DISCORD_BOT_TOKEN"), false);
     if (discord_token) |key| try keys.append(alloc, .{ .key = "DISCORD_BOT_TOKEN", .value = key });
 
-    const telegram_token = try promptKey(stdin, stdout, &line_buf, " \x1b[1m7.\x1b[0m Telegram Bot Token", null, existing.get("TELEGRAM_BOT_TOKEN"), false);
+    const telegram_token = try promptKey(stdin, stdout, &line_buf, " \x1b[1m8.\x1b[0m Telegram Bot Token", null, existing.get("TELEGRAM_BOT_TOKEN"), false);
     if (telegram_token) |key| try keys.append(alloc, .{ .key = "TELEGRAM_BOT_TOKEN", .value = key });
 
-    const slack_token = try promptKey(stdin, stdout, &line_buf, " \x1b[1m8.\x1b[0m Slack Bot Token", "xoxb-", existing.get("SLACK_BOT_TOKEN"), false);
+    const slack_token = try promptKey(stdin, stdout, &line_buf, " \x1b[1m9.\x1b[0m Slack Bot Token", "xoxb-", existing.get("SLACK_BOT_TOKEN"), false);
     if (slack_token) |key| {
         try keys.append(alloc, .{ .key = "SLACK_BOT_TOKEN", .value = key });
-        const slack_app = try promptKey(stdin, stdout, &line_buf, "     \x1b[1m8b.\x1b[0m Slack App Token", "xapp-", existing.get("SLACK_APP_TOKEN"), false);
+        const slack_app = try promptKey(stdin, stdout, &line_buf, "     \x1b[1m9b.\x1b[0m Slack App Token", "xapp-", existing.get("SLACK_APP_TOKEN"), false);
         if (slack_app) |app| try keys.append(alloc, .{ .key = "SLACK_APP_TOKEN", .value = app });
     }
 
     // ─── Tool Policies ──────────────────────
     try stdout.writeAll("\n \x1b[1;33m─── Tool Policies ──────────────────────────\x1b[0m\n");
-    try stdout.writeAll(" \x1b[1m9.\x1b[0m Restrict tools? (for shared/cloud deployments)\n");
+    try stdout.writeAll(" \x1b[1m10.\x1b[0m Restrict tools? (for shared/cloud deployments)\n");
     try stdout.writeAll("    \x1b[90m[Enter]\x1b[0m All tools enabled (default)\n");
     try stdout.writeAll("    \x1b[90m[block]\x1b[0m Block specific tools (e.g. \"bash\")\n");
 
@@ -203,8 +230,10 @@ pub fn runSetup(alloc: std.mem.Allocator, force: bool) !void {
     // Ensure ~/.wintermolt/ directory exists
     const env_path = try ensureWintermoltDir(alloc);
 
-    // Write the .env file
-    try writeEnvFile(env_path, keys.items);
+    saveEnv(alloc, fsio.io(), fsio.cwd(), env_path, keys.items) catch |e| {
+        stdio.stderr().print(" \x1b[31mFailed to write {s}: {s}\x1b[0m\n", .{ env_path, @errorName(e) }) catch {};
+        return e;
+    };
 
     // ─── Summary ─────────────────────────────
     try stdout.writeAll(" \x1b[1;33m─── Summary ────────────────────────────────\x1b[0m\n");
@@ -383,48 +412,125 @@ fn ensureWintermoltDir(alloc: std.mem.Allocator) ![]const u8 {
     return try std.fmt.allocPrint(alloc, "{s}/.wintermolt/.env", .{home});
 }
 
-/// Write key-value pairs to the .env file.
-/// Preserves existing keys not in the new set.
-fn writeEnvFile(path: []const u8, keys: []const KeyValue) !void {
-    // Build file content
-    // std.io is gone in 0.16. Writer.fixed is the fixed-buffer writer, and
-    // buffered() returns what has been written so far -- the replacement for
-    // fixedBufferStream + getWritten().
-    var content_buf: [8192]u8 = undefined;
-    var content_w: std.Io.Writer = .fixed(&content_buf);
-    const w = &content_w;
+const version_key = "WINTERMOLT_CONFIG_VERSION";
 
-    try w.writeAll("# Wintermolt configuration — generated by `wintermolt --setup`\n");
-    try w.writeAll("# Edit manually or re-run `wintermolt --setup` to reconfigure.\n");
-    try w.writeAll("#\n");
-    try w.writeAll("# Shell env vars take precedence over values in this file.\n");
-    try w.writeAll("# To override: export WINTERMOLT_MODEL=qwen3:8b\n\n");
+/// The keys the wizard asks about, plus its version stamp. On a re-run each
+/// one's line is replaced by the new answer, or removed when there is none
+/// (a cleared tier or blocklist). Every other line is the user's and is kept.
+const wizard_keys = [_][]const u8{
+    "ANTHROPIC_API_KEY",  "OPENAI_API_KEY",   "GOOGLE_GEMINI_API_KEY", "PINECONE_API_KEY",
+    "PINECONE_HOST",      "DEEPGRAM_API_KEY", "WINTERMOLT_TIER",       "DISCORD_BOT_TOKEN",
+    "TELEGRAM_BOT_TOKEN", "SLACK_BOT_TOKEN",  "SLACK_APP_TOKEN",       "WINTERMOLT_TOOL_BLOCKLIST",
+    version_key,
+};
 
-    // Write config version stamp for migration tracking
-    const config_mod = @import("agent/config.zig");
-    try w.print("WINTERMOLT_CONFIG_VERSION={d}\n\n", .{config_mod.CONFIG_VERSION});
+const env_header =
+    "# Wintermolt configuration — generated by `wintermolt --setup`\n" ++
+    "# Edit manually or re-run `wintermolt --setup` to reconfigure.\n" ++
+    "#\n" ++
+    "# Shell env vars take precedence over values in this file.\n" ++
+    "# To override: export WINTERMOLT_MODEL=qwen3:8b\n\n";
 
-    for (keys) |kv| {
-        try w.print("{s}={s}\n", .{ kv.key, kv.value });
-    }
-
-    // Convert path to null-terminated for open
-    const file = fsio.createFile(path, .{ .truncate = true }) catch |e| {
-        const stderr = stdio.stderr();
-        stderr.print(" \x1b[31mFailed to write {s}: {s}\x1b[0m\n", .{ path, @errorName(e) }) catch {};
-        return e;
-    };
-    defer fsio.close(file);
-
-    const written = content_w.buffered();
-    fsio.writeAll(file, written) catch |e| {
-        const stderr = stdio.stderr();
-        stderr.print(" \x1b[31mWrite failed: {s}\x1b[0m\n", .{@errorName(e)}) catch {};
-        return e;
-    };
+fn indexOfKey(keys: []const KeyValue, key: []const u8) ?usize {
+    for (keys, 0..) |kv, i| if (std.mem.eql(u8, kv.key, key)) return i;
+    return null;
 }
 
-/// Load existing key-value pairs from ~/.wintermolt/.env
+/// Save the wizard's answers to the .env at `path`, creating it and its
+/// directory if needed. A wizard key's first line is replaced in place (CRLF
+/// kept) and its later duplicates dropped; new keys are appended; every line
+/// the wizard did not ask about is kept byte for byte.
+pub fn saveEnv(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, path: []const u8, keys: []const KeyValue) !void {
+    return mergeIntoEnv(gpa, io, dir, path, keys, &wizard_keys);
+}
+
+/// Set one key in the .env at `path` (null removes it), as /keys does.
+/// Every other line is kept byte for byte.
+pub fn setEnvKey(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, path: []const u8, key: []const u8, value: ?[]const u8) !void {
+    if (value) |v| return mergeIntoEnv(gpa, io, dir, path, &.{.{ .key = key, .value = v }}, &.{});
+    return mergeIntoEnv(gpa, io, dir, path, &.{}, &.{key});
+}
+
+/// Write `keys` into the .env at `path`, in place where each already has a
+/// line, and remove the lines of `drop` keys that `keys` leaves out.
+fn mergeIntoEnv(gpa: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, path: []const u8, keys: []const KeyValue, drop: []const []const u8) !void {
+    const old: []u8 = dir.readFileAlloc(io, path, gpa, .limited(1 << 20)) catch |e| switch (e) {
+        error.FileNotFound => try gpa.alloc(u8, 0),
+        else => return e,
+    };
+    defer gpa.free(old);
+
+    var version_buf: [16]u8 = undefined;
+    const version = try std.fmt.bufPrint(&version_buf, "{d}", .{config_mod.CONFIG_VERSION});
+    var all: std.ArrayList(KeyValue) = .empty;
+    defer all.deinit(gpa);
+    try all.appendSlice(gpa, keys);
+    try all.append(gpa, .{ .key = version_key, .value = version });
+    const written = try gpa.alloc(bool, all.items.len);
+    defer gpa.free(written);
+    @memset(written, false);
+
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(gpa);
+    if (old.len == 0) try out.appendSlice(gpa, env_header);
+
+    var start: usize = 0;
+    while (start < old.len) {
+        const nl = std.mem.indexOfScalarPos(u8, old, start, '\n');
+        const end = nl orelse old.len;
+        const line = old[start..end];
+        start = end + 1;
+        const key = if (parseEnvLine(line)) |kv| kv.key else "";
+        const i = indexOfKey(all.items, key);
+        const ours = key.len > 0 and (i != null or for (drop) |k| {
+            if (std.mem.eql(u8, k, key)) break true;
+        } else false);
+        if (!ours) {
+            try out.appendSlice(gpa, line);
+            if (nl != null) try out.append(gpa, '\n');
+            continue;
+        }
+        const at = i orelse continue; // asked about, no answer: the line goes
+        if (written[at]) continue; // a duplicate
+        written[at] = true;
+        try out.print(gpa, "{s}={s}", .{ all.items[at].key, all.items[at].value });
+        if (std.mem.endsWith(u8, line, "\r")) try out.append(gpa, '\r');
+        try out.append(gpa, '\n');
+    }
+
+    const eol: []const u8 = if (std.mem.indexOf(u8, old, "\r\n") != null) "\r\n" else "\n";
+    if (out.items.len > 0 and out.items[out.items.len - 1] != '\n') try out.appendSlice(gpa, eol);
+    for (all.items, written) |kv, done| {
+        if (!done) try out.print(gpa, "{s}={s}{s}", .{ kv.key, kv.value, eol });
+    }
+
+    if (std.mem.lastIndexOfAny(u8, path, "/\\")) |sep| {
+        if (sep > 0) dir.createDirPath(io, path[0..sep]) catch {};
+    }
+    try dir.writeFile(io, .{ .sub_path = path, .data = out.items });
+}
+
+/// A .env line's key and value, parsed the way config.loadDotEnv parses it.
+fn parseEnvLine(raw: []const u8) ?KeyValue {
+    const line = std.mem.trim(u8, raw, " \t\r");
+    if (line.len == 0 or line[0] == '#') return null;
+    const effective = if (std.mem.startsWith(u8, line, "export "))
+        std.mem.trim(u8, line["export ".len..], " \t")
+    else
+        line;
+    const eq = std.mem.indexOfScalar(u8, effective, '=') orelse return null;
+    var value = std.mem.trim(u8, effective[eq + 1 ..], " \t");
+    if (value.len >= 2 and ((value[0] == '"' and value[value.len - 1] == '"') or
+        (value[0] == '\'' and value[value.len - 1] == '\'')))
+    {
+        value = value[1 .. value.len - 1];
+    }
+    return .{ .key = std.mem.trim(u8, effective[0..eq], " \t"), .value = value };
+}
+
+/// Load existing key-value pairs from ~/.wintermolt/.env. Keys and values
+/// point into the file text, allocated from `alloc` and never freed here, so
+/// pass an arena (every caller does).
 pub fn loadExistingEnv(alloc: std.mem.Allocator) std.StringHashMap([]const u8) {
     var map = std.StringHashMap([]const u8).init(alloc);
 
@@ -432,39 +538,12 @@ pub fn loadExistingEnv(alloc: std.mem.Allocator) std.StringHashMap([]const u8) {
     var path_buf: [512]u8 = undefined;
     const path = std.fmt.bufPrint(&path_buf, "{s}/.wintermolt/.env", .{home}) catch return map;
 
-    const file = fsio.openFile(path, .{}) catch return map;
-    defer fsio.close(file);
+    const text = fsio.cwd().readFileAlloc(fsio.io(), path, alloc, .limited(1 << 20)) catch return map;
 
-    // One positional read replaces the sequential loop: 0.16's File has no
-    // bare read(), and readAllAt already loops internally until the buffer is
-    // full or the file ends.
-    var buf: [8192]u8 = undefined;
-    const total = fsio.readAllAt(file, &buf, 0) catch 0;
-
-    var iter = std.mem.splitScalar(u8, buf[0..total], '\n');
+    var iter = std.mem.splitScalar(u8, text, '\n');
     while (iter.next()) |raw_line| {
-        const line = std.mem.trim(u8, raw_line, " \t\r");
-        if (line.len == 0 or line[0] == '#') continue;
-
-        const effective = if (std.mem.startsWith(u8, line, "export "))
-            std.mem.trim(u8, line["export ".len..], " \t")
-        else
-            line;
-
-        const eq = std.mem.indexOfScalar(u8, effective, '=') orelse continue;
-        const key = std.mem.trim(u8, effective[0..eq], " \t");
-        var value = std.mem.trim(u8, effective[eq + 1 ..], " \t");
-
-        // Strip quotes
-        if (value.len >= 2) {
-            if ((value[0] == '"' and value[value.len - 1] == '"') or
-                (value[0] == '\'' and value[value.len - 1] == '\''))
-            {
-                value = value[1 .. value.len - 1];
-            }
-        }
-
-        map.put(key, value) catch continue;
+        const kv = parseEnvLine(raw_line) orelse continue;
+        map.put(kv.key, kv.value) catch continue;
     }
 
     return map;

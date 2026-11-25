@@ -9,6 +9,8 @@ import type { ChatAdapter, OutboundMessage } from './types.js';
 // Platform adapters — lazy-loaded based on available credentials
 const ADAPTER_REGISTRY: Record<string, {
   envCheck: () => boolean;
+  /** Set when the adapter must not start: the reason is logged instead. */
+  unavailable?: string;
   load: () => Promise<ChatAdapter>;
 }> = {
   discord: {
@@ -39,12 +41,17 @@ const ADAPTER_REGISTRY: Record<string, {
     envCheck: () => !!process.env.MATRIX_HOMESERVER && !!process.env.MATRIX_ACCESS_TOKEN,
     load: async () => (await import('./adapters/matrix.js')).createAdapter(),
   },
+  // Teams and Google Chat are off until each checks the JWT its platform signs
+  // every POST with: without it, anyone who can reach the port can post as any
+  // user, the allowlisted one included. Neither sends its replies yet either.
   teams: {
     envCheck: () => !!process.env.TEAMS_APP_ID,
+    unavailable: 'inbound requests are not authenticated (no Bot Framework JWT check) and replies are not sent',
     load: async () => (await import('./adapters/teams.js')).createAdapter(),
   },
   googlechat: {
     envCheck: () => !!process.env.GOOGLE_CHAT_CREDENTIALS,
+    unavailable: 'inbound requests are not authenticated (no Google-signed JWT check) and replies are not sent',
     load: async () => (await import('./adapters/googlechat.js')).createAdapter(),
   },
   line: {
@@ -94,6 +101,10 @@ async function main(): Promise<void> {
   const startPromises: Promise<void>[] = [];
 
   for (const [name, entry] of Object.entries(ADAPTER_REGISTRY)) {
+    if (entry.envCheck() && entry.unavailable) {
+      process.stderr.write(`[wintermolt-chat] ${name}: not started — ${entry.unavailable}\n`);
+      continue;
+    }
     if (entry.envCheck()) {
       startPromises.push(
         (async () => {

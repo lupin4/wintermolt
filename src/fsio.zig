@@ -369,9 +369,18 @@ pub fn lineReader(file: File, gpa: std.mem.Allocator, buffer: []u8) LineReader {
     return .{ .file = file, .gpa = gpa, .buf = buffer };
 }
 
+/// `name` in a directory of this run's own. A fixed name in the cwd was shared
+/// by every copy of this binary running at once, and one deleted another's file.
+fn testPath(buf: []u8, tmp: *const std.testing.TmpDir, name: []const u8) []const u8 {
+    return std.fmt.bufPrint(buf, ".zig-cache/tmp/{s}/{s}", .{ &tmp.sub_path, name }) catch unreachable;
+}
+
 test "LineReader: splits, keeps a newline-less tail, and spills a long line" {
     const gpa = std.testing.allocator;
-    const path = "iocompat_linereader_test.txt";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [128]u8 = undefined;
+    const path = testPath(&path_buf, &tmp, "linereader.txt");
 
     // The third line is deliberately longer than the 16-byte buffer below, so
     // the overflow path is exercised rather than merely present.
@@ -402,9 +411,12 @@ test "LineReader: splits, keeps a newline-less tail, and spills a long line" {
 
 test "LineReader: empty file, and a file that is only newlines" {
     const gpa = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [128]u8 = undefined;
 
     {
-        const path = "iocompat_linereader_empty.txt";
+        const path = testPath(&path_buf, &tmp, "empty.txt");
         const f = try createFile(path, .{});
         close(f);
         defer deleteFile(path) catch {};
@@ -416,7 +428,7 @@ test "LineReader: empty file, and a file that is only newlines" {
         try std.testing.expect((try lr.next()) == null);
     }
     {
-        const path = "iocompat_linereader_blanks.txt";
+        const path = testPath(&path_buf, &tmp, "blanks.txt");
         const f = try createFile(path, .{});
         try writeAll(f, "\n\n\n");
         close(f);
@@ -838,6 +850,25 @@ pub const RunResult = struct {
     }
 };
 
+fn watchChild(id: std.process.Child.Id, job: ?*anyopaque, done: *std.atomic.Value(bool), cancelled: *const fn () bool) void {
+    while (!done.load(.acquire)) {
+        if (cancelled()) return killTree(id, job);
+        sleepNs(100 * std.time.ns_per_ms);
+    }
+}
+
+/// End a command and whatever it started. Windows: its job. POSIX: its
+/// process group (runCaptureCancelable starts it in a new one), which holds
+/// every descendant at any depth; one that left the group (setsid, a
+/// job-control shell's background job) is not reached.
+fn killTree(id: std.process.Child.Id, job: ?*anyopaque) void {
+    if (comptime @import("builtin").os.tag == .windows) {
+        if (job) |j| @import("win32.zig").killJob(j) else @import("win32.zig").killProcess(id);
+    } else {
+        _ = std.c.kill(-id, std.c.SIG.KILL);
+    }
+}
+
 /// Run a command to completion, capturing stdout and stderr SEPARATELY and
 /// reporting how it terminated. Caller owns the result (see RunResult.deinit).
 ///
@@ -851,6 +882,14 @@ pub const RunResult = struct {
 /// does not have. Two temp files, one per stream, so interleaving cannot merge
 /// them the way 2>&1 would.
 pub fn runCapture(gpa: std.mem.Allocator, argv: []const []const u8, max: usize, env: ?*const EnvMap) !RunResult {
+    return runCaptureCancelable(gpa, argv, max, env, null);
+}
+
+/// runCapture, but once `cancelled` returns true (checked every 100 ms) the
+/// command is killed with everything it started, and the call returns what it
+/// had written. The bash tool passes control.stopRequested, so /stop ends a
+/// running command instead of waiting for it.
+pub fn runCaptureCancelable(gpa: std.mem.Allocator, argv: []const []const u8, max: usize, env: ?*const EnvMap, cancelled: ?*const fn () bool) !RunResult {
     if (zig16) {
         const seq = capture_seq.fetchAdd(1, .monotonic);
         const out_name = try std.fmt.allocPrint(gpa, ".wm-run-{x}-{d}.out", .{ @intFromPtr(argv.ptr), seq });
@@ -874,13 +913,32 @@ pub fn runCapture(gpa: std.mem.Allocator, argv: []const []const u8, max: usize, 
             var threaded: std.Io.Threaded = .init(gpa, .{ .environ = processEnviron() });
             defer threaded.deinit();
             const tio = threaded.io();
+            const windows = @import("builtin").os.tag == .windows;
             var child = try std.process.spawn(tio, .{
                 .argv = argv,
                 .stdout = .{ .file = out_file },
                 .stderr = .{ .file = err_file },
                 .environ_map = env,
+                // Windows: suspended until it is in a job of its own, so
+                // nothing it starts can escape the kill.
+                .start_suspended = windows and cancelled != null,
+                // POSIX: a process group of its own, so a stop can kill all of
+                // it. The cost: it leaves the terminal's foreground group, so a
+                // command that prompts on the tty (sudo, ssh) waits until stopped.
+                .pgid = if (!windows and cancelled != null) 0 else null,
             });
-            term = try child.wait(tio);
+            const job: ?*anyopaque = if (comptime windows) (if (cancelled != null) @import("win32.zig").runInOwnJob(child.id.?, child.thread_handle) else null) else null;
+            defer if (comptime windows) if (job) |j| @import("win32.zig").closeJob(j);
+            var done = std.atomic.Value(bool).init(false);
+            const watcher: ?std.Thread = if (cancelled) |c|
+                std.Thread.spawn(.{}, watchChild, .{ child.id.?, job, &done, c }) catch null
+            else
+                null;
+            const waited = child.wait(tio);
+            // shortcut: between wait reaping the child and this store, a POSIX kill(-id) could reach a new group that reused the id once every member is gone; the window is a few instructions.
+            done.store(true, .release);
+            if (watcher) |w| w.join();
+            term = try waited;
         }
 
         const of = try openFile(out_name, .{});
@@ -949,6 +1007,51 @@ pub fn spawnPiped(gpa: std.mem.Allocator, argv: []const []const u8) !std.process
         try child.spawn();
         return child;
     }
+}
+
+/// A child whose stdout we read, with stdin and stderr discarded: a tool
+/// reporting progress, whose own messages must not land on the screen.
+pub fn spawnStdout(gpa: std.mem.Allocator, argv: []const []const u8) !std.process.Child {
+    if (comptime !zig16) @compileError("spawnStdout needs Zig 0.16");
+    var env_map: ?EnvMap = if (comptime @import("builtin").os.tag == .windows) null else try currentEnvMap(gpa);
+    defer if (env_map) |*m| m.deinit();
+    return std.process.spawn(io(), .{ .argv = argv, .stdin = .ignore, .stdout = .pipe, .stderr = .ignore, .environ_map = if (env_map) |*m| m else null });
+}
+
+/// Start a background server that dies with this process, even when this
+/// process crashes or is killed. Windows: a kill-on-close job holds it
+/// (win32.runTiedToUs). POSIX: `sh` starts it and waits on a pipe from us;
+/// the OS closes the pipe when we end, however we end, and `sh` then kills
+/// it. Its streams are discarded, so it neither prints over the prompt nor
+/// blocks on a pipe nobody reads. Stop it with stopTied, not killChild.
+pub fn spawnTied(gpa: std.mem.Allocator, argv: []const []const u8) !std.process.Child {
+    if (comptime !zig16) @compileError("spawnTied needs Zig 0.16");
+    if (comptime @import("builtin").os.tag == .windows) {
+        const child = try std.process.spawn(io(), .{ .argv = argv, .stdin = .ignore, .stdout = .ignore, .stderr = .ignore, .start_suspended = true });
+        @import("win32.zig").runTiedToUs(child.id.?, child.thread_handle);
+        return child;
+    }
+    // The command is sh's "$@", never part of the script. sh ignores Ctrl+C
+    // and hangup so that only the pipe closing ends it, and it always kills.
+    const watcher = [_][]const u8{ "/bin/sh", "-c", "trap '' INT HUP; \"$@\" </dev/null >/dev/null 2>&1 & read x; kill $!", "sh" };
+    const full = try std.mem.concat(gpa, []const u8, &.{ &watcher, argv });
+    defer gpa.free(full);
+    var env_map = try currentEnvMap(gpa);
+    defer env_map.deinit();
+    return std.process.spawn(io(), .{ .argv = full, .stdin = .pipe, .stdout = .ignore, .stderr = .ignore, .environ_map = &env_map });
+}
+
+/// Stop a spawnTied server and reap it. On POSIX killing `sh` would leave
+/// the server running; closing its pipe is what makes it kill the server.
+pub fn stopTied(child: *std.process.Child) void {
+    if (comptime @import("builtin").os.tag != .windows) if (child.stdin) |pipe| {
+        pipe.close(io());
+        child.stdin = null;
+        _ = waitChild(child) catch {};
+        return;
+    };
+    killChild(child);
+    _ = waitChild(child) catch {};
 }
 
 /// Kill a child. 0.16 threads the Io through kill.

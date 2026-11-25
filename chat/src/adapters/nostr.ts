@@ -32,6 +32,10 @@ export function createAdapter(): ChatAdapter {
                 from: nip19.npubEncode(event.pubkey),
                 channel: event.pubkey,
                 text: event.content,
+                // Kind 4 is a DM; kind 1 is a public note, which reaches us
+                // only through the #p filter, i.e. when it mentions us.
+                chatType: event.kind === 4 ? 'direct' : 'group',
+                mentioned: event.kind === 1,
               });
             },
           });

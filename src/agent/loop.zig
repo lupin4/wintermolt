@@ -34,13 +34,19 @@ const skill_loader = @import("skill_loader.zig");
 const redact = @import("redact.zig");
 const scheduler_mod = @import("scheduler.zig");
 const camera_tool = @import("../tools/camera.zig");
-
-const MAX_ITERATIONS = 25;
+const workspace = @import("workspace.zig");
+const skill_md = @import("skill_md.zig");
+const control = @import("control.zig");
 
 // Output leak guard (redact.zig): per-reply redactor + inner callback at module
 // scope (TextCallback carries no userdata). Replies are sequential per process.
 var g_redactor: ?redact.Redactor = null;
 var g_inner_cb: ?sse.TextCallback = null;
+
+// processInputCapture's buffer, for captureText, at module scope for the same
+// reason. Its allocator is the agent's, which every caller's buffer shares.
+var g_capture: ?*ArrayList(u8) = null;
+var g_capture_alloc: ?Allocator = null;
 
 pub const Backend = union(enum) {
     claude: client_mod.Client,
@@ -70,6 +76,12 @@ pub const AgentLoop = struct {
     /// or the retry after compacting did. The error is already on stderr; `-e`
     /// turns this into its exit status, the only thing a script can check.
     turn_failed: bool = false,
+    /// Why, when turn_failed: an error name, for a caller with no stderr (--web).
+    turn_error: []const u8 = "",
+
+    /// The local CLI or the owner's main DM session: MEMORY.md is in its
+    /// prompt. --chat clears it for groups and per-peer DM sessions.
+    private: bool = true,
 
     // Subagent hierarchy
     depth: u8, // 0 = root agent, >0 = subagent
@@ -84,6 +96,21 @@ pub const AgentLoop = struct {
     tool_done_callback: ?*const fn ([]const u8, bool) void,
     perspective_callback: ?*const fn ([]const u8) void,
     web_message_id: ?[]const u8,
+
+    /// A voice conversation pauses between turns, so keep a local model loaded
+    /// 30 minutes rather than Ollama's 5 (unless WINTERMOLT_OLLAMA_KEEP_ALIVE
+    /// says otherwise), and start loading it now so the reply never waits for
+    /// the load. /listen calls this before recording.
+    pub fn warmForVoice(self: *AgentLoop) void {
+        if (compat.getenv("WINTERMOLT_OLLAMA_KEEP_ALIVE") == null) self.config.ollama_keep_alive = "30m";
+        switch (self.backend) {
+            .ollama => |*o| {
+                o.keep_alive = self.config.ollama_keep_alive;
+                o.preloadInBackground();
+            },
+            else => {},
+        }
+    }
 
     pub fn init(alloc: Allocator, config: *config_mod.Config) !AgentLoop {
         const stderr = stdio.stderr();
@@ -155,7 +182,7 @@ pub const AgentLoop = struct {
         // Set tool policies from config
         tools.setPolicy(config.tool_allowlist, config.tool_blocklist);
 
-        return .{
+        var agent: AgentLoop = .{
             .alloc = alloc,
             .backend = backend,
             .history = history,
@@ -180,6 +207,21 @@ pub const AgentLoop = struct {
             .perspective_callback = null,
             .web_message_id = null,
         };
+
+        // WINTERMOLT_BACKEND: build the named backend here rather than in
+        // main(), so every loop follows the choice. The --chat pool
+        // (agent/pool.zig) and subagent children (spawnSubagent) call this init
+        // too, and used to start on Ollama whatever the run had been asked for.
+        // The variable is an explicit request, so a backend that cannot be
+        // built fails the run instead of answering from Ollama: main() turns
+        // the error into exit status 1 before the first request.
+        if (config.backend) |backend_name| {
+            agent.switchBackend(backend_name, if (config.model_named) config.model else null) catch {
+                return error.BackendUnavailable;
+            };
+        }
+
+        return agent;
     }
 
     pub fn deinit(self: *AgentLoop) void {
@@ -223,6 +265,32 @@ pub const AgentLoop = struct {
         return null;
     }
 
+    /// Replace the history with these turns, as if they had been said here.
+    pub fn loadTurns(self: *AgentLoop, turns: []const storage_mod.Turn) !void {
+        self.history.deinit();
+        self.history = history_mod.History.init(self.alloc);
+        for (turns) |t| {
+            var m = protocol.Message{ .role = t.role };
+            defer m.content.deinit(self.alloc);
+            try m.content.append(self.alloc, .{ .text = t.text });
+            try self.history.addMessage(m); // copies
+        }
+    }
+
+    /// Continue a saved conversation: its text comes back into the history
+    /// (storage.textTurns) and what follows is saved under the same id.
+    pub fn resumeConversation(self: *AgentLoop, conv_id: []const u8) !void {
+        const s = if (self.storage) |*s| s else return error.NoHistory;
+        const saved = try s.loadConversation(conv_id);
+        defer s.freeMessages(saved);
+        if (saved.len == 0) return error.ConversationNotFound;
+        const turns = try storage_mod.textTurns(self.alloc, saved);
+        defer storage_mod.freeTurns(self.alloc, turns);
+        try self.loadTurns(turns);
+        self.conversation_id = try s.alloc.dupe(u8, conv_id);
+        self.message_sequence = @intCast(saved[saved.len - 1].sequence_num + 1);
+    }
+
     /// Archive current conversation and reset history.
     pub fn archiveAndReset(self: *AgentLoop) void {
         self.history.deinit();
@@ -233,19 +301,32 @@ pub const AgentLoop = struct {
 
     /// Process a user input message through the agentic loop.
     pub fn processInput(self: *AgentLoop, user_text: []const u8) !void {
+        return self.processInputImage(user_text, null);
+    }
+
+    /// processInput with an image attached to the user turn (/image, /look, /screenshot).
+    pub fn processInputImage(self: *AgentLoop, user_text: []const u8, image: ?protocol.ImageSource) !void {
         const stdout = stdio.stdout();
         const stderr = stdio.stderr();
 
         // Re-bind tools-module globals to THIS agent (pool/subagents share them)
         self.bindTools();
 
-        // Add user message to history
-        try self.history.addUserMessage(user_text);
+        // Add user message to history; addMessage copies the blocks it is given
+        if (image) |img| {
+            var msg = protocol.Message{ .role = .user };
+            defer msg.deinit(self.alloc);
+            try msg.content.append(self.alloc, .{ .image = img });
+            try msg.content.append(self.alloc, .{ .text = user_text });
+            try self.history.addMessage(msg);
+        } else try self.history.addUserMessage(user_text);
 
         // Persist user message
         if (self.storage) |*s| {
             if (self.conversation_id) |conv_id| {
                 s.saveMessage(conv_id, "user", self.message_sequence, &.{.{ .text = user_text }}) catch {};
+                // Named by its first message (updateTitle never renames one), so History is not a list of "Untitled".
+                if (self.message_sequence == 0) s.updateTitle(conv_id, user_text) catch {};
                 self.message_sequence += 1;
             }
         }
@@ -261,6 +342,7 @@ pub const AgentLoop = struct {
         self.last_message_ts = fsio.milliTimestamp();
         self.tool_errors_this_turn = 0;
         self.turn_failed = false;
+        self.turn_error = "";
 
         // Wire subagent manager into tools module for spawn_agent tool
         if (self.subagent_manager) |mgr_opaque| {
@@ -275,12 +357,26 @@ pub const AgentLoop = struct {
         // request that declares tools, and every client omits the field when
         // the list is empty.
         const relevant_tools: []const protocol.ToolDefinition = if (self.config.tools_enabled)
-            tools.getRelevantDefinitions(user_text)
+            tools.getRelevantDefinitions(user_text, image != null)
         else
             &.{};
 
+        // The workspace files are read every turn, as OpenClaw does, so an
+        // edit counts from the next one (workspace.zig).
+        const scope: workspace.Scope = if (self.depth > 0) .subagent else if (self.private) .private else .shared;
+        const project = workspace.load(self.alloc, scope) catch try self.alloc.dupe(u8, "");
+        defer self.alloc.free(project);
+        const skills_md = skill_md.load(self.alloc) catch try self.alloc.dupe(u8, "");
+        defer self.alloc.free(skills_md);
+        const system_prompt = try std.mem.concat(self.alloc, u8, &.{ self.system_prompt, project, skills_md });
+        defer self.alloc.free(system_prompt);
+        self.history.setOverhead(system_prompt.len, relevant_tools.len * 200, self.config.max_tokens);
+
         var iteration: usize = 0;
-        while (iteration < MAX_ITERATIONS) : (iteration += 1) {
+        var asked_again = false;
+        const max_iterations: usize = @max(1, self.config.max_iterations);
+        while (iteration < max_iterations) : (iteration += 1) {
+            if (control.stopRequested()) return self.stopTurn();
             // Fire voice start callback on first iteration
             if (iteration == 0) {
                 if (self.voice_start_callback) |cb| cb();
@@ -290,21 +386,23 @@ pub const AgentLoop = struct {
             const text_cb: ?sse.TextCallback = if (self.stream_callback) |cb| cb else if (self.capture_buf != null) &captureText else &printText;
 
             var response = self.sendToBackend(
-                self.system_prompt,
+                system_prompt,
                 self.history.getMessages(),
                 text_cb,
                 relevant_tools,
             ) catch |e| {
+                if (control.stopRequested()) return self.stopTurn();
                 if (e == error.ContextOverflow) {
                     try stderr.writeAll("\n[Context pressure] Compacting history...\n");
                     self.history.emergencyCompact();
                     var retry_resp = self.sendToBackend(
-                        self.system_prompt,
+                        system_prompt,
                         self.history.getMessages(),
                         text_cb,
                         relevant_tools,
                     ) catch |e2| {
                         self.turn_failed = true;
+                        self.turn_error = @errorName(e2);
                         try stderr.print("\n[Error] Retry failed: {s}\n", .{@errorName(e2)});
                         return;
                     };
@@ -328,12 +426,28 @@ pub const AgentLoop = struct {
                     }
                 }
                 self.turn_failed = true;
+                self.turn_error = @errorName(e);
                 try stderr.print("\n[Error] API call failed: {s}\n", .{@errorName(e)});
                 return;
             };
             defer response.deinit();
 
             try stdout.writeByte('\n');
+
+            // A reply with no text and no tool call (qwen3 can spend its whole
+            // turn thinking, e.g. over a skill it means to use) printed nothing
+            // and exited 0. Ask once more; a second empty reply fails the turn.
+            if (isEmptyReply(&response)) {
+                if (!asked_again) {
+                    asked_again = true;
+                    try stderr.writeAll("[model] Empty reply; asking again\n");
+                    continue;
+                }
+                self.turn_failed = true;
+                self.turn_error = "EmptyReply";
+                try stderr.writeAll("[Error] The model returned an empty reply twice\n");
+                return;
+            }
 
             // Add assistant response to history
             try self.history.addAssistantResponse(&response);
@@ -401,7 +515,15 @@ pub const AgentLoop = struct {
             }
         }
 
-        try stderr.print("[Warning] Hit max iterations ({d})\n", .{MAX_ITERATIONS});
+        try stderr.print("[Warning] Hit max iterations ({d})\n", .{max_iterations});
+    }
+
+    /// The reply ends here, at the user's /stop. Not an answer, so -e exits 1
+    /// and the web page says why.
+    fn stopTurn(self: *AgentLoop) !void {
+        self.turn_failed = true;
+        self.turn_error = "Stopped";
+        try stdio.stderr().writeAll("\n[Stopped]\n");
     }
 
     /// Process input with web UI context (message ID for events).
@@ -414,8 +536,37 @@ pub const AgentLoop = struct {
     /// Process input capturing output to buffer (for chat bridge).
     pub fn processInputCapture(self: *AgentLoop, user_text: []const u8, buf: *ArrayList(u8)) !void {
         self.capture_buf = buf;
-        defer self.capture_buf = null;
+        // Restored, not cleared: a spawn_agent subagent captures inside its
+        // parent's capture, and the parent keeps writing after it returns.
+        const outer_capture = g_capture;
+        const outer_alloc = g_capture_alloc;
+        g_capture = buf;
+        g_capture_alloc = self.alloc;
+        defer {
+            self.capture_buf = null;
+            g_capture = outer_capture;
+            g_capture_alloc = outer_alloc;
+        }
         try self.processInput(user_text);
+    }
+
+    /// The vision model on WINTERMOLT_VISION_BACKEND: "openai" (any
+    /// OpenAI-compatible server), else Ollama.
+    fn sendVision(
+        self: *AgentLoop,
+        model: []const u8,
+        system_prompt: []const u8,
+        messages: []const protocol.Message,
+        tool_defs: []const protocol.ToolDefinition,
+        cb: ?sse.TextCallback,
+    ) !protocol.Response {
+        if (std.mem.eql(u8, self.config.vision_backend, "openai")) {
+            var client = deepseek_mod.DeepSeekClient.init(self.alloc, self.config.openai_api_key orelse return error.NoOpenAIKey, model);
+            client.api_url = self.config.openai_url;
+            return client.sendMessage(system_prompt, messages, tool_defs, cb);
+        }
+        var client = ollama_mod.OllamaClient.initWithOptions(self.alloc, self.config.ollama_url, model, self.config.ollama_num_ctx, self.config.ollama_keep_alive);
+        return client.sendMessage(system_prompt, messages, tool_defs, cb);
     }
 
     /// Send a message via the active backend (Claude, Ollama, or OpenAI-compatible).
@@ -434,7 +585,7 @@ pub const AgentLoop = struct {
         // overlap) is passed null: wintermolt is local-first by design (no
         // cloud/exposed mode concept in Config), so only Layer 1 (exact secret
         // values + key-shape patterns) is armed. (port of Wintermute leak-guard)
-        var secret_buf: [8]redact.NamedSecret = undefined;
+        var secret_buf: [9]redact.NamedSecret = undefined;
         const secrets = buildSecretSet(self.config, &secret_buf);
 
         const effective_cb: ?sse.TextCallback = blk: {
@@ -461,6 +612,18 @@ pub const AgentLoop = struct {
             }
         }
 
+        // WINTERMOLT_VISION_MODEL: a request carrying an image goes to the model
+        // that can see it; if that fails, the main model gets it as before.
+        if (self.config.vision_model) |vm| if (protocol.hasImage(messages)) {
+            if (self.sendVision(vm, system_prompt, messages, tool_defs, effective_cb)) |resp| {
+                succeeded = true;
+                return resp;
+            } else |e| {
+                if (control.stopRequested()) return error.Stopped;
+                stderr.print("\n[vision] {s} failed ({s}), the main model answers\n", .{ vm, @errorName(e) }) catch {};
+            }
+        };
+
         // Try primary backend first
         const primary_result = switch (self.backend) {
             .claude => |*c| c.sendMessage(system_prompt, messages, tool_defs, effective_cb),
@@ -475,6 +638,8 @@ pub const AgentLoop = struct {
             return resp;
         } else |primary_err| {
             if (primary_err == error.ContextOverflow) return primary_err;
+            // Stopped, not failed: asking Ollama instead would undo the stop.
+            if (control.stopRequested()) return error.Stopped;
 
             const backend_name: []const u8 = switch (self.backend) {
                 .claude => "Claude",
@@ -558,8 +723,15 @@ pub const AgentLoop = struct {
         }
     }
 
-    /// Switch backend at runtime (/model command).
-    pub fn switchBackend(self: *AgentLoop, backend_name: []const u8, model_name_arg: ?[]const u8) void {
+    /// Switch backend at runtime (/model command, the web /model endpoint, a
+    /// subagent's backend override).
+    ///
+    /// A backend that cannot be built — an unknown name, a missing key, an
+    /// engine this build does not carry — prints the reason on stderr and
+    /// returns error.BackendUnavailable. AgentLoop.init treats that as a
+    /// startup failure, so a WINTERMOLT_BACKEND that names such a backend ends
+    /// the run at exit 1 instead of quietly answering from Ollama.
+    pub fn switchBackend(self: *AgentLoop, backend_name: []const u8, model_name_arg: ?[]const u8) !void {
         const stderr = stdio.stderr();
         // Own the model name — callers pass a slice into a reused input
         // buffer (REPL line_buf), which the next read would overwrite,
@@ -586,7 +758,7 @@ pub const AgentLoop = struct {
         } else if (std.mem.eql(u8, backend_name, "openai")) {
             const api_key = self.config.openai_api_key orelse {
                 stderr.writeAll("[backend] OPENAI_API_KEY not set. Free local instead: /model ollama (default, no key)\n") catch {};
-                return;
+                return error.BackendUnavailable;
             };
             var client = deepseek_mod.DeepSeekClient.init(
                 self.alloc,
@@ -599,39 +771,43 @@ pub const AgentLoop = struct {
         } else if (std.mem.eql(u8, backend_name, "deepseek")) {
             const api_key = self.config.deepseek_cloud_key orelse {
                 stderr.writeAll("[backend] DEEPSEEK_API_KEY not set. Free local instead: /model ollama (default, no key)\n") catch {};
-                return;
+                return error.BackendUnavailable;
             };
-            self.backend = .{ .openai = deepseek_mod.DeepSeekClient.init(
+            var client = deepseek_mod.DeepSeekClient.init(
                 self.alloc,
                 api_key,
                 model_name orelse "deepseek-chat",
-            ) };
+            );
+            client.label = "deepseek";
+            self.backend = .{ .openai = client };
             stderr.print("[backend] Switched to DeepSeek Cloud ({s})\n", .{model_name orelse "deepseek-chat"}) catch {};
         } else if (std.mem.eql(u8, backend_name, "qwen")) {
             const api_key = self.config.qwen_api_key orelse {
                 // Common trap: "qwen" here is the Qwen Cloud API. The free
                 // local qwen3 models run via Ollama/kernel with no key.
                 stderr.writeAll("[backend] QWEN_API_KEY not set (qwen = Qwen Cloud API). The FREE local qwen3 needs no key: /model ollama qwen3:0.6b (default) or /model kernel qwen3:0.6b\n") catch {};
-                return;
+                return error.BackendUnavailable;
             };
             var client = deepseek_mod.DeepSeekClient.init(
                 self.alloc,
                 api_key,
                 model_name orelse self.config.qwen_model,
             );
+            client.label = "qwen";
             client.api_url = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions";
             self.backend = .{ .openai = client };
             stderr.print("[backend] Switched to Qwen Cloud ({s})\n", .{model_name orelse self.config.qwen_model}) catch {};
         } else if (std.mem.eql(u8, backend_name, "gemini")) {
             const api_key = self.config.gemini_api_key orelse {
                 stderr.writeAll("[backend] GOOGLE_GEMINI_API_KEY not set. Free local instead: /model ollama (default, no key)\n") catch {};
-                return;
+                return error.BackendUnavailable;
             };
             var client = deepseek_mod.DeepSeekClient.init(
                 self.alloc,
                 api_key,
                 model_name orelse self.config.gemini_model,
             );
+            client.label = "gemini";
             client.api_url = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions";
             self.backend = .{ .openai = client };
             stderr.print("[backend] Switched to Gemini ({s})\n", .{model_name orelse self.config.gemini_model}) catch {};
@@ -642,41 +818,41 @@ pub const AgentLoop = struct {
             // a custom URL.
             if (!forai_mod.is_supported) {
                 stderr.writeAll("[backend] forAI engine not delivered yet (forAI rebuild in flight) — use /model kernel for local inference meanwhile\n") catch {};
-                return;
+                return error.BackendUnavailable;
             }
             const default_alias = compat.getenv("WINTERMOLT_FORAI_DEFAULT") orelse "qwen3:0.6b";
             const alias = model_name orelse default_alias;
             const model_dir = forai_mod.defaultModelDir(self.alloc) catch {
                 stderr.writeAll("[backend] could not resolve WINTERMOLT_KERNEL_MODEL_DIR or $HOME\n") catch {};
-                return;
+                return error.BackendUnavailable;
             };
             const path = forai_mod.resolveModelPath(self.alloc, alias, model_dir) catch |err| {
                 stderr.print("[backend] forai: could not resolve {s} ({s})\n", .{ alias, @errorName(err) }) catch {};
-                return;
+                return error.BackendUnavailable;
             };
             self.backend = .{ .forai = forai_mod.ForAIClient.init(self.alloc, path, alias) };
             stderr.print("[backend] Switched to forAI in-process ({s})\n", .{alias}) catch {};
         } else if (std.mem.eql(u8, backend_name, "kernel")) {
             if (!kernel_mod.is_supported) {
                 stderr.writeAll("[backend] kernel backend is darwin-arm64 only on this build\n") catch {};
-                return;
+                return error.BackendUnavailable;
             }
             const default_alias = compat.getenv("WINTERMOLT_KERNEL_DEFAULT") orelse "qwen3:0.6b";
             const alias = model_name orelse default_alias;
             const model_dir = kernel_mod.defaultModelDir(self.alloc) catch {
                 stderr.writeAll("[backend] could not resolve WINTERMOLT_KERNEL_MODEL_DIR or $HOME\n") catch {};
-                return;
+                return error.BackendUnavailable;
             };
             const gguf_path = kernel_mod.resolveModelPath(self.alloc, alias, model_dir) catch |err| {
                 stderr.print("[backend] kernel: could not resolve {s} ({s})\n", .{ alias, @errorName(err) }) catch {};
-                return;
+                return error.BackendUnavailable;
             };
             self.backend = .{ .kernel = kernel_mod.KernelClient.init(self.alloc, gguf_path, alias) };
             stderr.print("[backend] Switched to kernel ({s} via Metal — {s})\n", .{ alias, gguf_path }) catch {};
         } else if (std.mem.eql(u8, backend_name, "claude")) {
             if (self.config.api_key.len == 0) {
                 stderr.writeAll("[backend] ANTHROPIC_API_KEY not set. Use /keys to configure, or stay free/local: /model ollama (default, no key)\n") catch {};
-                return;
+                return error.BackendUnavailable;
             }
             self.backend = .{ .claude = client_mod.Client.init(
                 self.alloc,
@@ -686,6 +862,7 @@ pub const AgentLoop = struct {
             stderr.print("[backend] Switched to Claude ({s})\n", .{model_name orelse "claude-sonnet-4-20250514"}) catch {};
         } else {
             stderr.print("[backend] Unknown: {s}. Free local (no key): ollama (default), kernel, forai · Cloud (API key): claude, openai, deepseek, qwen, gemini\n", .{backend_name}) catch {};
+            return error.BackendUnavailable;
         }
     }
 
@@ -727,6 +904,19 @@ pub const AgentLoop = struct {
                 .tool_use => |tu| {
                     try stdout.print("\x1b[90m[tool: {s}]\x1b[0m ", .{tu.name});
 
+                    // Every tool call still gets a result, or the next request
+                    // carries a tool call with none and the API refuses it.
+                    if (control.stopRequested()) {
+                        try results.append(self.alloc, .{
+                            .tool_use_id = tu.id,
+                            .content = "Not run: the user stopped this reply.",
+                            .is_error = true,
+                        });
+                        if (self.tool_done_callback) |cb| cb(tu.id, false);
+                        try stdout.print("\x1b[33m[stopped]\x1b[0m\n", .{});
+                        continue;
+                    }
+
                     // Notify web bridge of tool start
                     if (self.tool_start_callback) |cb| cb(tu.name, tu.id);
 
@@ -754,7 +944,7 @@ pub const AgentLoop = struct {
                             const b64_data = payload[sep + 1 ..];
 
                             var img_blocks = try self.alloc.alloc(protocol.ContentBlock, 2);
-                            img_blocks[0] = .{ .text = try self.alloc.dupe(u8, "Camera capture (saved to /tmp/wintermolt_capture.jpg):") };
+                            img_blocks[0] = .{ .text = try self.alloc.dupe(u8, "The image:") };
                             img_blocks[1] = .{ .image = .{
                                 .media_type = try self.alloc.dupe(u8, media_type),
                                 .data = try self.alloc.dupe(u8, b64_data),
@@ -762,7 +952,7 @@ pub const AgentLoop = struct {
 
                             try results.append(self.alloc, .{
                                 .tool_use_id = tu.id,
-                                .content = "Image captured and saved to /tmp/wintermolt_capture.jpg.",
+                                .content = "Image attached.",
                                 .is_error = false,
                                 .content_blocks = img_blocks,
                             });
@@ -830,7 +1020,7 @@ pub const AgentLoop = struct {
     /// slice. Shared by the streaming choke (sendToBackend) and the one-shot
     /// helper below so the key fields stay in one place. Layer 2 (prompt
     /// overlap) is never armed: wintermolt is local-first (no cloud mode).
-    fn buildSecretSet(cfg: *const config_mod.Config, buf: *[8]redact.NamedSecret) []const redact.NamedSecret {
+    fn buildSecretSet(cfg: *const config_mod.Config, buf: *[9]redact.NamedSecret) []const redact.NamedSecret {
         var n: usize = 0;
         if (cfg.api_key.len >= redact.MIN_SECRET_LEN) {
             buf[n] = .{ .name = "ANTHROPIC_API_KEY", .value = cfg.api_key };
@@ -864,7 +1054,21 @@ pub const AgentLoop = struct {
             buf[n] = .{ .name = "ELEVENLABS_API_KEY", .value = v };
             n += 1;
         };
+        if (cfg.deepgram_api_key) |v| if (v.len >= redact.MIN_SECRET_LEN) {
+            buf[n] = .{ .name = "DEEPGRAM_API_KEY", .value = v };
+            n += 1;
+        };
         return buf[0..n];
+    }
+
+    /// Nothing to show and nothing to run: no text but whitespace, no tool call.
+    fn isEmptyReply(resp: *const protocol.Response) bool {
+        for (resp.content.items) |block| switch (block) {
+            .text => |t| if (std.mem.trim(u8, t, " \t\r\n").len > 0) return false,
+            .tool_use => return false,
+            else => {},
+        };
+        return true;
     }
 
     /// One-shot redaction of a complete text block (non-streaming secondary
@@ -872,7 +1076,7 @@ pub const AgentLoop = struct {
     /// frees), or null on OOM — callers must treat null as "drop/skip", never
     /// as "emit raw". Same Layer-1 discipline as the streaming choke.
     fn redactOneShot(alloc: Allocator, cfg: *const config_mod.Config, text: []const u8) ?[]u8 {
-        var secret_buf: [8]redact.NamedSecret = undefined;
+        var secret_buf: [9]redact.NamedSecret = undefined;
         const secrets = buildSecretSet(cfg, &secret_buf);
         var r = redact.Redactor.init(alloc, secrets, null) catch return null;
         defer r.deinit();
@@ -885,8 +1089,11 @@ pub const AgentLoop = struct {
         return out.toOwnedSlice(alloc) catch null;
     }
 
+    /// The reply text, into processInputCapture's buffer. This was a no-op,
+    /// so --chat, the gateway and subagents all got an empty reply.
     fn captureText(text: []const u8) void {
-        // This is a placeholder — capture_buf is used via stream_callback
-        _ = text;
+        const buf = g_capture orelse return;
+        const alloc = g_capture_alloc orelse return;
+        buf.appendSlice(alloc, text) catch {};
     }
 };

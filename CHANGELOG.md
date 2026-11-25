@@ -6,7 +6,279 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **`WINTERMOLT_OLLAMA_THINK`** turns thinking off (`0`) or on (`1`) for an
+  Ollama model that can think, such as qwen3 or gemma4. Unset, Ollama
+  decides, and it thinks with any model that can. Off is faster, and it stops
+  qwen3:0.6b ending a reply with `/think`, the switch it was trained on. `0`
+  is harmless with any model; `1` with one that cannot think fails with
+  Ollama's `does not support thinking`.
+
+## [0.7.0] — 2026-11-07
+
+### Security
+
+- **`--chat` admits nobody until you allow them**, with OpenClaw's rules and
+  defaults. Before, every message from anyone on any connected platform went
+  to an agent that can run `bash`. Now:
+  - an unknown sender's direct message gets a one-hour pairing code, and
+    nothing they write reaches the agent until
+    `wintermolt --pairing approve <platform> <code>`;
+  - a group must be listed in `WINTERMOLT_CHAT_GROUPS`, the sender allowed
+    there, and the bot mentioned.
+
+  `WINTERMOLT_CHAT_DM_POLICY`, `_ALLOW_FROM`, `_GROUP_POLICY`, `_GROUPS`,
+  `_GROUP_ALLOW_FROM` and `_REQUIRE_MENTION` set the rules (see
+  docs/DEPLOYMENT.md). A value that is not one of the documented ones stops
+  `--chat` at startup instead of falling back to a default.
+- **A group no longer shares the owner's conversation.** Every `--chat`
+  message, from any DM or group on any platform, went to one conversation,
+  so a group member could ask about what was said in a direct message. Each
+  group now has its own; direct messages still share one, as in OpenClaw,
+  and `WINTERMOLT_CHAT_DM_SCOPE=per-peer` gives each direct sender their
+  own.
+- **Webhook adapters authenticate what they receive.** LINE checks
+  `X-Line-Signature` against the channel secret. Feishu checks the event's
+  verification token, which needs the new `FEISHU_VERIFICATION_TOKEN`.
+  Teams and Google Chat checked nothing, so anyone who could reach their port
+  could post as any user; they no longer start until they verify their
+  platform's JWT. They never sent their replies either.
+- **iMessage reads the Messages database as JSON.** It split rows on `|`, and
+  the text column came before the sender's, so a message containing `|`
+  could name any sender. Replies go to `osascript` without a shell.
+- **Speech never goes through a shell.** Piper and Edge TTS put the text
+  being spoken, which is model output, into a `/bin/sh -c` command line
+  unescaped, so a reply containing `$(…)` ran it. The text is now one
+  argument (or an environment variable, or a file). OpenAI and ElevenLabs
+  requests JSON-escape it, and a `[[speed:…]]` directive is only ever a
+  number. A Deepgram or ElevenLabs voice name, which goes into the URL, is
+  letters, digits, `-` and `_` only. `DEEPGRAM_API_KEY` is redacted like the
+  other keys.
+
+### Added
+
+- **Stop a reply.** Esc in the full-screen view and on the web page (whose
+  Send button becomes Stop), Ctrl+C in the plain REPL and `-e`, `/stop` in
+  the full-screen view and in chat. The model request is dropped, a running
+  shell command is killed with everything it started, and tools not yet run
+  are skipped. Before, the only way out was to quit. On macOS and Linux the
+  command runs in a process group of its own, which is how a stop reaches
+  all of it; so a command that prompts on the terminal (`sudo`, `ssh`, git
+  asking for credentials) waits, without prompting, until it is stopped.
+- **Approve shell commands before they run:** `WINTERMOLT_BASH_APPROVAL=ask`.
+  Each command from `bash`, a `schedule` job being added, or a skill waits
+  for a yes: `y` / `a` / `n` in the terminal, buttons on the web page,
+  OpenClaw's `/approve <id> allow-once|allow-always|deny` in chat from
+  someone in `WINTERMOLT_CHAT_APPROVERS`. "Always" covers that exact
+  command until wintermolt exits. No answer in 30 minutes, or nobody to ask
+  (`--gateway`, `--mcp-server`, `-e` with no input), is a no. Off by
+  default; any value but `off` asks, so a typo does not run everything.
+- **`--chat` keeps reading while it answers.** Messages that arrive during a
+  reply wait in a queue (20 at most) and are answered in order; before, one
+  slow reply held every platform. `/stop`, `/new`, `/reset`, `/status`,
+  `/help` and `/approve` are answered by wintermolt rather than sent to the
+  model.
+- **`--web` works: a chat page served by the binary itself.** It spawned a
+  TypeScript sidecar that is not in the repository, so it never started.
+  Now wintermolt serves the page and its WebSocket directly (no Node), on
+  `127.0.0.1:3000`, and opens it in the browser. Replies stream in with
+  their tool calls; panels show past conversations, skills, the workspace
+  files (editable) and which keys are set, never their values. The link it
+  prints carries a token, and a page or WebSocket without it, or from
+  another site, is refused. `WINTERMOLT_WEB_HOST` and `WINTERMOLT_WEB_TOKEN`
+  are new (see docs/DEPLOYMENT.md).
+- **The web page runs the terminal's commands** (`/stats`, `/session`,
+  `/schedule`, `/export` and the rest) and shows what they print. `/keys`
+  stays in the terminal, since `/keys list` shows part of each key.
+- **Carry on an earlier conversation.** History in the web page opens a
+  conversation to read or to continue: what was said goes back to the model
+  and new messages are saved under the same conversation. Tool results were
+  never saved, so they do not come back.
+- **`--gateway` works: an OpenAI-compatible API served by the binary
+  itself.** It spawned a TypeScript sidecar that is not in the repository,
+  and the Zig side sent only the first `content` string of a request, in a
+  new conversation each time, never streamed. Now `POST /v1/chat/completions`
+  takes the whole conversation and answers whole or streamed (server-sent
+  events), and `GET /v1/models` names the backend. Every request needs the
+  API key it prints (`WINTERMOLT_GATEWAY_KEY` sets a fixed one); it listens
+  on `127.0.0.1` (`WINTERMOLT_GATEWAY_HOST`). The sidecar's device pairing
+  endpoints went with it; they never ran.
+- **Workspace files, as in OpenClaw.** `AGENTS.md`, `SOUL.md`, `USER.md`,
+  `IDENTITY.md` and `MEMORY.md` in `~/.wintermolt/workspace`
+  (`WINTERMOLT_WORKSPACE_DIR`) go into the system prompt every turn, with
+  OpenClaw's limits: 20,000 characters a file, 60,000 in all, 4,000 for
+  `USER.md`. `MEMORY.md` is left out of `--chat` groups and per-peer DM
+  sessions; a `spawn_agent` child gets `AGENTS.md` only.
+- **`SKILL.md` skills** (OpenClaw, ClawHub, Anthropic Agent Skills) from
+  `./skills`, `./.agents/skills`, the workspace's `skills` and
+  `.agents/skills`, `~/.agents/skills` and `~/.wintermolt/skills`. The
+  prompt lists their names and descriptions in `<available_skills>`; the
+  `skills` tool's `use` returns one's instructions, and `/skill [name]
+  [input]` lists them or uses one. OpenClaw's `metadata.openclaw` gates
+  (`os`, `always`, `requires.bins`, `anyBins`, `env`) and
+  `disable-model-invocation` apply.
+- **A reply with nothing in it is asked for again.** A model that ended its
+  turn with no text and no tool call (qwen3 can spend the turn thinking)
+  printed nothing and `-e` exited 0. It is asked once more, and a second
+  empty reply is an error, exit status 1.
+- **Voice, end to end: `/listen [seconds | audio file]`.** ffmpeg records
+  the microphone (the first DirectShow audio device on Windows, `:0` on
+  macOS, PulseAudio's `default` elsewhere; `WINTERMOLT_MIC` names another),
+  the recording is transcribed and sent as the prompt, and the reply is
+  spoken. Transcription is local whisper.cpp (`whisper-cli`) when a
+  `ggml-*.bin` model is in `~/.wintermolt/models` (or
+  `WINTERMOLT_WHISPER_MODEL` names one), else Deepgram nova-3 with
+  `DEEPGRAM_API_KEY`; `WINTERMOLT_STT_PROVIDER` picks.
+- **`/listen` keeps whisper.cpp loaded.** The first `/listen` starts
+  `whisper-server` on 127.0.0.1:8178 while you speak; every later one
+  reuses it (0.2 s to transcribe instead of 2–10 s for `whisper-cli`, which
+  loads the model each time), and it ends with wintermolt, even when
+  wintermolt crashes or is killed: on Windows a kill-on-close job holds it,
+  on macOS and Linux a `sh` watcher kills it when wintermolt's pipe closes.
+  Without `whisper-server`, or if it fails, `whisper-cli` transcribes as
+  before.
+- **`/listen` says what it is waiting on.** "Opening the microphone...",
+  then "speak now" only once ffmpeg is capturing (opening a DirectShow
+  device took 3–6 s here, and words said before it were lost), and
+  "Loading the speech model" on the first `/listen`. The full-screen view's
+  spinner shows the same (`recording`, `loading speech`). The microphone a
+  session finds is kept, skipping the device listing after the first time.
+- **`/listen` loads the Ollama model while you speak, and keeps it.** A
+  reply waited for the model to load (50 s cold here) before reading the
+  prompt; now `/listen` asks Ollama to load it as recording starts, with the
+  context size the reply will use, so it is loaded once. From the first
+  `/listen` on, the model stays loaded 30 minutes after each reply instead
+  of Ollama's 5, so pauses between questions don't unload it.
+  `WINTERMOLT_OLLAMA_KEEP_ALIVE`, when set, still decides.
+- **Deepgram Aura-2 text-to-speech** (`deepgram`, voice `thalia` by default;
+  any `aura-2-<name>-en`), and **the computer's own voice** (`system`:
+  Windows' built-in speech, macOS `say`, `espeak-ng`), which needs no key.
+  With `WINTERMOLT_TTS_PROVIDER` unset, the first provider whose key is set
+  speaks (Deepgram, OpenAI, ElevenLabs), else the system voice. Before, an
+  unset provider meant OpenAI, and without its key, no speech at all.
+  `wintermolt --keys` (step 5, Voice) and `/keys deepgram` take your own
+  `DEEPGRAM_API_KEY`; a key Deepgram refuses, `/listen` says so.
+- **`/image <file> [prompt]` attaches an image** (png, jpeg, gif, webp) to
+  the next turn, in the plain prompt and the full-screen view. Drag a file in
+  for its path: the quoted form Windows Terminal pastes and the `\ ` form
+  macOS Terminal pastes both work.
+- **`/screenshot` works on Windows**, through PowerShell. It captures the
+  primary screen at its real resolution.
+- **The agent can look for itself.** `camera_capture` gains `screenshot`
+  (the primary screen) and `view` (any png, jpeg, gif or webp file), so an
+  agent working on its own can check the screen or open an image it found.
+- **The camera works on Windows**, through ffmpeg's DirectShow input. With
+  no device named it uses the first camera that opens. A black frame fails
+  the capture with `CameraFrameIsBlackIsItCovered`, rather than moving on to
+  a virtual camera (NVIDIA Broadcast's shows its own picture).
+  `list_devices` lists them.
+- **`WINTERMOLT_MAX_ITERATIONS` sets how many model requests one turn may
+  make** before it stops with "Hit max iterations" (default 25; 0, or a
+  value that is not a positive whole number, keeps 25). A long multi-step
+  task stopped at 25 with no way to raise it. By Philipp Baumann (#8).
+
 ### Fixed
+
+- **A model Ollama does not have says so.** On a fresh install the default,
+  `qwen3:8b`, is often not pulled yet, and the error was
+  `[ollama HTTP 404] Request failed`. It now prints Ollama's own message:
+  `[ollama HTTP 404] model 'qwen3:8b' not found`.
+- **When Ollama rejects a request that declares tools, its reason is shown.**
+  wintermolt retries without the tools, as before, but it used to tell you to
+  run curl to find out why. Now Ollama's message prints first, e.g.
+  `[ollama HTTP 400] Value looks like object, but can't find closing '}' symbol`.
+- **`--keys` no longer erases settings you added to `.env` by hand.** It
+  rewrote `~/.wintermolt/.env` with only the keys it asks about, so a line
+  such as `WINTERMOLT_STT_PROVIDER=deepgram`, the `/theme` choice, or a
+  comment was lost on every re-run. Now only the wizard's own keys change.
+  Each is replaced where it was, or removed when you clear it, and every
+  other line is kept exactly.
+- **`/keys` changes only the key you set or clear.** It rebuilt the whole
+  file, dropping comments, reordering lines and quoting every value. It
+  also said "Saved" before writing, and said nothing when the write failed.
+- **Keys already in `.env` stay intact when `--keys` or `/keys` saves.**
+  The values read from the file pointed at memory that was reused
+  straight away. `--keys` could offer a kept key as blanks and save that,
+  and `/keys` could write the other keys back damaged. Files over 8 KB are
+  also read in full now.
+- **`WINTERMOLT_OLLAMA_CTX` is documented as 8192**, the default the code
+  has used since the small-model fix; the README, docs/BACKENDS.md and
+  config.zig still said 4096.
+- **Saved conversations have titles.** Nothing ever set one, so every
+  conversation was untitled. A conversation is now named by the first line
+  of its first message, at most 80 bytes.
+- **Spoken audio plays on Windows and Linux.** `/tts` played only on macOS,
+  through `afplay`; the tool used `aplay`, which cannot play the mp3 the
+  cloud voices return. Both now use `afplay` on macOS and ffmpeg's `ffplay`
+  elsewhere. Audio goes to `%TEMP%` on Windows, not `/tmp`.
+- **A voice service's error is not saved as audio.** A rejected key or a
+  too-long text came back as JSON with a 4xx status, written to an `.mp3`
+  and reported as success; now it is `ApiKeyRejected`, `HttpError` or
+  `TextTooLong`. Edge TTS was asked for OpenAI's voice `alloy`, which it
+  does not have; each provider now has its own default voice.
+- **`/look` and `/screenshot` send the image.** They captured it, discarded
+  it, and sent the model only the words "[Screenshot attached]".
+- **OpenAI-compatible backends receive images.** Their requests replaced
+  every image with the text `[image]`; it now goes as an `image_url` part.
+- **An image a tool returns reaches OpenAI-compatible and Ollama models.**
+  Only Claude saw what `camera_capture` captured; the others got the text
+  "Image captured". The image now follows the tool's reply as a user message,
+  since neither API takes an image inside a tool message.
+- **Captures land in %TEMP% on Windows**, which has no `/tmp`.
+- **`WINTERMOLT_VISION_MODEL` routes images.** It was documented as the model
+  for `/look` and image tools but read by nothing, so a text-only main model
+  (the default qwen3:8b) got images it could not see. A request carrying an
+  image now goes to it, on `WINTERMOLT_VISION_BACKEND` (`ollama` or
+  `openai`); if it fails, the main model answers.
+- **A turn with an attached image does not offer `camera_capture`.** Offered
+  it, gemma4 called `view` on a made-up path (`image.png`) instead of looking
+  at the image it had; without it, it describes the image.
+
+- **The browser tool no longer runs page data as shell.** Without websocat it
+  spliced the CDP message (URLs, text to type, JS) into a `node -e "..."`
+  script, where every `"` in the JSON toggled the shell's quoting: a `;` in a
+  URL the model was steered to ran as a command. The message and URL are now
+  arguments to a fixed script.
+- **Claude's in-stream errors fail the request.** An `event: error`
+  (`overloaded_error` and the like) inside a `200` was printed and the partial
+  answer returned as a success, so no fallback ran. It is now
+  `[claude] stream error: <message>` and the request fails, as the OpenAI
+  path already did.
+- **`~/.wintermolt/mcp.json` reads `"mcpServers"`**, the key docs/MCP.md and
+  Claude's own configs use. Only `"servers"` was read, so the documented
+  config loaded nothing; both work now.
+- **A provider's HTTP error says why.** A non-2xx answer printed only
+  `[openai HTTP 404] Request failed`; it now prints the body's error message,
+  which for a local engine names the models it does serve. Found by Philipp
+  Baumann (#4).
+- **A stream written `data:{...}` without the space is read.** The SSE spec
+  makes the space optional; both parsers required it, so such a stream came
+  back as an empty answer (#7).
+- **`--chat` processes messages.** It had not since 0.4, for three reasons:
+  - the loop stopped at the sidecar's first status event, which every
+    adapter sends when it connects;
+  - a reader made per line dropped whatever arrived in the same read as the
+    line before it;
+  - the reply was never captured, so the agent's answer was empty and
+    nothing was sent.
+- **Replies go to the conversation.** A reply was sent to the sender's ID, so
+  a group's answer went to a member's DM, or nowhere on Discord, Mattermost,
+  Matrix and Rocket.Chat.
+- **The gateway and `spawn_agent` return the model's answer.** Both read
+  the same never-filled capture buffer, and returned `(no response)` and
+  `(Subagent produced no output)`.
+- **Each adapter reports a direct message from a group message, and whether
+  the bot was mentioned.** Along the way:
+  - a WhatsApp group message names its author rather than the group;
+  - a Signal group message is answered in the group;
+  - IRC no longer hands each line to the agent twice, once as a DM, or
+    answers NOTICEs;
+  - Zulip no longer answers its own replies.
+- **A sidecar line is parsed as JSON.** The key search it replaced unescaped
+  every field into one shared buffer, so a Discord message with an
+  attachment had its text replaced by the attachment list. Lines may now be
+  up to 4 MiB (was 8 KiB, past which `--chat` stopped).
 
 - **The Linux arm64 prebuilt drops to glibc 2.34+** (was 2.36+), so it starts
   on Ubuntu 22.04 / JetPack 6, Debian 12 and RHEL 9 — the same floor the

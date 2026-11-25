@@ -6,10 +6,20 @@
 export interface InboundMessage {
   type: 'message';
   platform: string;
+  /** The person who wrote it. */
   from: string;
   fromName?: string;
+  /** The conversation it arrived in, and where the reply goes: the group,
+   *  room or DM channel — not the person. */
   channel: string;
   text: string;
+  /** 'direct' for a one-to-one conversation, 'group' for anything with more
+   *  members. The agent applies its DM or group policy by this, and drops a
+   *  message that has neither (src/chat/access.zig). */
+  chatType: 'direct' | 'group';
+  /** The bot was @-mentioned, or the message replies to one of its messages.
+   *  Groups need this unless WINTERMOLT_CHAT_REQUIRE_MENTION=0. */
+  mentioned?: boolean;
   threadId?: string;
   replyTo?: string;
   guild?: string;

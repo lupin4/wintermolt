@@ -43,6 +43,11 @@ export function createAdapter(): ChatAdapter {
           lastEventId = event.id;
           if (event.type !== 'message') continue;
           const msg = event.message;
+          // Its own replies arrive as events too; answering them loops.
+          if (msg.sender_email === EMAIL) continue;
+          // A private message to just the bot has two recipients: it and the sender.
+          const direct = msg.type === 'private' &&
+            Array.isArray(msg.display_recipient) && msg.display_recipient.length <= 2;
 
           sendToAgent({
             type: 'message',
@@ -54,6 +59,10 @@ export function createAdapter(): ChatAdapter {
               : String(msg.sender_id),
             text: msg.content,
             threadId: msg.subject ?? undefined,
+            // The stream, so one WINTERMOLT_CHAT_GROUPS entry admits all its topics.
+            guild: msg.type === 'stream' ? String(msg.stream_id) : undefined,
+            chatType: direct ? 'direct' : 'group',
+            mentioned: (event.flags ?? []).includes('mentioned'),
           });
         }
       } catch (err) {

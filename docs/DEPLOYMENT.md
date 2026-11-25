@@ -13,18 +13,20 @@ keep them running.
 | `-e "<prompt>"`  | One-shot execution; prints response, exits. Status 1 if no backend answered. |
 | `--version`, `--help` | Print the version, or usage, and exit.              |
 | `--keys`         | Interactive credential setup (also `--setup`).           |
-| `--chat`         | Spawn the chat-bridge sidecar (18 platforms).            |
-| `--web`          | Spawn the web UI bridge (WebSocket + JSON lines).        |
+| `--chat`         | Spawn the chat-bridge sidecar (see [who can reach the agent](#who-can-reach-the-agent)). |
+| `--pairing <cmd>` | Chat access: `list`, `approve <platform> <code>`, `revoke <platform> <sender>`. |
+| `--web`          | Chat in a browser; wintermolt serves the page itself (see [Web UI](#web-ui)). |
 | `--menubar`      | macOS menu bar sidecar.                                  |
-| `--gateway`      | OpenAI-compatible HTTP gateway on `:8080`.               |
+| `--gateway`      | OpenAI-compatible API on `127.0.0.1:8080`, served by wintermolt itself (see [gateway](#openai-compatible-gateway)). |
 | `--mcp-server`   | JSON-RPC 2.0 MCP server over stdio (see [MCP.md](MCP.md)). |
 | `--extension <cmd>` | Plugin manager: `list`, `available`, `install`, `remove`. |
 
-## Chat bridges (18 platforms)
+## Chat bridges
 
 `./wintermolt --chat` spawns the chat sidecar. Per-platform env vars
 gate which integrations come online — anything without credentials
-is silently skipped.
+is silently skipped. Sixteen platforms start; Teams and Google Chat
+do not yet (below).
 
 | Platform   | Required env                                                |
 | :--------- | :---------------------------------------------------------- |
@@ -36,10 +38,10 @@ is silently skipped.
 | iMessage   | `IMESSAGE_APPLEID` (macOS only)                             |
 | IRC        | `IRC_SERVER` + `IRC_NICK` + `IRC_CHANNELS`                  |
 | Matrix     | `MATRIX_HOMESERVER` + `MATRIX_ACCESS_TOKEN` + `MATRIX_USER_ID` |
-| Teams      | `TEAMS_APP_ID` + `TEAMS_APP_PASSWORD`                       |
-| Google Chat| `GOOGLE_CHAT_CREDENTIALS`                                   |
-| LINE       | `LINE_CHANNEL_SECRET` + `LINE_CHANNEL_TOKEN`                |
-| Feishu/Lark| `FEISHU_APP_ID` + `FEISHU_APP_SECRET`                       |
+| Teams      | Not available yet: inbound POSTs are not authenticated and replies are not sent, so the sidecar does not start it |
+| Google Chat| Not available yet, for the same two reasons                 |
+| LINE       | `LINE_CHANNEL_SECRET` + `LINE_CHANNEL_TOKEN` (the secret verifies every webhook) |
+| Feishu/Lark| `FEISHU_APP_ID` + `FEISHU_APP_SECRET` + `FEISHU_VERIFICATION_TOKEN` |
 | Mattermost | `MATTERMOST_URL` + `MATTERMOST_TOKEN`                       |
 | Twitch     | `TWITCH_ACCESS_TOKEN` + `TWITCH_CHANNELS`                   |
 | Nostr      | `NOSTR_PRIVATE_KEY` (+ `NOSTR_RELAYS`)                      |
@@ -50,15 +52,146 @@ is silently skipped.
 IPC: the Zig binary spawns the sidecar as a child and they exchange
 JSON-lines over stdin/stdout. No sockets, no shared memory.
 
+### Who can reach the agent
+
+A chat message ends in an agent that can run `bash` on this host, so
+nobody reaches it until you allow them. The rules and defaults are
+OpenClaw's.
+
+**Direct messages** follow `WINTERMOLT_CHAT_DM_POLICY`:
+
+| Policy | Behavior |
+| :----- | :------- |
+| `pairing` (default) | An unknown sender is sent a pairing code, and nothing they write reaches the agent until you approve it. A code lasts one hour; a sender who writes again meanwhile is not sent another. Each platform holds at most 3 pending requests. |
+| `allowlist` | Only senders in `WINTERMOLT_CHAT_ALLOW_FROM`. No handshake. |
+| `open` | Anyone. |
+| `disabled` | No direct message is processed. |
+
+Approve and manage senders from another terminal while `--chat` runs:
+
+```bash
+wintermolt --pairing list [platform]           # pending codes and approved senders
+wintermolt --pairing approve telegram ACDE3467  # the code the sender was sent
+wintermolt --pairing revoke telegram 123456789
+```
+
+Approvals live in `~/.wintermolt/chat_access.db` and grant direct
+messages only.
+
+**Groups** follow `WINTERMOLT_CHAT_GROUP_POLICY`, checked in this order:
+
+1. `disabled` drops every group message. `open` admits any group and any
+   member. `allowlist` (the default) admits a group only if it is in
+   `WINTERMOLT_CHAT_GROUPS`, and then only senders in
+   `WINTERMOLT_CHAT_GROUP_ALLOW_FROM`. When that is unset it falls back to
+   `WINTERMOLT_CHAT_ALLOW_FROM`, never to pairing approvals.
+2. The bot must be @-mentioned, or the message must reply to it, unless
+   `WINTERMOLT_CHAT_REQUIRE_MENTION=0`.
+
+Lists are comma separated `platform:id` entries, or `*` for everyone.
+Only the first `:` splits an entry, so `matrix:@alice:example.org` is one
+Matrix user. A group entry can name the chat, or on Discord and Zulip a
+whole server or stream: `discord:<guild id>`, `zulip:<stream id>`.
+
+```bash
+# One owner, one group where only they can trigger the bot by mentioning it
+WINTERMOLT_CHAT_ALLOW_FROM=telegram:123456789 \
+WINTERMOLT_CHAT_GROUPS=telegram:-1001234567890 \
+wintermolt --chat
+```
+
+**Conversations.** Each group has its own conversation, so nothing said in
+a direct message, or in another group, is in its history. Direct messages
+share one conversation, OpenClaw's default, which suits one owner on several
+platforms. When several people may message the bot directly, give each their
+own with `WINTERMOLT_CHAT_DM_SCOPE=per-peer` (one per sender per platform).
+A routed agent (`/route`) keeps the same split under its own name. A
+conversation idle for `WINTERMOLT_AGENT_IDLE_TIMEOUT` (30 minutes), or the
+oldest once `WINTERMOLT_MAX_AGENTS` (16) are open, is closed, and the next
+message starts it empty.
+
+**Commands and the queue.** A message that arrives while a reply runs waits
+its turn, 20 at most; past that the sender is asked to try again. These are
+answered at once by wintermolt and never reach the model:
+
+- `/stop` stops this conversation's reply and drops its waiting messages.
+  Direct messages share a conversation unless
+  `WINTERMOLT_CHAT_DM_SCOPE=per-peer`, so any direct sender can stop it.
+- `/new` (or `/reset`) starts the conversation over, in its turn.
+- `/status` says whether a reply is running and how many messages wait.
+- `/help` lists these.
+- `/approve <id> allow-once|allow-always|deny` answers an approval request.
+
+**Approving commands.** With `WINTERMOLT_BASH_APPROVAL=ask`, a shell command
+the agent wants to run is posted, with an id, to the conversation whose
+message started the reply. Only senders in `WINTERMOLT_CHAT_APPROVERS` (a
+`platform:id` list, or `*`) can answer; `/approve` from anyone else is
+ignored and logged. With no approvers set, every such command is refused at
+once. A request nobody answers in 30 minutes is a no.
+
+```bash
+WINTERMOLT_BASH_APPROVAL=ask \
+WINTERMOLT_CHAT_APPROVERS=telegram:123456789 \
+wintermolt --chat
+```
+
+This keeps conversations apart; it is not a wall between people. Anyone the
+bot answers can still use its tools on this host, `bash` and `memory_search`
+(which searches every stored conversation) among them. Admit only people you
+would let use this machine, or narrow the tools with
+`WINTERMOLT_TOOL_BLOCKLIST`.
+
+A value that is not one of the above stops `--chat` at startup rather
+than being read as a default. Every dropped message is logged with the
+reason.
+
+Per platform:
+
+- **iMessage** groups carry no mention a script can read, so they only
+  reach the agent with `WINTERMOLT_CHAT_REQUIRE_MENTION=0`.
+- **IRC** nicks are not authenticated. On a network that does not enforce
+  registered nicks, someone can take an allowlisted nick while its owner
+  is away.
+- **Twitch** reads channel chat only (no whispers), so everything there is
+  a group message.
+
 ## Web UI
 
 ```bash
 ./wintermolt --web
 ```
 
-Spawns the web sidecar (WebSocket + static files) on port `3000`. `PORT`
-or `WINTERMOLT_WEB_PORT` changes it (`PORT` wins when both are set). Visit
-`http://localhost:3000`.
+Serves a chat page from the binary itself (no Node, nothing to install)
+and opens it in your browser. The page streams replies, shows each tool as
+it runs, and has panels for past conversations (open one to read it or
+carry on with it), skills, the
+workspace files (editable) and which API keys are set (never their values).
+
+It prints the link to open:
+
+```
+[web] Open http://127.0.0.1:3000/#token=…
+```
+
+The token in that link is the only way in: a page without it, or a
+WebSocket from another site, is refused. The page keeps the token in the
+browser, so a reload works; a new wintermolt start makes a new one.
+
+| Variable | Default | What it does |
+|---|---|---|
+| `PORT`, `WINTERMOLT_WEB_PORT` | `3000` | Port; `PORT` wins when both are set |
+| `WINTERMOLT_WEB_HOST` | `127.0.0.1` | Address to listen on. Anything but loopback lets other machines connect, over plain HTTP: put it behind TLS (Tailscale serve, a reverse proxy) |
+| `WINTERMOLT_WEB_TOKEN` | random each start | A fixed token, 16 characters or more, so a bookmarked link keeps working |
+| `WINTERMOLT_HEADLESS` | | Set it to skip opening a browser (also skipped on Cloud Run) |
+
+One agent serves every open page, one message at a time; a second page
+waits while the first one's reply runs. The terminal's commands work in
+the page (`/help` lists them), except `/keys`, which would show part of a
+key, and `/quit`. Commands that use a camera, microphone or speaker
+(`/look`, `/listen`, `/tts`) use the ones on the machine wintermolt runs on.
+
+A conversation carried on from History brings back what was said, not what
+its tools returned: tool results are not saved.
 
 ## macOS menu bar
 
@@ -75,15 +208,41 @@ Click the menu bar icon to chat without a terminal. macOS-only.
 ./wintermolt --gateway
 ```
 
-Listens on `:8080` (`WINTERMOLT_GATEWAY_PORT` changes it) and accepts `POST /v1/chat/completions` requests
-in the OpenAI Chat Completions format. Useful for routing existing
-OpenAI-client code through Wintermolt's backend dispatcher.
+An OpenAI-compatible API, served by the binary itself: point an OpenAI
+client (an SDK, Open WebUI, an editor plugin) at wintermolt and it gets the
+agent, tools included. It prints the base URL and the API key to use:
+
+```
+[gateway] OpenAI-compatible API at http://127.0.0.1:8080/v1
+[gateway] API key: …
+```
 
 ```bash
-curl http://localhost:8080/v1/chat/completions \
+curl http://127.0.0.1:8080/v1/chat/completions \
+  -H "Authorization: Bearer $KEY" \
   -H "Content-Type: application/json" \
-  -d '{"model": "ollama:qwen3:0.6b", "messages": [{"role": "user", "content": "hi"}]}'
+  -d '{"messages": [{"role": "user", "content": "hi"}], "stream": true}'
 ```
+
+- `POST /v1/chat/completions`, streamed (`"stream": true`, server-sent
+  events) or whole. `GET /v1/models` lists the one model it answers with.
+- It answers with wintermolt's own backend and model, whatever the request's
+  `model` says. Pick them with `WINTERMOLT_BACKEND` and `WINTERMOLT_MODEL`
+  (see [BACKENDS.md](BACKENDS.md)).
+- The client sends the whole conversation each time, and wintermolt keeps
+  none of it: gateway requests are not in History. A `system` message counts
+  as the user's (the agent keeps its own system prompt). Images and tool
+  messages in a request are dropped.
+- Without the key every request gets a 401. A web page cannot send the key
+  to another site without a CORS preflight, which the gateway never answers,
+  so a page you visit cannot drive the agent.
+- One request at a time; a second waits for the first.
+
+| Variable | Default | What it does |
+|---|---|---|
+| `WINTERMOLT_GATEWAY_PORT` | `8080` | Port |
+| `WINTERMOLT_GATEWAY_HOST` | `127.0.0.1` | Address to listen on. Anything but loopback is reachable from other machines over plain HTTP: put it behind TLS |
+| `WINTERMOLT_GATEWAY_KEY` | random each start | A fixed API key, 16 characters or more, so clients keep working across restarts |
 
 ## Scheduler
 

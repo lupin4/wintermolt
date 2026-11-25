@@ -49,6 +49,10 @@ export function createAdapter(): ChatAdapter {
               channel: post.channel_id,
               text: post.message,
               threadId: post.root_id || undefined,
+              // 'D' is a DM; 'G' (a group DM), 'O' and 'P' channels have members.
+              chatType: event.data.channel_type === 'D' ? 'direct' : 'group',
+              // The server lists who a post mentions, as a JSON array of user IDs.
+              mentioned: !!botUserId && String(event.data.mentions ?? '').includes(botUserId),
             });
           }
         } catch {

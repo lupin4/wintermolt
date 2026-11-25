@@ -1,7 +1,7 @@
 // iMessage adapter — macOS only, uses AppleScript via osascript
 // Requires: macOS, IMESSAGE_APPLEID
 // Polls the Messages SQLite database for new messages
-import { execSync, exec } from 'child_process';
+import { execSync, execFile } from 'child_process';
 import { existsSync } from 'fs';
 import { join } from 'path';
 import { sendToAgent } from '../ipc.js';
@@ -31,10 +31,13 @@ export function createAdapter(): ChatAdapter {
 
     while (polling) {
       try {
+        // -json, not a '|' separator: text came before the sender column, so
+        // a message containing '|' could shift the columns and name any
+        // sender it liked -- the allowlisted one included.
         const query = `
-          SELECT m.ROWID, m.text, m.is_from_me,
-                 COALESCE(h.id, 'unknown') as sender,
-                 COALESCE(c.chat_identifier, 'unknown') as chat_id
+          SELECT m.ROWID AS rowid, m.text AS text, m.is_from_me AS from_me,
+                 h.id AS sender, c.chat_identifier AS chat_id,
+                 c.guid AS chat_guid, c.style AS style
           FROM message m
           LEFT JOIN handle h ON m.handle_id = h.ROWID
           LEFT JOIN chat_message_join cmj ON m.ROWID = cmj.message_id
@@ -45,23 +48,29 @@ export function createAdapter(): ChatAdapter {
         `;
 
         const result = execSync(
-          `sqlite3 -separator '|' "${DB_PATH}" "${query.replace(/\n/g, ' ')}"`,
+          `sqlite3 -json "${DB_PATH}" "${query.replace(/\n/g, ' ')}"`,
           { encoding: 'utf-8' },
         ).trim();
 
         if (result) {
-          for (const line of result.split('\n')) {
-            const [rowId, text, isFromMe, sender, chatId] = line.split('|');
-            lastRowId = parseInt(rowId, 10);
+          for (const row of JSON.parse(result) as any[]) {
+            lastRowId = row.rowid;
 
-            if (isFromMe === '1' || !text) continue;
+            if (row.from_me === 1 || !row.text || !row.sender || !row.chat_id) continue;
 
+            // chat.style 43 is a group chat, 45 a one-to-one. A group is
+            // answered by its chat GUID; a person by their handle.
+            const isGroup = row.style === 43;
             sendToAgent({
               type: 'message',
               platform: 'imessage',
-              from: sender,
-              channel: chatId,
-              text,
+              from: row.sender,
+              channel: isGroup ? row.chat_guid : row.chat_id,
+              text: row.text,
+              chatType: isGroup ? 'group' : 'direct',
+              // Messages has no mention a script can read, so groups only
+              // reach the agent with WINTERMOLT_CHAT_REQUIRE_MENTION=0.
+              mentioned: false,
             });
           }
         }
@@ -95,12 +104,18 @@ export function createAdapter(): ChatAdapter {
     async sendReply(to: string, text: string) {
       // Use AppleScript to send via Messages.app
       const escaped = text.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-      const script = `tell application "Messages"
+      // A group chat GUID ("iMessage;+;chat…") names a chat, not a buddy.
+      const script = to.includes(';+;')
+        ? `tell application "Messages"
+        send "${escaped}" to chat id "${to}"
+      end tell`
+        : `tell application "Messages"
         set targetBuddy to buddy "${to}" of service 1
         send "${escaped}" to targetBuddy
       end tell`;
 
-      exec(`osascript -e '${script.replace(/'/g, "'\\''")}'`, (err) => {
+      // No shell: the reply is model output, and a sender can steer it.
+      execFile('osascript', ['-e', script], (err) => {
         if (err) process.stderr.write(`[imessage] Send error: ${err.message}\n`);
       });
     },

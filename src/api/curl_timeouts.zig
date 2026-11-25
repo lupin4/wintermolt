@@ -39,14 +39,27 @@ const CURLOPT_LOW_SPEED_LIMIT: c_int = 19;
 const CURLOPT_LOW_SPEED_TIME: c_int = 20;
 const CURLOPT_CONNECTTIMEOUT: c_int = 78;
 
+const CURLOPT_NOPROGRESS: c_int = 43;
+// CURLOPTTYPE_FUNCTIONPOINT (20000) + 219.
+const CURLOPT_XFERINFOFUNCTION: c_int = 20219;
+
 extern fn curl_easy_setopt(handle: *anyopaque, option: c_int, ...) c_int;
 
 /// No cap on the whole request; drop it after stallSecs() below 1 byte/s.
+/// /stop aborts it: curl calls onProgress about once a second even while no
+/// byte arrives (a local model still reading the prompt).
 pub fn apply(handle: *anyopaque, connect_secs: c_long) void {
     _ = curl_easy_setopt(handle, CURLOPT_CONNECTTIMEOUT, connect_secs);
     _ = curl_easy_setopt(handle, CURLOPT_TIMEOUT, @as(c_long, 0));
     _ = curl_easy_setopt(handle, CURLOPT_LOW_SPEED_LIMIT, @as(c_long, 1));
     _ = curl_easy_setopt(handle, CURLOPT_LOW_SPEED_TIME, @as(c_long, @intCast(stallSecs())));
+    _ = curl_easy_setopt(handle, CURLOPT_XFERINFOFUNCTION, &onProgress);
+    _ = curl_easy_setopt(handle, CURLOPT_NOPROGRESS, @as(c_long, 0));
+}
+
+/// Non-zero makes curl abort the transfer (CURLE_ABORTED_BY_CALLBACK).
+fn onProgress(_: ?*anyopaque, _: i64, _: i64, _: i64, _: i64) callconv(.c) c_int {
+    return @intFromBool(@import("../agent/control.zig").stopRequested());
 }
 
 const testing = std.testing;
@@ -69,4 +82,14 @@ test "parseStallSecs: anything else means the default" {
     try testing.expectEqual(default_stall_secs, parseStallSecs("abc"));
     try testing.expectEqual(default_stall_secs, parseStallSecs("-5"));
     try testing.expectEqual(default_stall_secs, parseStallSecs("2m"));
+}
+
+test "a model request is aborted once a stop is asked for, and only then" {
+    const control = @import("../agent/control.zig");
+    control.beginRun();
+    try testing.expectEqual(@as(c_int, 0), onProgress(null, 0, 0, 0, 0));
+    control.requestStop();
+    try testing.expect(onProgress(null, 0, 0, 0, 0) != 0);
+    control.beginRun();
+    try testing.expectEqual(@as(c_int, 0), onProgress(null, 0, 0, 0, 0));
 }

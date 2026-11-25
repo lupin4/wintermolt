@@ -21,6 +21,9 @@
   <img src="https://img.shields.io/badge/backends-7_(Ollama%2C_Claude%2C_GPT%2C_DeepSeek%2C_Qwen%2C_Gemini%2C_forAI)-purple?style=flat-square" alt="Backends">
 </p>
 
+> **wintermolt has no token or coin.** The `$WINTERMOLT` token on Base is not
+> affiliated with this project or its author.
+
 ---
 
 ```
@@ -52,11 +55,11 @@ Tailscale peers:
 
 ## Why Wintermolt?
 
-Most AI coding tools ship hundreds of megabytes of Electron or Node.js runtime just to send API calls and edit files. Wintermolt compiles to a **single native binary** — about 6 MB on macOS Apple Silicon, 1.6 MB on Linux arm64 and 1.8 MB on Linux x86_64 (stripped), 14 MB on Windows (statically-linked HTTP/3 stack) — and builds natively on macOS, Linux and Windows, including ARM boards like Jetson and Raspberry Pi.
+Most AI coding tools ship hundreds of megabytes of Electron or Node.js runtime just to send API calls and edit files. Wintermolt compiles to a **single native binary** — about 6 MB on macOS Apple Silicon, 1.9 MB on Linux arm64 and 2.2 MB on Linux x86_64 (stripped), 14 MB on Windows (statically-linked HTTP/3 stack) — and builds natively on macOS, Linux and Windows, including ARM boards like Jetson and Raspberry Pi.
 
 | | Wintermolt | Claude Code | Cursor | Aider |
 |---|:---:|:---:|:---:|:---:|
-| **Binary size** | **1.6–14 MB** | ~200 MB | ~500 MB | ~50 MB |
+| **Binary size** | **1.9–14 MB** | ~200 MB | ~500 MB | ~50 MB |
 | **Runtime** | **None** | Node.js 18+ | Electron | Python 3.8+ |
 | **Runs on Jetson/Pi** | **Yes** | Barely | No | Slow |
 | **Runs on Windows** | **Yes (v0.4+)** | Via WSL | Yes | Yes |
@@ -64,7 +67,7 @@ Most AI coding tools ship hundreds of megabytes of Electron or Node.js runtime j
 | **Camera + vision** | **Built-in** | No | No | No |
 | **Browser automation** | **Built-in** | No | No | No |
 | **MCP client + server** | **Both** | Client only | Client only | No |
-| **Chat bridges** | **18 platforms** | No | No | No |
+| **Chat bridges** | **16 platforms** | No | No | No |
 | **Cron scheduler** | **Built-in** | No | No | No |
 | **Mesh networking** | **Tailscale** | No | No | No |
 | **Menu bar app** | **macOS native** | No | No | No |
@@ -146,9 +149,9 @@ That's it. You're running.
 
 | Platform | Binary | Size | Notes |
 |:---|:---|---:|:---|
-| macOS arm64 | [`wintermolt-macos`](prebuilt/wintermolt-macos) | 6.1 MB | Mach-O arm64, the system libcurl + sqlite3 (nothing to install), stripped. macOS 27.2+ (#5). Baseline arm64: any Apple Silicon Mac. |
-| Linux arm64 | [`wintermolt-linux-arm64`](prebuilt/wintermolt-linux-arm64) | 1.6 MB | ELF aarch64, dynamic libcurl + sqlite3, stripped. glibc 2.34+ (Ubuntu 22.04 / JetPack 6, Debian 12 / Raspberry Pi OS Bookworm, RHEL 9 and later). Baseline aarch64: no SVE, so it runs on Raspberry Pi and older Jetsons. Not musl: on Alpine, [build it](#musl-alpine). |
-| Linux x86_64 | [`wintermolt-linux-x86_64`](prebuilt/wintermolt-linux-x86_64) | 1.8 MB | ELF x86-64, dynamic libcurl + sqlite3, stripped. glibc 2.34+ (Ubuntu 22.04, Debian 12, RHEL 9 and later). x86-64-v3 CPU (Intel Haswell, AMD Zen or newer). |
+| macOS arm64 | [`wintermolt-macos`](prebuilt/wintermolt-macos) | 6.4 MB | Mach-O arm64, the system libcurl + sqlite3 (nothing to install), stripped. macOS 27.2+ (#5). Baseline arm64: any Apple Silicon Mac. |
+| Linux arm64 | [`wintermolt-linux-arm64`](prebuilt/wintermolt-linux-arm64) | 1.9 MB | ELF aarch64, dynamic libcurl + sqlite3, stripped. glibc 2.34+ (Ubuntu 22.04 / JetPack 6, Debian 12 / Raspberry Pi OS Bookworm, RHEL 9 and later). Baseline aarch64: no SVE, so it runs on Raspberry Pi and older Jetsons. Not musl: on Alpine, [build it](#musl-alpine). |
+| Linux x86_64 | [`wintermolt-linux-x86_64`](prebuilt/wintermolt-linux-x86_64) | 2.2 MB | ELF x86-64, dynamic libcurl + sqlite3, stripped. glibc 2.34+ (Ubuntu 22.04, Debian 12, RHEL 9 and later). x86-64-v3 CPU (Intel Haswell, AMD Zen or newer). |
 | Windows x86_64 | [`wintermolt-windows-x86_64.exe`](prebuilt/wintermolt-windows-x86_64.exe) | 14 MB | PE32+, HTTP/3 and crypto linked in statically. Imports only Windows system DLLs: nothing else to install. x86-64-v3 CPU (Intel Haswell, AMD Zen or newer). |
 
 ---
@@ -199,19 +202,48 @@ an arm64 binary that would not start on JetPack 6 (#2). The container is
 native on an aarch64 host — no emulation:
 
 ```bash
-docker run --rm -v "$PWD":/w -v "$(dirname "$(dirname "$(readlink -f "$(which zig)")")")":/zig:ro \
-  -w /w ubuntu:22.04 bash -c '
+docker run --rm -v "$PWD":/w -v "$(dirname "$(readlink -f "$(which zig)")")":/zig:ro \
+  -w /w -e OWNER="$(id -u):$(id -g)" ubuntu:22.04 bash -c '
     apt-get update -qq && apt-get install -y -qq libcurl4-openssl-dev libsqlite3-dev
     HOME=/tmp/zh /zig/zig build -Doptimize=ReleaseFast -Dcpu=baseline -Dstrip=true \
-      --cache-dir /tmp/zc --global-cache-dir /tmp/zg --prefix /tmp/out'
+      --cache-dir /tmp/zc --global-cache-dir /tmp/zg --prefix /tmp/out
+    cp /tmp/out/bin/wintermolt prebuilt/wintermolt-linux-arm64
+    chown "$OWNER" prebuilt/wintermolt-linux-arm64'
 ```
+
+Three things in that command are easy to get wrong, and each one did go wrong:
+
+- **One `dirname`, not two.** The mount has to be the directory holding both
+  the `zig` binary and `lib/`, because Zig finds its standard library relative
+  to its own executable. zigup puts the binary at
+  `~/.local/share/zigup/<ver>/files/zig`, so that directory is `files`. Mount
+  one level higher and the build dies with `/zig/zig: No such file or
+  directory` — before Zig runs at all, so there is no stdlib error to hint at
+  the cause.
+- **Copy the binary out.** `--prefix /tmp/out` writes inside the container, and
+  `--rm` then deletes it. Without the `cp` the build succeeds and leaves
+  nothing behind.
+- **`chown` what you copied.** Docker runs as root, so anything written into
+  the repo lands root-owned and will not delete without `sudo`. The caches stay
+  under `/tmp` for the same reason; only the one copied file needs an owner.
+  Running the whole container as `--user` instead does not work here, because
+  `apt-get install` needs root.
 
 Then verify the floor before publishing — the highest version here must be the
 one the platform table claims:
 
 ```bash
 objdump -T prebuilt/wintermolt-linux-arm64 | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1
+objdump -T prebuilt/wintermolt-linux-arm64 | grep -c arc4random_buf    # must be 0
 ```
+
+A 2.35 container yielding a 2.34 floor is correct, not a mistake to go fix: the
+floor is the highest version the binary actually *binds*, not the container's
+own glibc, and nothing in this build references a symbol versioned above 2.34.
+That is why the second check matters. `arc4random_buf` is the symbol that would
+raise the floor, so its absence is positive evidence the container did its job
+— a floor that merely looks right can also come from a host build that happened
+not to bind anything newer yet.
 
 The macOS binary's minimum is likewise the macOS of the machine that built it.
 Zig takes it from the host and ignores `MACOSX_DEPLOYMENT_TARGET` (#5). Check
@@ -243,6 +275,12 @@ PKG_CONFIG_LIBDIR=/nonexistent zig build \
 `cortex_a53` is the Pi Zero 2 W / Pi 3; `-Dcpu=baseline` runs on any aarch64.
 Verified on a Pi Zero 2 W under Alpine 3.23: a 961 KB dynamically linked musl
 binary, no preload needed.
+
+GitHub Actions builds these musl binaries in
+`.github/workflows/linMusl-release.yml`, natively in an `alpine:3.23` container
+for `arm64` and `x86_64`. On Alpine the target is already `*-linux-musl`, so no
+`-Dtarget=` or `--search-prefix` is needed, and the lane fails if the result
+carries a `GLIBC_` import.
 
 ---
 
@@ -318,7 +356,7 @@ The AI invokes these autonomously. No plugins needed.
 | `grep` | Content search with regex |
 | `http_request` | HTTP GET/POST/PUT/DELETE to any URL |
 | `web_search` | DuckDuckGo search (no API key needed) |
-| `camera_capture` | Camera snapshots + screenshots + OAK-D depth |
+| `camera_capture` | Camera snapshots, screenshots and image files the agent looks at itself, + OAK-D depth |
 | `image_process` | Format conversion (BMP, PNG via sips/ffmpeg) |
 | `browser_control` | Full Chrome automation via DevTools Protocol |
 | `memory_search` | Semantic search over conversation history |
@@ -326,7 +364,7 @@ The AI invokes these autonomously. No plugins needed.
 | `tailscale` | Mesh VPN — query peers, devices, connectivity |
 | `canvas_update` | A2UI — render rich UI surfaces in terminal or web |
 | `skills` | List skills and the built-in tool catalog |
-| `text_to_speech` | Speech via OpenAI, ElevenLabs or Edge TTS |
+| `text_to_speech` | Speech via Deepgram, OpenAI, ElevenLabs, Piper, Edge TTS or the computer's own voice |
 | `image_generate` | DALL-E 3 image generation |
 | `google_workspace` | Gmail, Calendar and Drive via Google APIs |
 | `spawn_agent` | Run a subtask in a child agent with its own context |
@@ -426,6 +464,27 @@ Uses Google's [A2UI protocol](https://github.com/anthropics/anthropic-cookbook) 
 
 ### Persistent Memory
 
+**Workspace files** — as in OpenClaw, Markdown files in
+`~/.wintermolt/workspace` (or `WINTERMOLT_WORKSPACE_DIR`) go into the
+system prompt on every turn, so an edit counts from the next one:
+
+| File | For |
+|:-----|:----|
+| `AGENTS.md` | How the agent should work |
+| `SOUL.md` | Persona, tone, boundaries |
+| `USER.md` | Who you are and what you want (first 4,000 characters) |
+| `IDENTITY.md` | The agent's name and manner |
+| `MEMORY.md` | What it should remember. Only in your own sessions: never a `--chat` group, nor a `per-peer` DM session |
+
+Create the folder and whichever files you want; a missing one is left out.
+Each is cut at 20,000 characters and all of them at 60,000, and the agent
+is told which were cut. Ask it to remember something and it writes it into
+`MEMORY.md` with its file tools; a small model may rewrite the whole file in
+its own words, so keep your own copy of anything you cannot lose. A
+`spawn_agent` child gets `AGENTS.md` only. On a
+local model, keep them short: they share its context window (8,192 tokens
+by default) with the conversation.
+
 **SQLite history** — Every conversation persists in `~/.wintermolt/history.db`. Resume any session.
 
 **Pinecone RAG** — Optional semantic memory via vector search. The AI automatically indexes conversations and recalls relevant context from past sessions.
@@ -479,13 +538,23 @@ wintermolt --chat    # Connects to all configured platforms simultaneously
 
 All platforms get the same agentic capabilities — tool use, streaming, file handling.
 
+Nobody reaches the agent until you allow them, as in OpenClaw. An unknown
+sender's direct message gets a pairing code and goes no further until you run
+`wintermolt --pairing approve <platform> <code>`. A group needs to be listed and
+the bot mentioned. The rules and their `WINTERMOLT_CHAT_*` settings are in
+[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#who-can-reach-the-agent).
+
+Messages that arrive during a reply wait their turn. `/stop`, `/new`,
+`/status`, `/help` and `/approve` are answered by wintermolt itself, not the
+model.
+
 ### Web UI
 
 ```bash
-wintermolt --web     # Serves http://localhost:3000
+wintermolt --web     # Serves http://127.0.0.1:3000 and opens it
 ```
 
-Real-time streaming via WebSocket. The AI's responses render token-by-token in the browser with tool execution previews.
+A chat page served by the binary itself: no Node, nothing to install. Replies stream in as they are written, each tool shows while it runs, and panels list past conversations, skills, the workspace files (editable) and which keys are set. Open the link it prints; the token in it keeps other sites and users out. Details and settings in [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#web-ui).
 
 ### CLI-Anything — Wintermolt as a Tool for Other Agents
 
@@ -499,7 +568,14 @@ Wintermolt has no tool that generates harnesses for other software. The `cli_any
 
 ### Skills System
 
-Extensible skill catalog with built-in skills + runtime plugin discovery from `~/.wintermolt/plugins/`.
+`SKILL.md` skills, the format of OpenClaw, ClawHub and Anthropic's Agent
+Skills, from `./skills`, `./.agents/skills`, the workspace, `~/.agents/skills`
+and `~/.wintermolt/skills`: the model sees each skill's name and description
+every turn and loads the instructions when a task fits, and `/skill <name>`
+uses one on request. OpenClaw's `os`, `requires.bins` and `requires.env`
+gates hide a skill that cannot run here. Wintermolt's own `skill.json`
+manifests load as before, with runtime plugin discovery from
+`~/.wintermolt/plugins/`. See [docs/SKILLS.md](docs/SKILLS.md).
 
 ### forAgent — Persistent Agent Sessions
 
@@ -535,7 +611,7 @@ Wintermolt ships with [forLearn](https://github.com/forKernels/forLearn), which 
 | Single-shot | `wintermolt -e "prompt"` | Run one prompt, print result, exit; status 1 if no backend answered |
 | Setup | `wintermolt --setup` | Interactive API key + model wizard |
 | Chat | `wintermolt --chat` | Multi-platform messaging bot |
-| Web | `wintermolt --web` | Browser UI at localhost:3000 |
+| Web | `wintermolt --web` | Chat in a browser, served by wintermolt on 127.0.0.1:3000 |
 | Menu Bar | `wintermolt --menubar` | macOS native status bar app |
 | MCP Server | `wintermolt --mcp-server` | Expose tools via JSON-RPC 2.0 |
 
@@ -554,7 +630,9 @@ model and whether a request is running.
 | PgUp PgDn, ↑ ↓, Ctrl+↑ Ctrl+↓ | Scroll the transcript |
 | Mouse wheel | Scroll, where the terminal turns the wheel into ↑ ↓ (see below) |
 | Ctrl+L | Repaint the screen |
-| Esc, Ctrl+C, `/quit` | Exit and restore the terminal |
+| Esc | Stop the reply that is running; with none running, exit |
+| `/stop` | Stop the reply that is running |
+| Ctrl+C, `/quit` | Exit and restore the terminal (a running reply is stopped first) |
 
 **Selecting text.** The full-screen view leaves the mouse to your terminal, so
 click-and-drag selection and copy work as they do in any other program:
@@ -605,10 +683,15 @@ full-screen view use `/keys list`, or run `wintermolt --keys`.
 | `/help` | Show all commands |
 | `/quit` `/exit` | Exit the REPL |
 | `/clear` `/new` | Archive conversation and start fresh |
+| `/stop` | Stop the running reply (full-screen view and chat; Ctrl+C does it in the plain REPL and `-e`) |
 | `/model [name]` | Show or switch AI backend |
 | `/theme [name]` | List themes, or switch the full-screen view and canvas and save it |
 | `/look [prompt]` | Camera capture + AI vision |
+| `/image <file> [prompt]` | Attach an image file + AI vision (drag the file in for its path) |
 | `/screenshot [prompt]` | Screen capture + AI vision |
+| `/listen [seconds \| file]` | Speak a prompt (or give a recording); the reply is spoken ([voice](docs/TOOLS.md#voice)) |
+| `/tts <text>` | Speak text aloud |
+| `/skill [name] [input]` | List `SKILL.md` skills, or have the model use one ([skills](docs/SKILLS.md)) |
 | `/schedule` | Manage cron jobs (list, add, remove, enable, disable) |
 | `/tailscale` | Show Tailscale network peers and status |
 | `/mcp` | Show MCP client/server status |
@@ -628,17 +711,18 @@ full-screen view use `/keys list`, or run `wintermolt --keys`.
 | Page | Covers |
 | :--- | :--- |
 | [docs/BACKENDS.md](docs/BACKENDS.md) | All 8 backends, default models, env vars, `--keys` flow. |
+| [docs/OPENCLAW_PARITY.md](docs/OPENCLAW_PARITY.md) | What OpenClaw does that wintermolt does not yet, and the order it is being closed. |
 | [docs/TOOLS.md](docs/TOOLS.md) | The 20 built-in tools (9 core + 11 extended), triggers, safety. |
 | [docs/SKILLS.md](docs/SKILLS.md) | Skill manifest format, built-in catalog, custom skills. |
 | [docs/MCP.md](docs/MCP.md) | MCP client + server, `~/.wintermolt/mcp.json`, Claude Desktop / Zed wiring. |
-| [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | Run modes (`--chat`, `--web`, `--menubar`, `--gateway`), 18 chat platforms, scheduler, Tailscale, persistent storage. |
+| [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | Run modes (`--chat`, `--web`, `--menubar`, `--gateway`), 16 chat platforms and who can reach the agent through them, scheduler, Tailscale, persistent storage. |
 
 ---
 
 ## Architecture
 
 ```
-wintermolt (one native binary, 1.6–14 MB)
+wintermolt (one native binary, 1.9–14 MB)
 │
 ├── src/main.zig                 Entry point — REPL, CLI, mode dispatch
 ├── src/setup.zig                OOBE setup wizard
@@ -690,7 +774,10 @@ wintermolt (one native binary, 1.6–14 MB)
 │   └── json_rpc.zig             JSON-RPC 2.0 protocol
 │
 ├── src/chat/bridge.zig          Chat platform bridge (JSON lines IPC)
-├── src/web/bridge.zig           Web UI bridge (WebSocket + JSON lines)
+├── src/web/                     Web UI (--web), compiled into the binary
+│   ├── server.zig               HTTP + WebSocket server, token check
+│   ├── bridge.zig               Page messages <-> the agent loop
+│   └── index.html, app.js       The page
 │
 ├── prebuilt/                    Prebuilt executables (committed to repo)
 │   ├── wintermolt-macos               macOS Apple Silicon
@@ -707,7 +794,7 @@ wintermolt (one native binary, 1.6–14 MB)
 
 **Prebuilt libraries:** `libforagent.a` and `libforlearn.a` are pure Zig static archives — no Fortran runtime, no gfortran needed. For kernel-accelerated inference and Fortran-backed compute, see [Wintermute](https://github.com/lupin4/Wintermute) (proprietary).
 
-**IPC pattern:** All sidecars (chat, web, menu bar) communicate via **JSON lines over stdin/stdout pipes**. The Zig binary spawns the sidecar as a child process. No sockets, no HTTP servers, no shared memory. Clean process boundaries.
+**IPC pattern:** The sidecars (chat, menu bar) communicate via **JSON lines over stdin/stdout pipes**. The Zig binary spawns the sidecar as a child process. The web UI is the exception: `--web` serves its page and WebSocket from the binary itself, on loopback by default.
 
 ---
 
@@ -718,8 +805,10 @@ wintermolt (one native binary, 1.6–14 MB)
 | Variable | Default | Description |
 |:---------|:--------|:------------|
 | `WINTERMOLT_OLLAMA_URL` | `http://localhost:11434` | Ollama base URL |
-| `WINTERMOLT_OLLAMA_CTX` | `4096` | Context window cap (prevents OOM on small devices) |
-| `WINTERMOLT_OLLAMA_KEEP_ALIVE` | `5m` | Model unload timer (`0` = unload after each response) |
+| `WINTERMOLT_OLLAMA_CTX` | `8192` | Context window cap (prevents OOM on small devices) |
+| `WINTERMOLT_OLLAMA_KEEP_ALIVE` | `5m` (`30m` once `/listen` is used) | Model unload timer (`0` = unload after each response) |
+| `WINTERMOLT_OLLAMA_THINK` | unset (Ollama decides) | `0` turns thinking off for a model that thinks (qwen3, gemma4), which is faster; `1` turns it on, and Ollama refuses it for a model that cannot think |
+| `WINTERMOLT_BACKEND` | `ollama` | Backend a run starts on (`ollama`, `claude`, `openai`, `deepseek`, `qwen`, `gemini`, `kernel`, `forai`); a backend that cannot be built exits 1. `/model` and `wintermolt.json` routing also choose one — see `docs/BACKENDS.md` |
 | `WINTERMOLT_MODEL` | `qwen3:0.6b` | Default model |
 | `OPENAI_API_KEY` | — | OpenAI API key (GPT-4o, GPT-4.1) |
 | `WINTERMOLT_OPENAI_URL` | `https://api.openai.com/v1/chat/completions` | OpenAI-compatible Chat Completions URL — point it at LiteLLM, vLLM, llama.cpp server, OpenRouter |
@@ -735,7 +824,17 @@ wintermolt (one native binary, 1.6–14 MB)
 | `WINTERMOLT_NO_HISTORY` | — | Set `1` to disable SQLite persistence |
 | `WINTERMOLT_NO_FALLBACK` | — | Set `1` so a failed request fails, instead of being answered by Ollama or OpenAI; `-e` then exits 1 |
 | `WINTERMOLT_NO_TOOLS` | — | Set `1` to send no tool definitions, for models without function calling |
+| `WINTERMOLT_MAX_ITERATIONS` | `25` | Model requests one turn may make before the agent stops; raise it for long multi-step tasks |
+| `WINTERMOLT_BASH_APPROVAL` | `off` | `ask`: every shell command waits for your yes first (see [docs/TOOLS.md](docs/TOOLS.md)) |
+| `WINTERMOLT_CHAT_APPROVERS` | — | Who may answer `/approve` from chat (`platform:id,...`); unset, `--chat` refuses every command it would ask about |
 | `WINTERMOLT_STALL_TIMEOUT` | `180` | Seconds a model request may receive nothing before it is dropped; a stream that keeps arriving is never cut off (`0` = never) |
+| `WINTERMOLT_WORKSPACE_DIR` | `~/.wintermolt/workspace` | Where `AGENTS.md`, `SOUL.md`, `USER.md`, `IDENTITY.md` and `MEMORY.md` are read from, every turn (see [Persistent Memory](#persistent-memory)) |
+| `WINTERMOLT_WEB_PORT` | `3000` | `--web` port (`PORT` wins when both are set) |
+| `WINTERMOLT_WEB_HOST` | `127.0.0.1` | `--web` listen address; anything but loopback is reachable from other machines over plain HTTP |
+| `WINTERMOLT_WEB_TOKEN` | random each start | Fixed `--web` token (16+ characters), so a bookmarked link keeps working |
+| `WINTERMOLT_GATEWAY_PORT` | `8080` | `--gateway` port |
+| `WINTERMOLT_GATEWAY_HOST` | `127.0.0.1` | `--gateway` listen address; anything but loopback is reachable from other machines over plain HTTP |
+| `WINTERMOLT_GATEWAY_KEY` | random each start | Fixed `--gateway` API key (16+ characters), so clients keep working across restarts |
 | `TAILSCALE_API_KEY` | — | Tailscale REST API key (optional) |
 | `PINECONE_API_KEY` | — | Pinecone API key (enables RAG memory) |
 | `PINECONE_HOST` | — | Pinecone index host URL |

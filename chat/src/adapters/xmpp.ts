@@ -22,14 +22,20 @@ export function createAdapter(): ChatAdapter {
 
     const from = stanza.attrs.from;
     const bareJid = from.split('/')[0];
+    // A groupchat stanza comes from room@service/nick: the bare JID is the
+    // room, not the person. This adapter joins no rooms, so it sees one only
+    // if invited directly, and the group policy decides.
+    const groupchat = stanza.attrs.type === 'groupchat';
 
     sendToAgent({
       type: 'message',
       platform: 'xmpp',
-      from: bareJid,
+      from: groupchat ? from : bareJid,
       channel: bareJid,
       text: body,
       threadId: stanza.getChild('thread')?.text() ?? undefined,
+      chatType: groupchat ? 'group' : 'direct',
+      mentioned: groupchat && body.toLowerCase().includes(jid.split('@')[0].toLowerCase()),
     });
   });
 

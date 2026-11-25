@@ -14,6 +14,15 @@ export function createAdapter(): ChatAdapter {
     userId,
   });
 
+  /** A room the account lists as a DM (m.direct), or one with just the bot
+   *  and one other member. */
+  function isDirectRoom(room: any): boolean {
+    if (!room) return false;
+    const direct = (client.getAccountData('m.direct' as any)?.getContent() ?? {}) as Record<string, string[]>;
+    if (Object.values(direct).some((rooms) => rooms.includes(room.roomId))) return true;
+    return room.getJoinedMemberCount() === 2;
+  }
+
   client.on(sdk.RoomEvent.Timeline as any, (event: any, room: any) => {
     if (event.getType() !== 'm.room.message') return;
     if (event.getSender() === userId) return;
@@ -31,6 +40,9 @@ export function createAdapter(): ChatAdapter {
       threadId: content['m.relates_to']?.rel_type === 'm.thread'
         ? content['m.relates_to'].event_id
         : undefined,
+      chatType: isDirectRoom(room) ? 'direct' : 'group',
+      mentioned: (content['m.mentions']?.user_ids ?? []).includes(userId) ||
+        String(content.body ?? '').includes(userId),
     });
   });
 

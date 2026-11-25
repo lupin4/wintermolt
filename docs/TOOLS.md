@@ -29,16 +29,34 @@ prompt. This keeps the per-turn tool list small.
 | Tool                | Triggered by keywords                                  | What it does                                          |
 | :------------------ | :----------------------------------------------------- | :---------------------------------------------------- |
 | `image_process`     | image, photo, picture, histogram, sobel, edge, resize, blur | Format conversion + filters via `sips` / `ffmpeg`. |
-| `camera_capture`    | camera, capture, webcam, see, look at, photo           | Camera / screenshot capture, optionally with OAK-D depth. |
+| `camera_capture`    | camera, capture, webcam, look at, screen, image, photo, picture, .png/.jpg/.gif/.webp | Camera frame (`capture`), the screen (`screenshot`), or an image file (`view`), returned as vision input; optionally OAK-D depth. Not offered on a turn whose message already carries an image. |
 | `browser_control`   | browser, chrome, tab, webpage, screenshot, click, navigate, scrape, DOM | Chrome automation via DevTools Protocol.        |
 | `memory_search`     | remember, recall, before, history, forgot, memory      | Semantic search over conversation + episode history. |
 | `schedule`          | schedule, cron, timer, periodic, remind me, recurring  | Add/remove cron jobs (see [DEPLOYMENT.md](DEPLOYMENT.md#scheduler)). |
 | `tailscale`         | tailscale, mesh, vpn, devices, peers, tailnet          | Query the Tailscale REST API for the user's tailnet. |
 | `canvas_update`     | canvas, ui, dashboard, chart, form, render, widget     | Push A2UI surfaces to the canvas sidecar.            |
-| `text_to_speech`    | speak, say, read aloud, voice, tts, audio              | Synthesize via OpenAI / ElevenLabs / Edge TTS.       |
+| `text_to_speech`    | speak, say, read aloud, voice, tts, audio              | Synthesize via Deepgram / OpenAI / ElevenLabs / Piper / Edge TTS, or the computer's own voice (see [Voice](#voice)). |
 | `image_generate`    | generate image, dall-e, draw, illustration, render image | DALL-E 3 image generation.                         |
 | `google_workspace`  | gmail, email, calendar, meeting, google drive, inbox   | Read + send via Google APIs (OAuth flow on first use). |
 | `spawn_agent`       | subagent, spawn, delegate, parallel, subtask           | Fork a child agent with isolated context to run a subtask. |
+
+## Voice
+
+`/listen [seconds | audio file]` records the microphone (5 s by default),
+sends what was said as the prompt, and speaks the reply. `/tts <text>`
+speaks text. Keys are your own (`wintermolt --keys`); none is built in.
+
+| Step | Default | Choose with |
+| :--- | :------ | :---------- |
+| Microphone | ffmpeg: the first DirectShow audio device (Windows), `:0` (macOS), PulseAudio `default` (Linux) | `WINTERMOLT_MIC` |
+| Speech to text | whisper.cpp, local, when a `ggml-*.bin` model is in `~/.wintermolt/models`: `whisper-server` on 127.0.0.1:8178, started by the first `/listen` and ended with wintermolt (crash included), else `whisper-cli`; else Deepgram nova-3 with `DEEPGRAM_API_KEY` | `WINTERMOLT_STT_PROVIDER` (`whisper`, `deepgram`), `WINTERMOLT_WHISPER_MODEL` |
+| Text to speech | the first with a key: Deepgram Aura-2, OpenAI, ElevenLabs; else the computer's own voice (Windows speech, macOS `say`, `espeak-ng`) | `WINTERMOLT_TTS_PROVIDER` (`deepgram`, `openai`, `elevenlabs`, `piper`, `edge`, `system`), `WINTERMOLT_TTS_VOICE` |
+| Playback | `afplay` (macOS), ffmpeg's `ffplay` elsewhere | — |
+
+A whisper.cpp model: `whisper-download-ggml-model.sh large-v3-turbo-q5_0`
+(or any from huggingface.co/ggerganov/whisper.cpp), moved into
+`~/.wintermolt/models`. Deepgram voices are `aura-2-<name>-en`; give the
+name alone (`thalia`, `apollo`, `helena`, …).
 
 ## Triggering manually
 
@@ -64,6 +82,21 @@ containing a destructive pattern: `rm -rf /`, `rm -rf ~`, `dd if=`,
 `mkfs`, `wipefs`, `shutdown`, `reboot`, `halt`, `init 0`, `init 6`,
 `git push --force`, `git push -f`, `git reset --hard`, `git clean -f`.
 This is a substring check, not a sandbox.
+
+**Asking first.** With `WINTERMOLT_BASH_APPROVAL=ask`, each command waits
+for a yes before it runs: one from `bash`, a `schedule` job as it is added
+(it runs later with nobody watching), or a skill's command. Where you are:
+
+- full-screen view, plain REPL, `-e`: `y` once, `a` always, `n` no. `-e`
+  reads the answer from its input; with none, it is a no.
+- `--web`: the buttons under the command.
+- `--chat`: `/approve <id> allow-once|allow-always|deny`, from someone in
+  `WINTERMOLT_CHAT_APPROVERS` (docs/DEPLOYMENT.md).
+
+"Always" covers that exact command until wintermolt exits. No answer in
+30 minutes is a no, and so is having nobody to ask (`--gateway`,
+`--mcp-server`). The model is told the command did not run and why. Any
+value but `off` asks, so a mistyped setting does not run everything.
 
 For isolation, set `WINTERMOLT_SANDBOX=docker` (or `1`). Each command then
 runs in `docker run --rm` with the working directory mounted read-only at

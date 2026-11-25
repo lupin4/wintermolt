@@ -78,4 +78,7 @@ jobs:
           ollama serve > /tmp/ollama.log 2>&1 &
           for i in $(seq 30); do curl -fs http://localhost:11434/api/tags > /dev/null && break; sleep 1; done
           ollama pull qwen3:0.6b
-          WINTERMOLT_MODEL=qwen3:0.6b zig-out/bin/wintermolt -e "Reply with exactly: WINTERMOLT OK"
+          # Thinking off: with it on, qwen3:0.6b ends the reply with "/think".
+          out=$(WINTERMOLT_MODEL=qwen3:0.6b WINTERMOLT_OLLAMA_THINK=0 zig-out/bin/wintermolt -e "Reply with exactly: WINTERMOLT OK")
+          echo "$out"
+          echo "$out" | grep -q "WINTERMOLT OK"

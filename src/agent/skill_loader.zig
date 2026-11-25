@@ -27,6 +27,7 @@ const ArrayList = std.ArrayList;
 const sse = @import("../api/sse.zig");
 const protocol = @import("../api/protocol.zig");
 const bash_tool = @import("../tools/bash.zig");
+const control = @import("control.zig");
 
 // ---------------------------------------------------------------------------
 // Types
@@ -289,6 +290,7 @@ pub const SkillRegistry = struct {
             try std.fmt.allocPrint(self.alloc, "cd {s} && {s} {s}", .{ skill.source_dir, skill.handler_command, input })
         else
             try std.fmt.allocPrint(self.alloc, "cd {s} && {s}", .{ skill.source_dir, skill.handler_command });
+        if (control.approveCommand(command)) |why| return self.alloc.dupe(u8, why);
 
         return bash_tool.execute(self.alloc, command);
     }
@@ -299,6 +301,7 @@ pub const SkillRegistry = struct {
 
         const command = try std.fmt.allocPrint(self.alloc,
             "cd {s} && {s} {s} {s}", .{ skill.source_dir, interpreter, skill.handler_command, input });
+        if (control.approveCommand(command)) |why| return self.alloc.dupe(u8, why);
 
         return bash_tool.execute(self.alloc, command);
     }

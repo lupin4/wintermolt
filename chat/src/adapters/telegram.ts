@@ -17,6 +17,8 @@ export function createAdapter(): ChatAdapter {
       text: msg.text,
       threadId: msg.message_thread_id ? String(msg.message_thread_id) : undefined,
       replyTo: msg.reply_to_message ? String(msg.reply_to_message.message_id) : undefined,
+      chatType: msg.chat.type === 'private' ? 'direct' : 'group',
+      mentioned: mentionsBot(msg, ctx.botInfo),
     });
   });
 
@@ -46,6 +48,19 @@ export function createAdapter(): ChatAdapter {
       await bot.telegram.sendVoice(to, { source: buf, filename: 'voice.ogg' });
     },
   };
+}
+
+/** An @username mention of the bot, a mention of its account, or a reply to
+ *  one of its messages. */
+function mentionsBot(msg: any, me: { id: number; username?: string }): boolean {
+  if (msg.reply_to_message?.from?.id === me.id) return true;
+  const handle = me.username ? '@' + me.username.toLowerCase() : null;
+  for (const e of msg.entities ?? []) {
+    if (e.type === 'text_mention' && e.user?.id === me.id) return true;
+    if (e.type === 'mention' && handle &&
+        msg.text.slice(e.offset, e.offset + e.length).toLowerCase() === handle) return true;
+  }
+  return false;
 }
 
 function splitText(text: string, maxLen: number): string[] {

@@ -12,7 +12,7 @@
 //   wintermolt --help       — show help
 //   wintermolt -e "prompt"  — single-shot execution
 //   wintermolt --keys       — configure API keys
-//   wintermolt --chat       — chat bridge mode (18 platforms)
+//   wintermolt --chat       — chat bridge mode (16 platforms)
 //   wintermolt --web        — web UI mode
 //   wintermolt --mcp-server — MCP JSON-RPC server over stdio
 
@@ -23,15 +23,22 @@ const compat = @import("compat.zig");
 const ArrayList = std.ArrayList;
 const config_mod = @import("agent/config.zig");
 const loop_mod = @import("agent/loop.zig");
+const control = @import("agent/control.zig");
 const chat_bridge = @import("chat/bridge.zig");
+const chat_access = @import("chat/access.zig");
+const chat_queue = @import("chat/queue.zig");
 const web_bridge = @import("web/bridge.zig");
+const web_server = @import("web/server.zig");
+const builtin = @import("builtin");
 const menubar_bridge = @import("menubar/bridge.zig");
 const router_mod = @import("agent/router.zig");
 const pool_mod = @import("agent/agent_pool.zig");
 const subagent_mod = @import("agent/subagent.zig");
 const tts_mod = @import("agent/tts.zig");
+const stt_mod = @import("agent/stt.zig");
+const skill_md = @import("agent/skill_md.zig");
 const session_mod = @import("agent/session.zig");
-const gateway_bridge = @import("gateway/bridge.zig");
+const gateway_server = @import("gateway/server.zig");
 const i18n = @import("agent/i18n.zig");
 const extensions_mod = @import("agent/extensions.zig");
 const tailscale_tool = @import("tools/tailscale.zig");
@@ -45,7 +52,7 @@ const theme_pref = @import("theme_pref.zig");
 const banner = @import("banner.zig");
 const zortui = @import("zortui");
 
-const VERSION = "0.6.0";
+const VERSION = "0.7.0";
 
 /// A panic while the TUI owns the terminal would leave the shell in raw mode on
 /// the alternate screen, with the panic message drawn somewhere invisible. Put
@@ -112,6 +119,8 @@ pub fn main(init: std.process.Init) !void {
     var gateway_mode = false;
     var extension_cmd: ?[]const u8 = null;
     var extension_arg: ?[]const u8 = null;
+    var pairing_cmd: ?[]const u8 = null;
+    var pairing_args: [2]?[]const u8 = .{ null, null };
     var run_setup = false;
     var plain_mode = false;
     var theme_flag: ?[]const u8 = null;
@@ -156,6 +165,10 @@ pub fn main(init: std.process.Init) !void {
         if (std.mem.eql(u8, arg, "--extension")) {
             extension_cmd = args.next();
             extension_arg = args.next();
+        }
+        if (std.mem.eql(u8, arg, "--pairing")) {
+            pairing_cmd = args.next() orelse "";
+            pairing_args = .{ args.next(), args.next() };
         }
         if (std.mem.eql(u8, arg, "-e")) {
             exec_prompt = args.next();
@@ -209,6 +222,60 @@ pub fn main(init: std.process.Init) !void {
             try stdout.writeByte('\n');
         } else {
             try stdout.writeAll("Usage: wintermolt --extension <list|available|install|remove> [name]\n");
+        }
+        return;
+    }
+
+    // --pairing: approve who may message the agent through --chat (chat/access.zig).
+    // Runs beside a live --chat process; both share ~/.wintermolt/chat_access.db.
+    if (pairing_cmd) |cmd| {
+        const usage =
+            \\Usage: wintermolt --pairing list [platform]
+            \\       wintermolt --pairing approve <platform> <code>
+            \\       wintermolt --pairing revoke <platform> <sender>
+            \\
+        ;
+        var store = chat_access.Store.openDefault(alloc) catch |e| {
+            try stderr.print("[pairing] Cannot open ~/.wintermolt/chat_access.db: {s}\n", .{@errorName(e)});
+            std.process.exit(1);
+        };
+        defer store.close();
+        const now = fsio.timestamp();
+        if (std.mem.eql(u8, cmd, "list")) {
+            try store.writeList(stdout, pairing_args[0], now);
+        } else if (std.mem.eql(u8, cmd, "approve")) {
+            const platform = pairing_args[0] orelse {
+                try stderr.writeAll(usage);
+                std.process.exit(1);
+            };
+            const code = pairing_args[1] orelse {
+                try stderr.writeAll(usage);
+                std.process.exit(1);
+            };
+            const sender = (try store.approve(alloc, platform, code, now)) orelse {
+                try stderr.print("[pairing] No live {s} request with code {s}. `wintermolt --pairing list` shows them.\n", .{ platform, code });
+                std.process.exit(1);
+            };
+            defer alloc.free(sender);
+            try stdout.print("Approved {s}:{s} for direct messages.\n", .{ platform, sender });
+        } else if (std.mem.eql(u8, cmd, "revoke")) {
+            const platform = pairing_args[0] orelse {
+                try stderr.writeAll(usage);
+                std.process.exit(1);
+            };
+            const sender = pairing_args[1] orelse {
+                try stderr.writeAll(usage);
+                std.process.exit(1);
+            };
+            if (try store.revoke(platform, sender)) {
+                try stdout.print("Revoked {s}:{s}.\n", .{ platform, sender });
+            } else {
+                try stderr.print("[pairing] {s}:{s} was not approved.\n", .{ platform, sender });
+                std.process.exit(1);
+            }
+        } else {
+            try stderr.writeAll(usage);
+            std.process.exit(1);
         }
         return;
     }
@@ -288,15 +355,24 @@ pub fn main(init: std.process.Init) !void {
         mcp_mgr.deinit();
     }
 
-    // Initialize agent loop
-    var agent = try loop_mod.AgentLoop.init(alloc, &config);
+    // Initialize agent loop. WINTERMOLT_BACKEND, when set, is built inside init,
+    // so every loop this run creates follows it. A backend that cannot be built
+    // has already printed why and must fail the run: the variable is an explicit
+    // request, and answering from Ollama instead would hide it.
+    var agent = loop_mod.AgentLoop.init(alloc, &config) catch |e| {
+        try stderr.print("[wintermolt] startup failed: {s}\n", .{@errorName(e)});
+        std.process.exit(1);
+    };
     defer agent.deinit();
+    defer stt_mod.stopServer(); // the whisper-server /listen started, if any
 
     // api-override (wintermolt.json models.chat.prefer + a cloud key present):
     // switch the primary off ollama onto the API for reliable native tool-calling.
-    if (config.api_override) {
+    // WINTERMOLT_BACKEND wins over it, having been built in init already: the
+    // exported variable is an explicit request, the override a config default.
+    if (config.api_override and config.backend == null) {
         stdio.stderr().print("[config] api-override → claude ({s})\n", .{config.model}) catch {};
-        agent.switchBackend("claude", config.model);
+        agent.switchBackend("claude", config.model) catch {};
     }
 
     // Re-bind tools-module globals (scheduler, skill registry, storage, RAG) —
@@ -316,7 +392,28 @@ pub fn main(init: std.process.Init) !void {
     // Chat mode — multi-agent routing
     if (chat_mode) {
         try stderr.writeAll("[wintermolt] Starting chat mode (multi-agent)...\n");
-        var bridge = chat_bridge.ChatBridge.init(alloc) catch |e| {
+
+        // Who may reach the agent (chat/access.zig). Read before the sidecar
+        // starts, so a mistyped setting stops the run instead of opening it.
+        const chat_policy = chat_access.parsePolicy(chat_access.Env.read()) catch |e| {
+            try stderr.print("[chat] {s}: run `wintermolt --help` for the WINTERMOLT_CHAT_* values\n", .{@errorName(e)});
+            std.process.exit(1);
+        };
+        var access_store = chat_access.Store.openDefault(alloc) catch |e| {
+            try stderr.print("[chat] Cannot open ~/.wintermolt/chat_access.db: {s}\n", .{@errorName(e)});
+            std.process.exit(1);
+        };
+        defer access_store.close();
+        try stderr.print("[chat] Direct messages: {s}. Groups: {s}{s}.\n", .{
+            @tagName(chat_policy.dm),
+            @tagName(chat_policy.group),
+            if (chat_policy.require_mention) ", mention required" else "",
+        });
+
+        // The sidecar is read on its own thread (ChatReader) while replies run
+        // here, so the bridge, the queue and the reader allocate from
+        // c_allocator: main's arena is not thread-safe.
+        var bridge = chat_bridge.ChatBridge.init(std.heap.c_allocator) catch |e| {
             try stderr.print("[wintermolt] Failed to start chat sidecar: {s}\n", .{@errorName(e)});
             std.process.exit(1);
         };
@@ -336,90 +433,65 @@ pub fn main(init: std.process.Init) !void {
             try stderr.print("[wintermolt] Loaded {d} routing bindings\n", .{router.bindings.items.len});
         }
 
-        while (bridge.readMessage()) |msg| {
-            try stderr.print("[{s}] {s}: {s}\n", .{ msg.platform, msg.from, msg.text });
+        var queue = chat_queue.Queue.init(std.heap.c_allocator);
+        defer queue.deinit();
+        var reader: ChatReader = .{ .bridge = &bridge, .policy = &chat_policy, .store = &access_store, .router = &router, .queue = &queue };
+        var chat_asker: ChatAsker = .{ .bridge = &bridge };
+        control.setAsker(chat_asker.asker());
+        const reader_thread = std.Thread.spawn(.{}, ChatReader.run, .{&reader}) catch |e| {
+            try stderr.print("[chat] Cannot start the reader: {s}\n", .{@errorName(e)});
+            std.process.exit(1);
+        };
+        defer reader_thread.join();
 
-            // Build routing context from the incoming message
-            const route_ctx = router_mod.RouteContext{
-                .platform = msg.platform,
-                .from = msg.from,
-                .channel = msg.channel,
-                .thread_id = msg.thread_id,
-                .guild = msg.guild,
-                .roles = msg.roles,
-            };
-
-            // Resolve which agent should handle this message
-            const route = router.resolve(&route_ctx);
-
-            // Get or create the agent from the pool
-            const routed_agent = pool.getOrCreate(route.agent_id) catch |e| {
-                try stderr.print("[Error] Agent pool failed: {s}\n", .{@errorName(e)});
-                continue;
-            };
-
-            // Ensure agent has a conversation started
-            if (routed_agent.conversation_id == null) {
-                routed_agent.startConversation();
-            }
-
-            // Track session
-            const session_id = chat_sessions.getOrCreateSession(
-                route.agent_id,
-                msg.platform,
-                msg.channel,
-                msg.from,
-            ) catch null;
-            if (session_id) |sid| {
-                chat_sessions.recordMessage(sid);
-                alloc.free(sid);
-            }
-
-            var response_buf: ArrayList(u8) = .empty;
-            defer response_buf.deinit(alloc);
-
-            routed_agent.processInputCapture(msg.text, &response_buf) catch |e| {
-                try stderr.print("[Error] Agent {s} failed: {s}\n", .{ route.agent_id, @errorName(e) });
-                continue;
-            };
-
-            if (response_buf.items.len > 0) {
-                bridge.sendReplyThreaded(msg.platform, msg.from, response_buf.items, msg.thread_id) catch |e| {
-                    try stderr.print("[Error] Reply failed: {s}\n", .{@errorName(e)});
-                };
-            }
+        while (queue.pop()) |job| {
+            defer job.destroy();
+            defer queue.finish();
+            chat_asker.job = job;
+            defer chat_asker.job = null;
+            runChatJob(alloc, &pool, &chat_sessions, &bridge, job);
         }
 
         try stderr.writeAll("[wintermolt] Chat sidecar exited\n");
         return;
     }
 
-    // Web mode
+    // Web mode: this process serves the page and its socket (web/server.zig).
     if (web_mode) {
-        const port = compat.getenv("PORT") orelse compat.getenv("WINTERMOLT_WEB_PORT") orelse "3000";
-        try stderr.print("[wintermolt] Starting web mode on port {s}...\n", .{port});
-        var bridge = web_bridge.WebBridge.init(alloc, &agent) catch |e| {
-            try stderr.print("[wintermolt] Failed to start web sidecar: {s}\n", .{@errorName(e)});
+        const port_text = compat.getenv("PORT") orelse compat.getenv("WINTERMOLT_WEB_PORT") orelse "3000";
+        const port = std.fmt.parseInt(u16, port_text, 10) catch {
+            try stderr.print("[web] Not a port: {s}\n", .{port_text});
             std.process.exit(1);
         };
-        defer bridge.deinit();
+        const host = compat.getenv("WINTERMOLT_WEB_HOST") orelse "127.0.0.1";
+        var token_hex: [32]u8 = undefined;
+        const token = serverSecret(stderr, "web", "WINTERMOLT_WEB_TOKEN", &token_hex);
 
-        fsio.sleepNs(500 * std.time.ns_per_ms);
-        const is_headless = compat.getenv("K_SERVICE") != null or
-            compat.getenv("WINTERMOLT_HEADLESS") != null;
+        var web_cmds: WebCommands = .{ .agent = &agent, .alloc = alloc, .session_mgr = &session_mgr };
+        var bridge: web_bridge.WebBridge = .{ .agent = &agent, .commands = web_cmds.commands() };
+        control.setAsker(bridge.asker());
+        var srv = web_server.Server.init(std.heap.c_allocator, host, port, token, bridge.handler()) catch |e| {
+            try stderr.print("[web] Cannot listen on {s}:{d}: {s}\n", .{ host, port, @errorName(e) });
+            std.process.exit(1);
+        };
+        defer srv.deinit();
+
+        const loopback = std.mem.startsWith(u8, host, "127.") or std.mem.eql(u8, host, "::1");
+        const shown = if (std.mem.eql(u8, host, "0.0.0.0")) "127.0.0.1" else host;
+        const url = try std.fmt.allocPrint(alloc, "http://{s}:{d}/#token={s}", .{ shown, srv.port(), token });
+        try stderr.print("[web] Open {s}\n", .{url});
+        if (!loopback) try stderr.writeAll("[web] Reachable beyond this machine, over plain HTTP: whoever has the link can drive the agent. Use Tailscale or a network you trust.\n");
+        const is_headless = compat.getenv("K_SERVICE") != null or compat.getenv("WINTERMOLT_HEADLESS") != null;
         if (!is_headless) {
-            const url = std.fmt.allocPrint(alloc, "http://localhost:{s}", .{port}) catch "http://localhost:3000";
-            try stderr.print("[wintermolt] Opening {s}\n", .{url});
-            const open_args = try alloc.alloc([]const u8, 2);
-            open_args[0] = "open";
-            open_args[1] = url;
-            // Fire and forget: `open <url>` hands off to the browser and we do
-            // not care when it exits.
-            fsio.spawnDetached(alloc, open_args) catch {};
+            // Fire and forget: the opener hands the link to the browser.
+            const argv: []const []const u8 = switch (builtin.os.tag) {
+                .windows => &.{ "cmd", "/c", "start", "", url },
+                .macos => &.{ "open", url },
+                else => &.{ "xdg-open", url },
+            };
+            fsio.spawnDetached(alloc, argv) catch {};
         }
-
-        bridge.run();
-        try stderr.writeAll("[wintermolt] Web sidecar exited\n");
+        srv.run();
         return;
     }
 
@@ -438,22 +510,37 @@ pub fn main(init: std.process.Init) !void {
 
     // Gateway mode — OpenAI-compatible API server
     if (gateway_mode) {
-        const gw_port = compat.getenv("WINTERMOLT_GATEWAY_PORT") orelse "8080";
-        try stderr.print("[wintermolt] Starting gateway mode on port {s}...\n", .{gw_port});
-        var gw_bridge = gateway_bridge.GatewayBridge.init(alloc, &agent) catch |e| {
-            try stderr.print("[wintermolt] Failed to start gateway sidecar: {s}\n", .{@errorName(e)});
+        const port_text = compat.getenv("WINTERMOLT_GATEWAY_PORT") orelse "8080";
+        const port = std.fmt.parseInt(u16, port_text, 10) catch {
+            try stderr.print("[gateway] Not a port: {s}\n", .{port_text});
             std.process.exit(1);
         };
-        defer gw_bridge.deinit();
-        gw_bridge.run();
-        try stderr.writeAll("[wintermolt] Gateway sidecar exited\n");
+        const host = compat.getenv("WINTERMOLT_GATEWAY_HOST") orelse "127.0.0.1";
+        var key_hex: [32]u8 = undefined;
+        const key = serverSecret(stderr, "gateway", "WINTERMOLT_GATEWAY_KEY", &key_hex);
+        var gw_agent: GatewayAgent = .{ .agent = &agent };
+        var srv = gateway_server.Server.init(std.heap.c_allocator, host, port, key, gw_agent.api()) catch |e| {
+            try stderr.print("[gateway] Cannot listen on {s}:{d}: {s}\n", .{ host, port, @errorName(e) });
+            std.process.exit(1);
+        };
+        defer srv.deinit();
+        try stderr.print("[gateway] OpenAI-compatible API at http://{s}:{d}/v1\n[gateway] API key: {s}\n", .{ host, srv.port(), key });
+        if (!(std.mem.startsWith(u8, host, "127.") or std.mem.eql(u8, host, "::1")))
+            try stderr.writeAll("[gateway] Reachable beyond this machine, over plain HTTP: whoever has the key can drive the agent. Use Tailscale or a network you trust.\n");
+        srv.run();
         return;
     }
 
     // Single-shot mode
     if (exec_prompt) |prompt| {
         agent.startConversation();
+        var e_stdin = stdio.stdinReader();
+        var e_asker: LineAsker = .{ .stdin = &e_stdin };
+        control.setAsker(e_asker.asker());
+        installCtrlC();
+        control.beginRun();
         try agent.processInput(prompt);
+        control.endRun();
         // Nothing answered: a script running `-e` sees only the exit status.
         // The agent is freed first because exit() runs static destructors,
         // and the kernel backend must be gone before ggml-metal's runs.
@@ -486,6 +573,9 @@ pub fn main(init: std.process.Init) !void {
     var stdin_reader = stdio.stdinReader();
     const stdin = &stdin_reader;
     var line_buf: [8192]u8 = undefined;
+    var repl_asker: LineAsker = .{ .stdin = stdin };
+    control.setAsker(repl_asker.asker());
+    installCtrlC();
 
     while (true) {
         // Tick scheduler (runs due jobs)
@@ -503,6 +593,10 @@ pub fn main(init: std.process.Init) !void {
 
         const trimmed = std.mem.trim(u8, line, " \t\r");
         if (trimmed.len == 0) continue;
+
+        // Ctrl+C from here to the next prompt stops the reply instead of quitting.
+        control.beginRun();
+        defer control.endRun();
 
         // REPL commands
         switch (try dispatchCommand(&agent, alloc, &session_mgr, stdout, stderr, stdin, trimmed)) {
@@ -574,6 +668,14 @@ fn dispatchCommand(
         try handleLook(agent, alloc, stdout, stderr, if (prompt.len > 0) prompt else null);
         return .handled;
     }
+    if (std.mem.eql(u8, trimmed, "/image") or std.mem.startsWith(u8, trimmed, "/image ")) {
+        try handleImage(agent, alloc, stdout, std.mem.trim(u8, trimmed[6..], " \t"));
+        return .handled;
+    }
+    if (std.mem.eql(u8, trimmed, "/skill") or std.mem.startsWith(u8, trimmed, "/skill ")) {
+        try handleSkill(agent, alloc, stdout, std.mem.trim(u8, trimmed[6..], " \t"));
+        return .handled;
+    }
     if (std.mem.startsWith(u8, trimmed, "/screenshot")) {
         const prompt = blk: {
             if (trimmed.len > 11) {
@@ -637,6 +739,10 @@ fn dispatchCommand(
     }
     if (std.mem.eql(u8, trimmed, "/tts")) {
         try handleTtsCmd(alloc, stdout, stderr, "");
+        return .handled;
+    }
+    if (std.mem.eql(u8, trimmed, "/listen") or std.mem.startsWith(u8, trimmed, "/listen ")) {
+        try handleListen(agent, alloc, stdout, std.mem.trim(u8, trimmed[7..], " \t"));
         return .handled;
     }
     // The full-screen view handles /theme itself (tui.zig); this is the plain
@@ -717,6 +823,274 @@ fn handleThemeCmd(alloc: std.mem.Allocator, w: anytype, err_w: anytype, arg: []c
     try w.print("Theme set to {s} and saved to ~/.wintermolt/.env. It applies to the full-screen view and the canvas.\n", .{name});
 }
 
+/// --chat's reader: every sidecar line, on its own thread, so messages are
+/// read while a reply runs. Access is decided here; a command (/stop, /help...)
+/// is answered here; anything else waits in the queue for runChatJob.
+const ChatReader = struct {
+    bridge: *chat_bridge.ChatBridge,
+    policy: *const chat_access.Policy,
+    store: *chat_access.Store,
+    router: *router_mod.Router,
+    queue: *chat_queue.Queue,
+
+    fn run(self: *ChatReader) void {
+        defer self.queue.close();
+        while (self.bridge.readMessage()) |msg| self.handle(msg) catch |e| {
+            stdio.stderr().print("[chat] {s}:{s}: {s}\n", .{ msg.platform, msg.from, @errorName(e) }) catch {};
+        };
+    }
+
+    fn reply(self: *ChatReader, msg: chat_bridge.ChatMessage, text: []const u8) void {
+        self.bridge.sendReplyThreaded(msg.platform, msg.channel, text, msg.thread_id) catch |e| {
+            stdio.stderr().print("[Error] Reply failed: {s}\n", .{@errorName(e)}) catch {};
+        };
+    }
+
+    fn handle(self: *ChatReader, msg: chat_bridge.ChatMessage) !void {
+        const gpa = std.heap.c_allocator;
+        const stderr = stdio.stderr();
+        try stderr.print("[{s}] {s}: {s}\n", .{ msg.platform, msg.from, msg.text });
+
+        // Approvals count only for direct messages under the pairing
+        // policy, so the store is read only then. A store that cannot be
+        // read approves no one.
+        const approved = if (msg.chat_type == .direct and self.policy.dm == .pairing)
+            self.store.isApproved(msg.platform, msg.from) catch |e| blk: {
+                try stderr.print("[chat] Pairing store: {s}; {s}:{s} treated as not approved\n", .{ @errorName(e), msg.platform, msg.from });
+                break :blk false;
+            }
+        else
+            false;
+        const inbound = chat_access.Inbound{
+            .platform = msg.platform,
+            .from = msg.from,
+            .channel = msg.channel,
+            .guild = msg.guild,
+            .chat_type = msg.chat_type,
+            .mentioned = msg.mentioned,
+        };
+        switch (chat_access.decide(self.policy, inbound, approved)) {
+            .process => {},
+            .drop => |why| return stderr.print("[chat] Ignored {s}:{s}: {s}\n", .{ msg.platform, msg.from, why.describe() }),
+            .pair => {
+                const outcome = self.store.requestPairing(msg.platform, msg.from, msg.from_name, fsio.timestamp()) catch |e| {
+                    return stderr.print("[chat] Pairing store: {s}; {s}:{s} ignored\n", .{ @errorName(e), msg.platform, msg.from });
+                };
+                switch (outcome) {
+                    .issued => |code| {
+                        const text = try chat_access.pairingReply(gpa, msg.platform, msg.from, &code);
+                        defer gpa.free(text);
+                        self.reply(msg, text);
+                        try stderr.print("[chat] Pairing code sent to {s}:{s}. Approve with: wintermolt --pairing approve {s} {s}\n", .{ msg.platform, msg.from, msg.platform, code });
+                    },
+                    .pending => try stderr.print("[chat] Ignored {s}:{s}: pairing code already sent, not yet approved\n", .{ msg.platform, msg.from }),
+                    .full => try stderr.print("[chat] Ignored {s}:{s}: {s} already has {d} pending pairing requests\n", .{ msg.platform, msg.from, msg.platform, chat_access.MAX_PENDING_PER_PLATFORM }),
+                }
+                return;
+            },
+        }
+
+        // Which agent, and which of its conversations: a group never shares
+        // the DM history (chat_access.sessionKey).
+        const route = self.router.resolve(&.{
+            .platform = msg.platform,
+            .from = msg.from,
+            .channel = msg.channel,
+            .thread_id = msg.thread_id,
+            .guild = msg.guild,
+            .roles = msg.roles,
+        });
+        const session_key = try chat_access.sessionKey(gpa, self.policy, route.agent_id, inbound);
+        defer gpa.free(session_key);
+
+        var is_new = false;
+        if (chat_queue.command(msg.text)) |cmd| switch (cmd) {
+            .stop => {
+                const r = self.queue.stopSession(session_key);
+                return self.reply(msg, if (r.was_running) "Stopped." else if (r.dropped > 0) "Dropped your waiting messages." else "Nothing is running.");
+            },
+            .status => {
+                var buf: [96]u8 = undefined;
+                return self.reply(msg, std.fmt.bufPrint(&buf, "{s} Messages waiting: {d}.", .{
+                    if (self.queue.isRunning(session_key)) "Working on your reply." else "Not working on your reply.",
+                    self.queue.waiting(),
+                }) catch "?");
+            },
+            .help => return self.reply(msg, chat_queue.help_text),
+            .approve => {
+                const a = control.parseApprove(msg.text) orelse
+                    return self.reply(msg, "Use: /approve <id> allow-once|allow-always|deny");
+                // OpenClaw ignores command-only messages from senders who may not run them.
+                if (!chat_access.listed(compat.getenv("WINTERMOLT_CHAT_APPROVERS") orelse "", msg.platform, msg.from))
+                    return stderr.print("[chat] /approve from {s}:{s} ignored: not in WINTERMOLT_CHAT_APPROVERS\n", .{ msg.platform, msg.from });
+                if (!control.answer(a.id, a.decision)) return self.reply(msg, "No request with that id is waiting.");
+                return self.reply(msg, switch (a.decision) {
+                    .allow_once => "Approved.",
+                    .allow_always => "Approved, until wintermolt restarts.",
+                    .deny => "Denied.",
+                });
+            },
+            // Waits its turn: it changes the agent a reply may be using.
+            .new => is_new = true,
+        };
+
+        const job = try chat_queue.Job.create(gpa, .{
+            .platform = msg.platform,
+            .from = msg.from,
+            .channel = msg.channel,
+            .thread_id = msg.thread_id,
+            .text = msg.text,
+            .agent_id = route.agent_id,
+            .session_key = session_key,
+            // Only the agent's own DM session is private: MEMORY.md stays
+            // out of groups and per-peer sessions (agent/workspace.zig).
+            .private = std.mem.eql(u8, session_key, route.agent_id),
+            .is_new = is_new,
+        });
+        if (!try self.queue.push(job)) {
+            job.destroy();
+            try stderr.print("[chat] Queue full ({d}); {s}:{s} turned away\n", .{ self.queue.cap, msg.platform, msg.from });
+            self.reply(msg, "Too many messages are waiting. Try again in a moment.");
+        }
+    }
+};
+
+/// One queued chat message, answered. On the main thread, the only one that
+/// touches the agents.
+fn runChatJob(
+    alloc: std.mem.Allocator,
+    pool: *pool_mod.AgentPool,
+    chat_sessions: *session_mod.SessionManager,
+    bridge: *chat_bridge.ChatBridge,
+    job: *const chat_queue.Job,
+) void {
+    const stderr = stdio.stderr();
+    // shortcut: an evicted session (idle 30m, or past WINTERMOLT_MAX_AGENTS) restarts empty; resume it from storage when sessions must outlive the pool.
+    const agent = pool.getOrCreate(job.session_key) catch |e| {
+        stderr.print("[Error] Agent pool failed: {s}\n", .{@errorName(e)}) catch {};
+        return;
+    };
+    agent.private = job.private;
+    const reply_to = struct {
+        fn send(b: *chat_bridge.ChatBridge, j: *const chat_queue.Job, text: []const u8) void {
+            // To the conversation, not the person: in a group, `from` is a
+            // member and `channel` is the group.
+            b.sendReplyThreaded(j.platform, j.channel, text, j.thread_id) catch |e| {
+                stdio.stderr().print("[Error] Reply failed: {s}\n", .{@errorName(e)}) catch {};
+            };
+        }
+    }.send;
+
+    if (job.is_new) {
+        agent.archiveAndReset();
+        return reply_to(bridge, job, "New conversation.");
+    }
+    if (agent.conversation_id == null) agent.startConversation();
+    if (chat_sessions.getOrCreateSession(job.agent_id, job.platform, job.channel, job.from) catch null) |sid| {
+        chat_sessions.recordMessage(sid);
+        alloc.free(sid);
+    }
+
+    var response_buf: ArrayList(u8) = .empty;
+    defer response_buf.deinit(alloc);
+    agent.processInputCapture(job.text, &response_buf) catch |e| {
+        stderr.print("[Error] Agent {s} failed: {s}\n", .{ job.agent_id, @errorName(e) }) catch {};
+        return;
+    };
+    // Stopped: the reader already said so; half a reply is not one.
+    if (agent.turn_failed and std.mem.eql(u8, agent.turn_error, "Stopped")) return;
+    if (response_buf.items.len > 0) reply_to(bridge, job, response_buf.items);
+}
+
+/// --chat's question before a command runs: to the conversation whose message
+/// started the reply. Only WINTERMOLT_CHAT_APPROVERS may answer (ChatReader);
+/// with none set, nobody can, so the command is refused at once.
+const ChatAsker = struct {
+    bridge: *chat_bridge.ChatBridge,
+    /// The message being answered; set by the main loop for each job.
+    job: ?*const chat_queue.Job = null,
+
+    fn asker(self: *ChatAsker) control.Asker {
+        return .{ .ctx = self, .post = post };
+    }
+
+    fn post(ctx: *anyopaque, id: []const u8, command: []const u8) void {
+        const self: *ChatAsker = @ptrCast(@alignCast(ctx));
+        const job = self.job orelse {
+            _ = control.answer(id, .deny);
+            return;
+        };
+        const gpa = std.heap.c_allocator;
+        const approvers = compat.getenv("WINTERMOLT_CHAT_APPROVERS") orelse "";
+        const text = if (approvers.len == 0)
+            std.fmt.allocPrint(gpa, "Not running a command ({s}): nobody may approve commands from chat. Set WINTERMOLT_CHAT_APPROVERS to who may (platform:id, comma-separated).", .{command})
+        else
+            std.fmt.allocPrint(gpa, "Approval needed to run:\n{s}\n\nReply /approve {s} allow-once, /approve {s} allow-always or /approve {s} deny", .{ command, id, id, id });
+        if (text) |t| {
+            defer gpa.free(t);
+            self.bridge.sendReplyThreaded(job.platform, job.channel, t, job.thread_id) catch {};
+        } else |_| {}
+        if (approvers.len == 0) _ = control.answer(id, .deny);
+    }
+};
+
+/// The plain REPL's and -e's question before a command runs: on stderr, the
+/// answer a line of stdin. End of input means no, so a piped -e never hangs.
+const LineAsker = struct {
+    stdin: *stdio.FileReader,
+
+    fn asker(self: *LineAsker) control.Asker {
+        return .{ .ctx = self, .post = post };
+    }
+
+    fn post(ctx: *anyopaque, id: []const u8, command: []const u8) void {
+        const self: *LineAsker = @ptrCast(@alignCast(ctx));
+        const err = stdio.stderr();
+        control.writeQuestion(err, command) catch {};
+        var buf: [256]u8 = undefined;
+        while (true) {
+            err.writeAll("> ") catch {};
+            const line = self.stdin.readUntilDelimiter(&buf, '\n') catch break;
+            if (control.parseAnswer(line)) |d| {
+                _ = control.answer(id, d);
+                return;
+            }
+            err.writeAll("(answer y, a or n)\n") catch {};
+        }
+        _ = control.answer(id, .deny);
+    }
+};
+
+/// Ctrl+C in the plain REPL and -e: during a reply it stops the reply; at the
+/// prompt it quits, as it always has. (The TUI reads Ctrl+C as a key.)
+fn installCtrlC() void {
+    if (comptime builtin.os.tag == .windows) {
+        _ = SetConsoleCtrlHandler(&onConsoleCtrl, 1);
+    } else {
+        const act: std.posix.Sigaction = .{
+            .handler = .{ .handler = onSigint },
+            .mask = std.posix.sigemptyset(),
+            .flags = std.posix.SA.RESTART,
+        };
+        std.posix.sigaction(.INT, &act, null);
+    }
+}
+
+extern "kernel32" fn SetConsoleCtrlHandler(handler: ?*const fn (u32) callconv(.winapi) c_int, add: c_int) callconv(.winapi) c_int;
+
+/// Its own thread. Non-zero: handled; zero: the default, which ends the process.
+fn onConsoleCtrl(ctrl_type: u32) callconv(.winapi) c_int {
+    const ctrl_c_event = 0;
+    if (ctrl_type != ctrl_c_event or !control.runActive()) return 0;
+    control.requestStop();
+    return 1;
+}
+
+fn onSigint(_: std.posix.SIG) callconv(.c) void {
+    if (control.runActive()) return control.requestStop();
+    std.c._exit(130);
+}
+
 /// What the TUI drives: the REPL's own dispatch, on the TUI's worker thread.
 /// Handlers and the agent write through stdio.stdout()/stderr(), which the
 /// session's sink routes into the transcript.
@@ -769,6 +1143,73 @@ const TuiRunner = struct {
     }
 };
 
+/// The secret a server mode asks for: `env` (16+ characters), else 32 random
+/// hex digits in `buf`. It is all that stands between the network and bash,
+/// so a short one, or no random source, stops the start.
+fn serverSecret(stderr: anytype, comptime tag: []const u8, comptime env: []const u8, buf: *[32]u8) []const u8 {
+    if (compat.getenv(env)) |t| {
+        if (t.len >= 16) return t;
+        stderr.writeAll("[" ++ tag ++ "] " ++ env ++ " must be at least 16 characters\n") catch {};
+        std.process.exit(1);
+    }
+    var raw: [16]u8 = undefined;
+    if (!fsio.randomBytes(&raw)) {
+        stderr.writeAll("[" ++ tag ++ "] No random source; set " ++ env ++ "\n") catch {};
+        std.process.exit(1);
+    }
+    buf.* = std.fmt.bytesToHex(raw, .lower);
+    return buf;
+}
+
+/// --gateway's view of the agent: the client's messages in, text out. Nothing
+/// is saved: the client sends the whole conversation with every request.
+const GatewayAgent = struct {
+    agent: *loop_mod.AgentLoop,
+    label: [160]u8 = undefined,
+
+    fn api(self: *GatewayAgent) gateway_server.Agent {
+        return .{ .ctx = self, .answer = answer, .model = model };
+    }
+
+    fn answer(ctx: *anyopaque, chat: *const gateway_server.Chat, out: *const fn ([]const u8) void) []const u8 {
+        const self: *GatewayAgent = @ptrCast(@alignCast(ctx));
+        self.agent.loadTurns(chat.history) catch |e| return @errorName(e);
+        self.agent.conversation_id = null;
+        self.agent.stream_callback = out;
+        defer self.agent.stream_callback = null;
+        self.agent.processInput(chat.prompt) catch |e| return @errorName(e);
+        if (!self.agent.turn_failed) return "";
+        return if (self.agent.turn_error.len > 0) self.agent.turn_error else "TurnFailed";
+    }
+
+    fn model(ctx: *anyopaque) []const u8 {
+        const self: *GatewayAgent = @ptrCast(@alignCast(ctx));
+        const b = self.agent.getBackendInfo();
+        return std.fmt.bufPrint(&self.label, "{s}:{s}", .{ b.name, b.model }) catch b.name;
+    }
+};
+
+/// The REPL's commands for --web pages. The bridge calls this holding its lock,
+/// so the agent and `alloc` (an arena) are never used by two threads at once.
+const WebCommands = struct {
+    agent: *loop_mod.AgentLoop,
+    alloc: std.mem.Allocator,
+    session_mgr: *session_mod.SessionManager,
+
+    fn commands(self: *WebCommands) web_bridge.Commands {
+        return .{ .ctx = self, .run = run };
+    }
+
+    fn run(ctx: *anyopaque, line: []const u8, out: *std.Io.Writer) anyerror!bool {
+        const self: *WebCommands = @ptrCast(@alignCast(ctx));
+        var no_stdin: NoStdin = .{};
+        return switch (try dispatchCommand(self.agent, self.alloc, self.session_mgr, out, out, &no_stdin, line)) {
+            .prompt => false,
+            .quit, .handled => true,
+        };
+    }
+};
+
 /// stdin for handlers run inside the TUI, which owns the real one: end of input.
 const NoStdin = struct {
     fn readUntilDelimiter(_: *NoStdin, _: []u8, _: u8) error{EndOfStream}![]u8 {
@@ -799,6 +1240,8 @@ fn runTui(
     var session = tui.Session.init(gpa, runner.runner(), VERSION);
     defer session.deinit();
     session.theme = theme_choice.name;
+    control.setAsker(session.asker());
+    defer control.setAsker(null);
 
     // Due jobs, as the REPL runs them before its first prompt -- before the
     // screen is taken, so anything they print reaches the normal console.
@@ -867,7 +1310,9 @@ fn handleModel(agent: *loop_mod.AgentLoop, w: anytype, arg: ?[]const u8) !void {
         var iter = std.mem.splitScalar(u8, a, ' ');
         const backend = iter.next() orelse return;
         const model = iter.next();
-        agent.switchBackend(backend, model);
+        // A backend that cannot be built leaves the current one in place and has
+        // already said why on stderr; /model is not a place to end the session.
+        agent.switchBackend(backend, model) catch {};
     } else {
         const info = agent.getBackendInfo();
         try w.print("Current: {s} ({s})\n", .{ info.name, info.model });
@@ -878,21 +1323,7 @@ fn handleModel(agent: *loop_mod.AgentLoop, w: anytype, arg: ?[]const u8) !void {
 
 /// /keys command — add, update, or list individual API keys.
 fn handleKeysCmd(alloc: std.mem.Allocator, w: anytype, r: anytype, arg: ?[]const u8) !void {
-    const ApiEntry = struct { key: []const u8, label: []const u8, hint: ?[]const u8 };
-    const api_keys = [_]ApiEntry{
-        .{ .key = "ANTHROPIC_API_KEY", .label = "Anthropic (Claude)", .hint = "sk-ant-" },
-        .{ .key = "OPENAI_API_KEY", .label = "OpenAI (GPT + TTS)", .hint = "sk-" },
-        .{ .key = "GOOGLE_GEMINI_API_KEY", .label = "Google Gemini", .hint = "AIza" },
-        .{ .key = "DEEPSEEK_API_KEY", .label = "DeepSeek", .hint = "sk-" },
-        .{ .key = "QWEN_API_KEY", .label = "Qwen", .hint = null },
-        .{ .key = "PINECONE_API_KEY", .label = "Pinecone (RAG)", .hint = null },
-        .{ .key = "PINECONE_HOST", .label = "Pinecone Host URL", .hint = "https://" },
-        .{ .key = "ELEVENLABS_API_KEY", .label = "ElevenLabs (voice)", .hint = null },
-        .{ .key = "DISCORD_BOT_TOKEN", .label = "Discord Bot", .hint = null },
-        .{ .key = "TELEGRAM_BOT_TOKEN", .label = "Telegram Bot", .hint = null },
-        .{ .key = "SLACK_BOT_TOKEN", .label = "Slack Bot", .hint = "xoxb-" },
-        .{ .key = "SLACK_APP_TOKEN", .label = "Slack App", .hint = "xapp-" },
-    };
+    const api_keys = setup.api_keys;
 
     var existing = setup.loadExistingEnv(alloc);
 
@@ -1009,57 +1440,26 @@ fn configureKey(
         return;
     }
 
-    var clearing = false;
-    if (std.mem.eql(u8, value, "clear") or std.mem.eql(u8, value, "remove") or std.mem.eql(u8, value, "delete")) {
-        clearing = true;
-        try w.print("  \x1b[33mCleared {s}\x1b[0m\n", .{env_key});
-    } else {
+    const clearing = std.mem.eql(u8, value, "clear") or std.mem.eql(u8, value, "remove") or std.mem.eql(u8, value, "delete");
+    if (!clearing) {
         if (hint) |h| {
             if (!std.mem.startsWith(u8, value, h)) {
                 try w.print("  \x1b[33m⚠ Expected prefix \"{s}\". Saving anyway.\x1b[0m\n", .{h});
             }
         }
-        try w.print("  \x1b[32m✓ Saved {s}\x1b[0m (restart to take effect)\n", .{env_key});
     }
 
-    // Rewrite .env file
     const home = compat.getenv("HOME") orelse return;
-    var path_buf: [512]u8 = undefined;
-    const env_path = std.fmt.bufPrint(&path_buf, "{s}/.wintermolt/.env", .{home}) catch return;
-
-    var all_keys = setup.loadExistingEnv(alloc);
-
+    const env_path = try std.fmt.allocPrint(alloc, "{s}/.wintermolt/.env", .{home});
+    setup.setEnvKey(alloc, fsio.io(), fsio.cwd(), env_path, env_key, if (clearing) null else value) catch |e| {
+        try w.print("  \x1b[31mCould not save {s}: {s}\x1b[0m\n\n", .{ env_path, @errorName(e) });
+        return;
+    };
     if (clearing) {
-        _ = all_keys.remove(env_key);
+        try w.print("  \x1b[33mCleared {s}\x1b[0m\n\n", .{env_key});
     } else {
-        all_keys.put(env_key, value) catch {};
+        try w.print("  \x1b[32m✓ Saved {s}\x1b[0m (restart to take effect)\n\n", .{env_key});
     }
-
-    // Write updated file
-    var content_buf: [8192]u8 = undefined;
-    var stream: std.Io.Writer = .fixed(&content_buf);
-    const sw = &stream;
-
-    try sw.writeAll("# Wintermolt configuration\n");
-    try sw.writeAll("# Edit manually or use /keys command to reconfigure.\n\n");
-    try sw.print("WINTERMOLT_CONFIG_VERSION={d}\n\n", .{config_mod.CONFIG_VERSION});
-
-    var it = all_keys.iterator();
-    while (it.next()) |kv| {
-        if (std.mem.eql(u8, kv.key_ptr.*, "WINTERMOLT_CONFIG_VERSION")) continue;
-        try sw.print("{s}=\"{s}\"\n", .{ kv.key_ptr.*, kv.value_ptr.* });
-    }
-
-    // Ensure directory exists
-    var dir_buf: [512]u8 = undefined;
-    const dir_path = std.fmt.bufPrint(&dir_buf, "{s}/.wintermolt", .{home}) catch return;
-    fsio.makePath(dir_path) catch {};
-
-    const file = fsio.createFile(env_path, .{ .truncate = true }) catch return;
-    defer fsio.close(file);
-    fsio.writeAll(file, stream.buffered()) catch {};
-
-    try w.writeByte('\n');
 }
 
 fn handleLook(agent: *loop_mod.AgentLoop, alloc: std.mem.Allocator, w: anytype, _stderr: anytype, custom_prompt: ?[]const u8) !void {
@@ -1074,11 +1474,72 @@ fn handleLook(agent: *loop_mod.AgentLoop, alloc: std.mem.Allocator, w: anytype, 
     };
     defer alloc.free(capture_result.data);
 
-    // Feed image + prompt through the agent
-    const full_prompt = try std.fmt.allocPrint(alloc, "[Camera capture attached: {s}] {s}", .{ capture_result.media_type, prompt });
-    defer alloc.free(full_prompt);
+    try agent.processInputImage(prompt, .{ .media_type = capture_result.media_type, .data = capture_result.data });
+}
 
-    try agent.processInput(full_prompt);
+/// `/image <path> [prompt]`. The path may be quoted (Windows Terminal drops a
+/// dragged file that way) or use `\ ` for a space (macOS Terminal does).
+fn parseImageArg(arg: []const u8, buf: []u8) ?struct { path: []const u8, prompt: []const u8 } {
+    if (arg.len == 0) return null;
+    var path: []const u8 = undefined;
+    var i: usize = 0;
+    if (arg[0] == '"' or arg[0] == '\'') {
+        const end = std.mem.indexOfScalarPos(u8, arg, 1, arg[0]) orelse return null;
+        path = arg[1..end];
+        i = end + 1;
+    } else {
+        var n: usize = 0;
+        while (i < arg.len and arg[i] != ' ' and arg[i] != '\t') : (i += 1) {
+            if (arg[i] == '\\' and i + 1 < arg.len and arg[i + 1] == ' ') i += 1;
+            if (n == buf.len) return null;
+            buf[n] = arg[i];
+            n += 1;
+        }
+        path = buf[0..n];
+    }
+    return .{ .path = path, .prompt = std.mem.trim(u8, arg[i..], " \t") };
+}
+
+/// /skill lists the SKILL.md skills; /skill <name> [input] has the model use one.
+fn handleSkill(agent: *loop_mod.AgentLoop, alloc: std.mem.Allocator, w: anytype, arg: []const u8) !void {
+    if (arg.len == 0) {
+        const all = try skill_md.discover(alloc);
+        defer skill_md.freeAll(alloc, all);
+        if (all.len == 0) {
+            try w.writeAll("No SKILL.md skills. Put one in ./skills/<name>/, ~/.agents/skills/<name>/ or ~/.wintermolt/skills/<name>/ (docs/SKILLS.md).\n");
+            return;
+        }
+        for (all) |s| try w.print("  {s} -- {s}\n    {s}\n", .{ s.name, s.description[0..@min(s.description.len, 100)], s.location });
+        try w.writeAll("Use one with /skill <name> [what to do].\n");
+        return;
+    }
+    const space = std.mem.indexOfAny(u8, arg, " \t") orelse arg.len;
+    const name = arg[0..space];
+    const input = std.mem.trim(u8, arg[space..], " \t");
+    const skill = (try skill_md.find(alloc, name)) orelse {
+        try w.print("[skill] No skill named {s}. /skill lists them.\n", .{name});
+        return;
+    };
+    defer skill.deinit(alloc);
+    const prompt = try skill_md.usePrompt(alloc, skill, input);
+    defer alloc.free(prompt);
+    try agent.processInput(prompt);
+}
+
+fn handleImage(agent: *loop_mod.AgentLoop, alloc: std.mem.Allocator, w: anytype, arg: []const u8) !void {
+    var path_buf: [1024]u8 = undefined;
+    const parsed = parseImageArg(arg, &path_buf) orelse {
+        try w.writeAll("Usage: /image <file> [prompt]   (png, jpeg, gif or webp; drag the file in for its path)\n");
+        return;
+    };
+    const img = camera.readAndEncode(alloc, parsed.path) catch |e| {
+        try w.print("[image] Cannot attach {s}: {s}\n", .{ parsed.path, @errorName(e) });
+        return;
+    };
+    defer alloc.free(img.data);
+
+    const prompt = if (parsed.prompt.len > 0) parsed.prompt else "What's in this image?";
+    try agent.processInputImage(prompt, .{ .media_type = img.media_type, .data = img.data });
 }
 
 fn handleScreenshot(agent: *loop_mod.AgentLoop, alloc: std.mem.Allocator, w: anytype, _stderr: anytype, custom_prompt: ?[]const u8) !void {
@@ -1092,10 +1553,7 @@ fn handleScreenshot(agent: *loop_mod.AgentLoop, alloc: std.mem.Allocator, w: any
     };
     defer alloc.free(capture_result.data);
 
-    const full_prompt = try std.fmt.allocPrint(alloc, "[Screenshot attached] {s}", .{prompt});
-    defer alloc.free(full_prompt);
-
-    try agent.processInput(full_prompt);
+    try agent.processInputImage(prompt, .{ .media_type = capture_result.media_type, .data = capture_result.data });
 }
 
 fn handleStats(agent: *const loop_mod.AgentLoop, w: anytype) !void {
@@ -1268,9 +1726,9 @@ fn spawnSubagent(
     child_agent.depth = child_depth;
     child_agent.subagent_manager = @ptrCast(mgr);
 
-    // Apply model override
-    if (model_override) |model| {
-        child_agent.switchBackend(model, null);
+    // Apply backend override
+    if (model_override) |override| {
+        child_agent.switchBackend(override, null) catch {};
     }
 
     child_agent.startConversation();
@@ -1337,14 +1795,15 @@ fn handleTtsCmd(alloc: std.mem.Allocator, w: anytype, _stderr: anytype, arg: []c
     const text = std.mem.trim(u8, arg, " \t");
 
     if (text.len == 0) {
-        const provider = compat.getenv("WINTERMOLT_TTS_PROVIDER") orelse "not configured";
-        const voice = compat.getenv("WINTERMOLT_TTS_VOICE") orelse "alloy";
+        const voice = compat.getenv("WINTERMOLT_TTS_VOICE") orelse "the provider's default";
         try w.print("TTS Status\n", .{});
-        try w.print("  Provider: {s}\n", .{provider});
+        try w.print("  Provider: {s}\n", .{@tagName(tts_mod.providerFromEnv())});
         try w.print("  Voice: {s}\n", .{voice});
         try w.writeAll("\nUsage: /tts <text to speak>\n");
         try w.writeAll("Inline directives: [[voice:nova]] [[speed:1.2]] [[provider:openai]]\n");
-        try w.writeAll("\nProviders: openai, elevenlabs, piper, edge\n");
+        try w.writeAll("\nProviders: deepgram, openai, elevenlabs, piper, edge, system (the computer's own voice)\n");
+        try w.writeAll("Unset, the first with a key: DEEPGRAM_API_KEY, OPENAI_API_KEY, ELEVENLABS_API_KEY; else system.\n");
+        try w.writeAll("Deepgram voices: thalia, andromeda, helena, apollo, arcas, aries (aura-2-<name>-en)\n");
         try w.writeAll("OpenAI voices: alloy, echo, fable, onyx, nova, shimmer\n");
         return;
     }
@@ -1357,17 +1816,87 @@ fn handleTtsCmd(alloc: std.mem.Allocator, w: anytype, _stderr: anytype, arg: []c
     };
     defer alloc.free(path);
     try w.print("[tts] Audio saved: {s}\n", .{path});
+    tts_mod.playDetached(alloc, path) catch |e| try w.print("[tts] Could not play it: {s}\n", .{@errorName(e)});
+}
 
-    // Auto-play on macOS
-    const play_cmd = std.fmt.allocPrint(alloc, "afplay \"{s}\" &", .{path}) catch return;
-    defer alloc.free(play_cmd);
-    const play_z = alloc.dupeZ(u8, play_cmd) catch return;
-    defer alloc.free(play_z);
+/// /listen [seconds | audio file]: record the microphone (or take a recording
+/// already made), send what was said as the prompt, and say the reply aloud.
+fn handleListen(agent: *loop_mod.AgentLoop, alloc: std.mem.Allocator, w: anytype, arg: []const u8) !void {
+    const seconds: ?u32 = if (arg.len == 0) 5 else std.fmt.parseInt(u32, arg, 10) catch null;
+    if (seconds) |s| if (s == 0 or s > 120) {
+        try w.writeAll("Usage: /listen [seconds | audio file]  (1-120 seconds, default 5)\n");
+        return;
+    };
+    // First, so both models load while you speak.
+    agent.warmForVoice();
+    stt_mod.startServer(alloc);
+    // The TUI's spinner says what we wait on; the plain REPL has the lines.
+    defer tui.setActivity(null);
 
-    const play_argv = [_][]const u8{ "/bin/sh", "-c", play_z };
-    // Fire and forget: audio plays in the background, so the child is
-    // deliberately not reaped -- waiting would block until playback finished.
-    fsio.spawnDetached(alloc, &play_argv) catch return;
+    var path_buf: [512]u8 = undefined;
+    const path = if (seconds) |s| blk: {
+        const mic_path = try camera.tempPath(&path_buf, "wintermolt_mic.wav");
+        tui.setActivity("opening mic");
+        try w.writeAll("[listen] Opening the microphone...\n");
+        var rec = stt_mod.startRecording(alloc, mic_path, s) catch |e| {
+            try w.print("[listen] Could not record the microphone: {s} (needs ffmpeg; WINTERMOLT_MIC picks the device)\n", .{@errorName(e)});
+            return;
+        };
+        tui.setActivity("recording");
+        try w.print("[listen] Recording {d}s, speak now...\n", .{s});
+        rec.finish() catch |e| {
+            try w.print("[listen] Could not record the microphone: {s} (needs ffmpeg; WINTERMOLT_MIC picks the device)\n", .{@errorName(e)});
+            return;
+        };
+        break :blk mic_path;
+    } else arg;
+    if (stt_mod.serverLoading()) {
+        tui.setActivity("loading speech");
+        try w.writeAll("[listen] Loading the speech model, first /listen only (a few seconds)...\n");
+    } else {
+        tui.setActivity("transcribing");
+        try w.writeAll("[listen] Transcribing...\n");
+    }
+    const said = stt_mod.transcribe(alloc, path);
+    tui.setActivity(null);
+    if (seconds != null) fsio.deleteFile(path) catch {}; // ours; never the user's file
+    const text = said catch |e| {
+        // Deepgram is the only provider with a key to refuse.
+        if (e == error.ApiKeyRejected)
+            try w.writeAll("[listen] Deepgram refused DEEPGRAM_API_KEY (set it with `wintermolt --keys`, or /keys deepgram)\n")
+        else
+            try w.print("[listen] Could not transcribe it: {s} (needs a whisper.cpp model in ~/.wintermolt/models, or DEEPGRAM_API_KEY)\n", .{@errorName(e)});
+        return;
+    };
+    defer alloc.free(text);
+    if (text.len == 0) {
+        try w.writeAll("[listen] Heard nothing.\n");
+        return;
+    }
+    try w.print("[listen] You said: {s}\n", .{text});
+
+    spoken_len = 0;
+    agent.voice_callback = &collectSpoken;
+    defer agent.voice_callback = null;
+    try agent.processInput(text);
+    try w.writeByte('\n');
+    tts_mod.speak(alloc, spoken_buf[0..spoken_len]) catch |e|
+        try w.print("[listen] Could not say the reply: {s}\n", .{@errorName(e)});
+}
+
+// The reply /listen says aloud. voice_callback carries no context, so it lands
+// here; one command runs at a time. tts.speak cuts it to what it will say.
+var spoken_buf: [8192]u8 = undefined;
+var spoken_len: usize = 0;
+
+fn collectSpoken(text: []const u8) void {
+    if (spoken_len > 0 and spoken_len < spoken_buf.len) {
+        spoken_buf[spoken_len] = '\n';
+        spoken_len += 1;
+    }
+    const n = @min(text.len, spoken_buf.len - spoken_len);
+    @memcpy(spoken_buf[spoken_len..][0..n], text[0..n]);
+    spoken_len += n;
 }
 
 fn handleRouteCmd(alloc: std.mem.Allocator, w: anytype, _stderr: anytype, arg: []const u8) !void {
@@ -1496,7 +2025,9 @@ fn printHelp(w: anytype) !void {
         \\  /keys          — Add/update API keys (interactive menu)
         \\  /keys list     — Show all configured keys
         \\  /look [prompt] — Capture camera image and describe it
+        \\  /image <file> [prompt] — Attach an image file (drag it in for the path)
         \\  /screenshot    — Capture screen and describe it
+        \\  /skill [name] [input] — List SKILL.md skills, or have the model use one
         \\  /stats         — Show session statistics
         \\  /compact       — Compact conversation history
         \\  /constitution  — View/reload system prompt
@@ -1504,6 +2035,7 @@ fn printHelp(w: anytype) !void {
         \\  /download URL  — Download a file
         \\  /schedule      — Manage scheduled jobs (list, add, remove)
         \\  /tts <text>    — Synthesize text to speech (plays audio)
+        \\  /listen [secs|file] — Say a prompt into the microphone (default 5s), or give a recording; the reply is spoken
         \\  /session       — Manage chat sessions (list, end, cleanup)
         \\  /route         — Manage multi-agent routing bindings
         \\  /agents        — Show agent pool status
@@ -1520,7 +2052,11 @@ fn printHelp(w: anytype) !void {
         \\  wintermolt -e "prompt"  — Single-shot execution (exits 1 if no backend answers)
         \\  wintermolt --keys      — Configure API keys
         \\  wintermolt --setup      — Alias for --keys
-        \\  wintermolt --chat       — Chat bridge (18 platforms)
+        \\  wintermolt --chat       — Chat bridge (16 platforms; access rules below)
+        \\  wintermolt --pairing list [platform]
+        \\  wintermolt --pairing approve <platform> <code>
+        \\  wintermolt --pairing revoke <platform> <sender>
+        \\                          — Who may message the agent through --chat
         \\  wintermolt --web        — Web UI
         \\  wintermolt --menubar    — macOS menu bar sidecar
         \\  wintermolt --gateway    — OpenAI-compatible API gateway
@@ -1536,10 +2072,10 @@ fn printHelp(w: anytype) !void {
         \\  iMessage       IMESSAGE_APPLEID (macOS only)
         \\  IRC            IRC_SERVER + IRC_NICK + IRC_CHANNELS
         \\  Matrix         MATRIX_HOMESERVER + MATRIX_ACCESS_TOKEN + MATRIX_USER_ID
-        \\  Teams          TEAMS_APP_ID + TEAMS_APP_PASSWORD
-        \\  Google Chat    GOOGLE_CHAT_CREDENTIALS
+        \\  Teams          not available yet (inbound is not authenticated)
+        \\  Google Chat    not available yet (inbound is not authenticated)
         \\  LINE           LINE_CHANNEL_SECRET + LINE_CHANNEL_TOKEN
-        \\  Feishu/Lark    FEISHU_APP_ID + FEISHU_APP_SECRET
+        \\  Feishu/Lark    FEISHU_APP_ID + FEISHU_APP_SECRET + FEISHU_VERIFICATION_TOKEN
         \\  Mattermost     MATTERMOST_URL + MATTERMOST_TOKEN
         \\  Twitch         TWITCH_ACCESS_TOKEN + TWITCH_CHANNELS
         \\  Nostr          NOSTR_PRIVATE_KEY (+ NOSTR_RELAYS)
@@ -1547,9 +2083,26 @@ fn printHelp(w: anytype) !void {
         \\  Zulip          ZULIP_EMAIL + ZULIP_API_KEY + ZULIP_SITE
         \\  Rocket.Chat    ROCKETCHAT_URL + ROCKETCHAT_TOKEN + ROCKETCHAT_USER_ID
         \\
+        \\Chat access (lists are platform:id,... or *; docs/DEPLOYMENT.md):
+        \\  WINTERMOLT_CHAT_DM_POLICY     pairing (default) | allowlist | open | disabled
+        \\  WINTERMOLT_CHAT_ALLOW_FROM    Who may send direct messages
+        \\  WINTERMOLT_CHAT_GROUP_POLICY  allowlist (default) | open | disabled
+        \\  WINTERMOLT_CHAT_GROUPS        Which groups (or Discord servers, Zulip streams)
+        \\  WINTERMOLT_CHAT_GROUP_ALLOW_FROM  Who may trigger it in a group
+        \\                                (default: WINTERMOLT_CHAT_ALLOW_FROM)
+        \\  WINTERMOLT_CHAT_REQUIRE_MENTION=0  Answer group messages without a mention
+        \\  WINTERMOLT_CHAT_DM_SCOPE      main (default: DMs share one conversation) | per-peer
+        \\                                (each sender their own); every group has its own
+        \\  WINTERMOLT_CHAT_APPROVERS     Who may /approve commands from chat
+        \\  In chat, /stop /new /status /help /approve are answered by wintermolt.
+        \\
         \\Environment:
         \\  ANTHROPIC_API_KEY    — Claude API key (optional)
+        \\  WINTERMOLT_BACKEND   — Backend a run starts on: ollama (default), claude,
+        \\                         openai, deepseek, qwen, gemini, kernel, forai.
+        \\                         A name that cannot be built exits 1
         \\  WINTERMOLT_MODEL     — Default model
+        \\  WINTERMOLT_BASH_APPROVAL=ask — Ask before every shell command runs
         \\  OLLAMA_HOST          — Ollama URL (default: http://localhost:11434)
         \\  OPENAI_API_KEY       — OpenAI API key
         \\  WINTERMOLT_OPENAI_URL — OpenAI-compatible Chat Completions URL
@@ -1560,6 +2113,8 @@ fn printHelp(w: anytype) !void {
         \\  WINTERMOLT_NO_FALLBACK=1 — A failed request fails (-e exits 1) instead of
         \\                         being answered by Ollama or OpenAI
         \\  WINTERMOLT_NO_TOOLS=1  — Send no tool definitions (models without function calling)
+        \\  WINTERMOLT_MAX_ITERATIONS=N — Tool-loop iterations per turn before the agent
+        \\                         gives up (default: 25). Raise it for long multi-step tasks
         \\  WINTERMOLT_STALL_TIMEOUT=SECS — Drop a model request after SECS with nothing
         \\                         received (default: 180; 0 = never)
         \\  WINTERMOLT_PLAIN=1   — Same as --plain: never open the full-screen view
@@ -1585,4 +2140,31 @@ fn printHelp(w: anytype) !void {
 // ---------------------------------------------------------------------------
 test {
     _ = @import("agent/redact.zig");
+    _ = @import("agent/config.zig");
+    _ = @import("api/deepseek.zig");
+    _ = @import("api/ollama.zig");
+    _ = @import("api/openai_sse.zig");
+    _ = @import("api/protocol.zig");
+    _ = @import("api/sse.zig");
+    _ = @import("tools/browser.zig");
+}
+
+test "/image: a path is split from its prompt, as each terminal drops a file in" {
+    var buf: [256]u8 = undefined;
+    const plain = parseImageArg("shot.png what is this?", &buf).?;
+    try std.testing.expectEqualStrings("shot.png", plain.path);
+    try std.testing.expectEqualStrings("what is this?", plain.prompt);
+
+    // Windows Terminal quotes a dragged path that has a space.
+    const quoted = parseImageArg("\"C:\\Users\\me\\My Pics\\a.png\"  describe", &buf).?;
+    try std.testing.expectEqualStrings("C:\\Users\\me\\My Pics\\a.png", quoted.path);
+    try std.testing.expectEqualStrings("describe", quoted.prompt);
+
+    // macOS Terminal escapes the space instead.
+    const escaped = parseImageArg("/Users/me/My\\ Pics/a.png", &buf).?;
+    try std.testing.expectEqualStrings("/Users/me/My Pics/a.png", escaped.path);
+    try std.testing.expectEqualStrings("", escaped.prompt);
+
+    try std.testing.expect(parseImageArg("", &buf) == null);
+    try std.testing.expect(parseImageArg("\"never closed.png", &buf) == null);
 }

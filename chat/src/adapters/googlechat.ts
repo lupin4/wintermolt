@@ -34,6 +34,10 @@ export function createAdapter(): ChatAdapter {
             channel: body.space?.name ?? 'unknown',
             text: body.message.text,
             threadId: body.message.thread?.name ?? undefined,
+            chatType: body.space?.spaceType === 'DIRECT_MESSAGE' || body.space?.type === 'DM'
+              ? 'direct' : 'group',
+            mentioned: (body.message.annotations ?? []).some((a: any) =>
+              a.type === 'USER_MENTION' && a.userMention?.user?.type === 'BOT'),
           });
         }
 

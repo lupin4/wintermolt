@@ -15,6 +15,7 @@
 const std = @import("std");
 const curl_tls = @import("../curl_tls.zig");
 const curl_timeouts = @import("curl_timeouts.zig");
+const compat = @import("../compat.zig");
 const stdio = @import("../stdio.zig");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
@@ -38,7 +39,7 @@ extern fn curl_slist_append(list: ?*CurlSlist, string: [*:0]const u8) ?*CurlSlis
 extern fn curl_slist_free_all(list: *CurlSlist) void;
 extern fn curl_easy_strerror(code: CurlCode) [*:0]const u8;
 
-const CurlCode = enum(c_int) { ok = 0, _ };
+const CurlCode = enum(c_int) { ok = 0, aborted_by_callback = 42, _ };
 
 const CURLOPT_URL: c_int = 10002;
 const CURLOPT_HTTPHEADER: c_int = 10023;
@@ -51,6 +52,16 @@ const CURLOPT_TIMEOUT: c_int = 13;
 const CURLOPT_CONNECTTIMEOUT: c_int = 78;
 const CURLINFO_RESPONSE_CODE: c_int = 0x200002;
 
+/// WINTERMOLT_OLLAMA_THINK: whether a model that can think does. null, when it
+/// is unset or not one of these words, sends nothing and Ollama decides (it
+/// thinks with any model that can).
+pub fn parseThink(raw: ?[]const u8) ?bool {
+    const text = std.mem.trim(u8, raw orelse return null, " \t\r\n");
+    for ([_][]const u8{ "0", "false", "off" }) |w| if (std.ascii.eqlIgnoreCase(text, w)) return false;
+    for ([_][]const u8{ "1", "true", "on" }) |w| if (std.ascii.eqlIgnoreCase(text, w)) return true;
+    return null;
+}
+
 // ---------------------------------------------------------------------------
 // OllamaClient
 // ---------------------------------------------------------------------------
@@ -61,6 +72,7 @@ pub const OllamaClient = struct {
     model: []const u8, // "llava", "llama3", etc.
     num_ctx: u32, // Context window cap — prevents OOM on constrained devices
     keep_alive: []const u8, // Model unload timer — "5m", "0" = unload immediately
+    think: ?bool = null,
 
     pub fn init(alloc: Allocator, base_url: []const u8, model: []const u8) OllamaClient {
         return .{
@@ -69,6 +81,7 @@ pub const OllamaClient = struct {
             .model = model,
             .num_ctx = 4096,
             .keep_alive = "5m",
+            .think = parseThink(compat.getenv("WINTERMOLT_OLLAMA_THINK")),
         };
     }
 
@@ -79,75 +92,22 @@ pub const OllamaClient = struct {
             .model = model,
             .num_ctx = num_ctx,
             .keep_alive = keep_alive,
+            .think = parseThink(compat.getenv("WINTERMOLT_OLLAMA_THINK")),
         };
     }
 
-    /// Lightweight one-shot completion via /api/generate (stream:false).
-    /// Used for quick safety checks — returns the response text or error.
-    /// Short timeout (default 5s) — if Ollama is slow or down, caller should fail open.
-    pub fn quickCheck(self: *const OllamaClient, prompt: []const u8, model_override: ?[]const u8, timeout_secs: u32) ![]u8 {
-        const handle = curl_easy_init() orelse return error.CurlInitFailed;
-        curl_tls.configure(handle);
-        defer curl_easy_cleanup(handle);
-
-        const use_model = model_override orelse self.model;
-
-        // Build JSON body: {"model":"...","prompt":"...","stream":false}
-        var body_buf: std.Io.Writer.Allocating = .init(self.alloc);
-        defer body_buf.deinit();
-        const bw = &body_buf.writer;
-        try bw.writeAll("{\"model\":\"");
-        try writeJsonStr(bw, use_model);
-        try bw.writeAll("\",\"prompt\":\"");
-        try writeJsonStr(bw, prompt);
-        try bw.print("\",\"stream\":false,\"keep_alive\":\"{s}\",\"options\":{{\"num_ctx\":{d}}}}}", .{ self.keep_alive, self.num_ctx });
-        const body = try body_buf.toOwnedSlice();
-        defer self.alloc.free(body);
-
-        // Build URL: {base_url}/api/generate
-        const url = try std.fmt.allocPrint(self.alloc, "{s}/api/generate", .{self.base_url});
-        defer self.alloc.free(url);
-        const url_z = try self.alloc.dupeZ(u8, url);
-        defer self.alloc.free(url_z);
-        _ = curl_easy_setopt(handle, CURLOPT_URL, url_z.ptr);
-
-        // Headers
-        var headers: ?*CurlSlist = null;
-        defer if (headers) |h| curl_slist_free_all(h);
-        headers = curl_slist_append(headers, "Content-Type: application/json");
-        _ = curl_easy_setopt(handle, CURLOPT_HTTPHEADER, headers);
-
-        // POST body
-        _ = curl_easy_setopt(handle, CURLOPT_POST, @as(c_long, 1));
-        const body_z = try self.alloc.dupeZ(u8, body);
-        defer self.alloc.free(body_z);
-        _ = curl_easy_setopt(handle, CURLOPT_POSTFIELDS, body_z.ptr);
-        _ = curl_easy_setopt(handle, CURLOPT_POSTFIELDSIZE, @as(c_long, @intCast(body.len)));
-
-        // Response collector
-        var collector = QuickCheckCollector.init(self.alloc);
-        defer collector.deinit();
-        _ = curl_easy_setopt(handle, CURLOPT_WRITEFUNCTION, &quickCheckWriteCb);
-        _ = curl_easy_setopt(handle, CURLOPT_WRITEDATA, &collector);
-
-        // Short timeouts for safety checks
-        _ = curl_easy_setopt(handle, CURLOPT_CONNECTTIMEOUT, @as(c_long, 2));
-        _ = curl_easy_setopt(handle, CURLOPT_TIMEOUT, @as(c_long, @intCast(timeout_secs)));
-
-        // Perform
-        const result = curl_easy_perform(handle);
-        if (result != .ok) return error.CurlRequestFailed;
-
-        var http_code: c_long = 0;
-        _ = curl_easy_getinfo(handle, CURLINFO_RESPONSE_CODE, &http_code);
-        if (http_code != 200) return error.HttpError;
-
-        // Parse "response" field from JSON
-        const resp_data = collector.buf.written();
-        if (sse.findJsonString(resp_data, "response")) |response_text| {
-            return self.alloc.dupe(u8, response_text);
-        }
-        return error.MalformedResponse;
+    /// Start loading the model on a thread of its own and return at once, so
+    /// the next request does not wait for the load (/listen calls this while
+    /// you speak). It sends the keep_alive and num_ctx a chat request sends:
+    /// with another num_ctx, Ollama would load the model a second time.
+    /// Failures are ignored; the real request reports them.
+    pub fn preloadInBackground(self: *const OllamaClient) void {
+        var job: LoadJob = .{};
+        _ = std.fmt.bufPrintZ(&job.url, "{s}/api/generate", .{self.base_url}) catch return;
+        job.body_len = (loadBody(&job.body, self.model, self.keep_alive, self.num_ctx) catch return).len;
+        // The job is copied to the thread, which shares nothing with us.
+        const t = std.Thread.spawn(.{}, LoadJob.run, .{job}) catch return;
+        t.detach();
     }
 
     /// Send a streaming chat request to Ollama with tool_use support.
@@ -203,7 +163,8 @@ pub const OllamaClient = struct {
         if (result != .ok) {
             const err_msg = curl_easy_strerror(result);
             const stderr = stdio.stderr();
-            stderr.print("\n[ollama curl error] {s}\n", .{err_msg}) catch {};
+            // 42: a /stop (curl_timeouts.zig), not a failure.
+            if (result != .aborted_by_callback) stderr.print("\n[ollama curl error] {s}\n", .{err_msg}) catch {};
             return error.CurlRequestFailed;
         }
 
@@ -223,16 +184,20 @@ pub const OllamaClient = struct {
             // but can't find closing '}' symbol". Blaming the model sent
             // everyone looking at model capability, which was never the issue.
             const stderr = stdio.stderr();
-            stderr.print("[ollama] HTTP 400 with tools declared — retrying without them.\n", .{}) catch {};
-            stderr.print("[ollama] This is NOT proof the model lacks tool support. A 400 is\n", .{}) catch {};
-            stderr.print("[ollama] usually a malformed request on our side; Ollama's response\n", .{}) catch {};
-            stderr.print("[ollama] body says which. To read it:\n", .{}) catch {};
-            stderr.print("[ollama]   curl -s http://localhost:11434/api/chat -d @request.json\n", .{}) catch {};
+            const why = parser.httpErrorText();
+            stderr.print("[ollama HTTP 400] {s}\n", .{if (why.len > 0) why else "Request failed"}) catch {};
+            stderr.print("[ollama] Retrying without tools. A 400 is usually a malformed request\n", .{}) catch {};
+            stderr.print("[ollama] on our side, not proof the model lacks tool support.\n", .{}) catch {};
             return self.sendMessageNoTools(system_prompt, messages, text_cb);
         }
         if (http_code != 200) {
             const stderr = stdio.stderr();
-            stderr.print("\n[ollama HTTP {d}] Request failed\n", .{http_code}) catch {};
+            const error_text = parser.httpErrorText();
+            if (error_text.len > 0) {
+                stderr.print("\n[ollama HTTP {d}] {s}\n", .{ http_code, error_text }) catch {};
+            } else {
+                stderr.print("\n[ollama HTTP {d}] Request failed\n", .{http_code}) catch {};
+            }
             return error.HttpError;
         }
 
@@ -283,7 +248,9 @@ pub const OllamaClient = struct {
 
         try w.writeAll("{\"model\":\"");
         try writeJsonStr(w, self.model);
-        try w.print("\",\"stream\":true,\"keep_alive\":\"{s}\",\"options\":{{\"num_ctx\":{d}}},\"messages\":[", .{ self.keep_alive, self.num_ctx });
+        try w.print("\",\"stream\":true,\"keep_alive\":\"{s}\",\"options\":{{\"num_ctx\":{d}}}", .{ self.keep_alive, self.num_ctx });
+        if (self.think) |t| try w.writeAll(if (t) ",\"think\":true" else ",\"think\":false");
+        try w.writeAll(",\"messages\":[");
 
         var first = true;
 
@@ -333,6 +300,22 @@ pub const OllamaClient = struct {
                         },
                         else => {},
                     }
+                }
+                // A tool message carries text only, so an image a tool returned
+                // (camera, screenshot, view) follows as a user message.
+                for (msg.content.items) |block| {
+                    const blocks = switch (block) {
+                        .tool_result => |tr| tr.content_blocks orelse continue,
+                        else => continue,
+                    };
+                    for (blocks) |cb| switch (cb) {
+                        .image => |img| {
+                            try w.writeAll(",{\"role\":\"user\",\"content\":\"\",\"images\":[\"");
+                            try w.writeAll(img.data); // base64, JSON-safe
+                            try w.writeAll("\"]}");
+                        },
+                        else => {},
+                    };
                 }
                 continue;
             }
@@ -480,29 +463,42 @@ fn writeCallback(
     return total;
 }
 
-/// Response collector for quickCheck — wraps ArrayList + allocator for curl callback.
-const QuickCheckCollector = struct {
-    buf: ArrayList(u8),
-    alloc: Allocator,
+/// /api/generate with no prompt: Ollama loads the model and answers once it
+/// is in memory.
+pub fn loadBody(buf: []u8, model: []const u8, keep_alive: []const u8, num_ctx: u32) ![]const u8 {
+    var w: std.Io.Writer = .fixed(buf);
+    try w.writeAll("{\"model\":\"");
+    try writeJsonStr(&w, model);
+    try w.print("\",\"keep_alive\":\"{s}\",\"options\":{{\"num_ctx\":{d}}}}}", .{ keep_alive, num_ctx });
+    return w.buffered();
+}
 
-    fn init(alloc: Allocator) QuickCheckCollector {
-        return .{ .buf = .{}, .alloc = alloc };
-    }
-    fn deinit(self: *QuickCheckCollector) void {
-        self.buf.deinit();
+const LoadJob = struct {
+    url: [512:0]u8 = @splat(0),
+    body: [512]u8 = undefined,
+    body_len: usize = 0,
+
+    fn run(job: LoadJob) void {
+        const handle = curl_easy_init() orelse return;
+        defer curl_easy_cleanup(handle);
+        curl_tls.configure(handle);
+        const headers = curl_slist_append(null, "Content-Type: application/json");
+        defer if (headers) |h| curl_slist_free_all(h);
+        _ = curl_easy_setopt(handle, CURLOPT_URL, @as([*:0]const u8, &job.url));
+        _ = curl_easy_setopt(handle, CURLOPT_HTTPHEADER, headers);
+        _ = curl_easy_setopt(handle, CURLOPT_POST, @as(c_long, 1));
+        _ = curl_easy_setopt(handle, CURLOPT_POSTFIELDS, @as([*]const u8, &job.body));
+        _ = curl_easy_setopt(handle, CURLOPT_POSTFIELDSIZE, @as(c_long, @intCast(job.body_len)));
+        // Without a write function libcurl prints the reply on stdout.
+        _ = curl_easy_setopt(handle, CURLOPT_WRITEFUNCTION, &discardWriteCb);
+        _ = curl_easy_setopt(handle, CURLOPT_CONNECTTIMEOUT, @as(c_long, 2));
+        _ = curl_easy_setopt(handle, CURLOPT_TIMEOUT, @as(c_long, 300)); // Ollama's own load timeout is 5 min
+        _ = curl_easy_perform(handle);
     }
 };
 
-/// curl write callback for quickCheck (non-streaming, collects into buffer).
-fn quickCheckWriteCb(
-    ptr: [*]const u8,
-    size: usize,
-    nmemb: usize,
-    userdata: *QuickCheckCollector,
-) callconv(.c) usize {
-    const total = size * nmemb;
-    userdata.buf.appendSlice(userdata.alloc, ptr[0..total]) catch return 0;
-    return total;
+fn discardWriteCb(_: [*]const u8, size: usize, nmemb: usize, _: ?*anyopaque) callconv(.c) usize {
+    return size * nmemb;
 }
 
 /// Write a JSON-escaped string (without surrounding quotes).
@@ -525,4 +521,77 @@ fn writeJsonStr(w: anytype, s: []const u8) !void {
             },
         }
     }
+}
+
+test "ollama request: an image a tool returned follows its tool message as a user message" {
+    const alloc = std.testing.allocator;
+    const blocks = [_]protocol.ContentBlock{.{ .image = .{ .media_type = "image/jpeg", .data = "/9j/" } }};
+    var msg = protocol.Message{ .role = .user };
+    defer msg.deinit(alloc);
+    try msg.content.append(alloc, .{ .tool_result = .{ .tool_use_id = "t1", .content = "Image attached.", .content_blocks = &blocks } });
+
+    const client = OllamaClient.init(alloc, "http://127.0.0.1:9", "m");
+    const body = try client.serializeRequest("", &.{msg}, &.{});
+    defer alloc.free(body);
+    try std.testing.expect(std.mem.indexOf(u8, body,
+        \\{"role":"tool","content":"Image attached."},{"role":"user","content":"","images":["/9j/"]}
+    ) != null);
+}
+
+test "loadBody: the model, keep_alive and num_ctx a chat request sends, and no prompt" {
+    var buf: [256]u8 = undefined;
+    try std.testing.expectEqualStrings(
+        "{\"model\":\"qwen3:8b\",\"keep_alive\":\"30m\",\"options\":{\"num_ctx\":8192}}",
+        try loadBody(&buf, "qwen3:8b", "30m", 8192),
+    );
+    try std.testing.expectEqualStrings(
+        "{\"model\":\"a\\\"b\",\"keep_alive\":\"5m\",\"options\":{\"num_ctx\":4096}}",
+        try loadBody(&buf, "a\"b", "5m", 4096),
+    );
+    var tiny: [8]u8 = undefined;
+    try std.testing.expectError(error.WriteFailed, loadBody(&tiny, "qwen3:8b", "30m", 8192));
+}
+
+// The default backend and model on a fresh install: Ollama answers a model it
+// has not pulled with HTTP 404 and {"error":"model 'qwen3:8b' not found"}, and
+// that message is what says to pull it. The body may or may not end in "\n".
+test "http error: Ollama's own message is kept, with or without a newline" {
+    const alloc = std.testing.allocator;
+    for ([_][]const u8{ "{\"error\":\"model 'qwen3:8b' not found\"}", "{\"error\":\"model 'qwen3:8b' not found\"}\n" }) |body| {
+        var parser = ndjson.NdjsonParser.init(alloc, null);
+        defer parser.deinit();
+        try parser.feed(body);
+        try std.testing.expectEqualStrings("model 'qwen3:8b' not found", parser.httpErrorText());
+    }
+    // A body that is not JSON is shown as sent; no body at all is "".
+    var plain = ndjson.NdjsonParser.init(alloc, null);
+    defer plain.deinit();
+    try plain.feed("404 page not found\n");
+    try std.testing.expectEqualStrings("404 page not found", plain.httpErrorText());
+    var empty = ndjson.NdjsonParser.init(alloc, null);
+    defer empty.deinit();
+    try std.testing.expectEqualStrings("", empty.httpErrorText());
+}
+
+test "WINTERMOLT_OLLAMA_THINK: 0/false/off and 1/true/on; anything else leaves it to Ollama" {
+    try std.testing.expectEqual(@as(?bool, null), parseThink(null));
+    try std.testing.expectEqual(@as(?bool, null), parseThink(""));
+    try std.testing.expectEqual(@as(?bool, null), parseThink("maybe"));
+    for ([_][]const u8{ "0", "false", " OFF\r\n" }) |s| try std.testing.expectEqual(@as(?bool, false), parseThink(s));
+    for ([_][]const u8{ "1", "true", "On" }) |s| try std.testing.expectEqual(@as(?bool, true), parseThink(s));
+}
+
+// With thinking on, Ollama's default for qwen3, qwen3:0.6b ends a reply with
+// the "/think" switch it was trained on. "think":false stops it.
+test "ollama request: think is sent only when set" {
+    const alloc = std.testing.allocator;
+    var client = OllamaClient.init(alloc, "http://127.0.0.1:9", "m");
+    client.think = null;
+    const unset = try client.serializeRequest("", &.{}, &.{});
+    defer alloc.free(unset);
+    try std.testing.expect(std.mem.indexOf(u8, unset, "\"think\"") == null);
+    client.think = false;
+    const off = try client.serializeRequest("", &.{}, &.{});
+    defer alloc.free(off);
+    try std.testing.expect(std.mem.indexOf(u8, off, ",\"think\":false,") != null);
 }

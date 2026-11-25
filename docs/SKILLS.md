@@ -1,5 +1,59 @@
 # Skills
 
+Wintermolt reads two kinds of skill: `SKILL.md`, the format of OpenClaw,
+ClawHub and Anthropic's Agent Skills, and its own `skill.json` manifests.
+
+## SKILL.md
+
+A folder with a `SKILL.md`: YAML frontmatter, then the instructions.
+
+```markdown
+---
+name: image-lab
+description: Generate or edit images with the uv-based image tools.
+metadata: {"openclaw": {"requires": {"bins": ["uv"], "env": ["GEMINI_API_KEY"]}}}
+---
+
+# Image lab
+
+Run `uv run {baseDir}/edit.py ...`
+```
+
+Every turn, the system prompt lists each usable skill's name, description
+and `SKILL.md` path in an `<available_skills>` block. When a task fits one,
+the model loads it with the `skills` tool (`operation: "use"`), which returns
+the file with `{baseDir}` replaced by the skill's folder. `/skill` lists
+them, and `/skill <name> [what to do]` has the model use one now.
+
+Folders searched, a name found earlier winning over the same name later:
+
+1. `./skills/`, `./.agents/skills/` (the project you run it in)
+2. `<workspace>/skills/`, `<workspace>/.agents/skills/` (`~/.wintermolt/workspace`, or `WINTERMOLT_WORKSPACE_DIR`)
+3. `~/.agents/skills/`, `~/.wintermolt/skills/`
+
+Each skill is a folder directly inside one of these, as `clawhub install`
+lays them out.
+
+Frontmatter read, as OpenClaw reads it:
+
+| Key | Effect |
+|:----|:-------|
+| `name` | The skill's name; the folder's name when absent |
+| `description` | Required: a skill without one is not listed. A `>` or `|` block is folded to one line |
+| `disable-model-invocation: true` | Not listed in the prompt; `/skill <name>` still uses it |
+| `metadata.openclaw.os` | `darwin`/`macos`, `linux`, `win32`: listed only there |
+| `metadata.openclaw.always: true` | Listed whatever `requires` says (`os` still applies) |
+| `metadata.openclaw.requires.bins` | Every program must be on PATH |
+| `metadata.openclaw.requires.anyBins` | At least one must be |
+| `metadata.openclaw.requires.env` | Every variable must be set |
+
+`metadata` is read as JSON (on its line or indented below it); a value it
+cannot read leaves the skill listed. `requires.config` (OpenClaw's
+`openclaw.json` paths) is not checked. The list stops near 8,000 characters
+and says how many skills it left out.
+
+## skill.json
+
 A skill is a directory holding one `skill.json` manifest. Wintermolt loads
 manifests at startup from three places, later ones replacing earlier ones
 of the same `name`:
